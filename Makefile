@@ -9,12 +9,12 @@ unexport MAKEFLAGS MFLAGS MAKEOVERRIDES MAKEFILES
 TARGET ?= zero-armv6
 VERSION ?= dev-local
 INPUTS ?=
-export TARGET VERSION INPUTS OUT
+export TARGET VERSION INPUTS
 
 go package-go: export GOTOOLCHAIN = local
-go package-go: OUT ?= $(CURDIR)/build/go/$(TARGET)
-rust package-rust: OUT ?= $(CURDIR)/build/rust/$(TARGET)
-uboot package-uboot: OUT ?= $(CURDIR)/build/uboot/$(TARGET)
+go package-go: export OUT ?= $(CURDIR)/build/go/$(TARGET)
+rust package-rust: export OUT ?= $(CURDIR)/build/rust/$(TARGET)
+uboot package-uboot: export OUT ?= $(CURDIR)/build/uboot/$(TARGET)
 
 .PHONY: help go rust uboot package-go package-rust package-uboot
 help:
