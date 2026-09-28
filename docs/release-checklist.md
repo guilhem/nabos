@@ -1,6 +1,6 @@
 Image NabOS pour un premier flash et des mises à jour signées. Raspberry Pi OS Lite Trixie, RAUC A/B, PipeWire et MQTT 5 ; carte microSD de 16 Go minimum. Choisir `zero-armv6` pour le Zero original, `zero2-arm64` pour le Zero 2.
 
-Cette release est créée en **brouillon**. La réussite de la CI valide la fabrication ; elle ne valide pas le matériel. Ne publier qu'après avoir enregistré les résultats ci-dessous pour les **deux** cibles, avec version, révision de carte, carte SD et journaux.
+Créer la release avec son changelog et le statut choisi ; la CI y ajoute les artefacts selon la [procédure de release](build.md#créer-une-release). La réussite de la CI valide la fabrication ; elle ne valide pas le matériel. Garder le statut **prérelease** ou **brouillon** jusqu'à avoir enregistré les résultats ci-dessous pour les **deux** cibles, avec version, révision de carte, carte SD et journaux.
 
 - [ ] Premier démarrage, Wi-Fi depuis un téléphone, administration authentifiée, SSH fermé.
 - [ ] Démarrage autonome de PipeWire et des applications, sans connexion utilisateur.

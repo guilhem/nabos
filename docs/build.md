@@ -29,7 +29,23 @@ RAUC_KEY=/chemin/prive/key.pem RAUC_CERT=/chemin/cert.pem \
   bash image/build.sh zero-armv6 v2.0.0
 ```
 
-La CI utilise les secrets GitHub `RAUC_SIGNING_KEY` et `RAUC_SIGNING_CERT` (contenus PEM). Les constructions hors tag n'ont pas accès à ces secrets. Sur un tag `v*`, les deux jobs doivent réussir avant la création du brouillon GitHub Release avec `gh release`. La [qualification matérielle](release-checklist.md) précède sa publication. Les nouvelles versions ne sont installées qu'à la demande dans l'interface locale.
+La CI utilise les secrets GitHub `RAUC_SIGNING_KEY` et `RAUC_SIGNING_CERT` (contenus PEM). Les constructions hors tag n'ont pas accès à ces secrets.
+
+## Créer une release
+
+1. Dans GitHub Releases, créer la release avec un tag `vX.Y.Z` sur le commit voulu, son titre, son changelog et son statut (prérelease ou release stable). Le commit choisi doit contenir ce workflow.
+2. Publier la release : l'événement `release: published` lance les tests et la fabrication signée pour `zero-armv6` et `zero2-arm64`. Pousser seulement un tag ne lance plus la fabrication.
+3. Après le succès des deux cibles, la CI ajoute les artefacts à cette release existante. Elle conserve le titre, le changelog, le statut et le choix de dernière version. Le fichier global `SHA256SUMS` est ajouté en dernier, après les images et bundles.
+
+Pour une première qualification, choisir une **prérelease**, puis compléter la [fiche matérielle](release-checklist.md) avant de passer en stable. Une release publiée reste visible pendant la fabrication ; attendre la réussite du workflow et la présence de tous les artefacts avant de la diffuser. L'interface des appareils recherche uniquement la dernière release stable, et l'installation reste déclenchée par l'utilisateur.
+
+GitHub ne déclenche pas Actions lors de la création d'un **brouillon**. Pour le remplir avant publication, créer d'abord le tag Git sur le commit voulu, puis le brouillon associé, et lancer manuellement le workflow sur ce tag existant :
+
+```sh
+gh workflow run images.yml --repo guilhem/nabos --ref v0.1.0
+```
+
+Le brouillon reste un brouillon. Sa publication déclenche aussi le workflow. Une relance remplace les artefacts de même nom (`gh release upload --clobber`) ; elle ne modifie pas les informations de la release. L'ancien `SHA256SUMS` est retiré avant le remplacement des fichiers et rétabli seulement si tous les envois réussissent ; la recherche de mise à jour échoue tant que ce manifeste manque. Pour ajouter les artefacts après publication, les releases immuables doivent être désactivées dans les paramètres du dépôt.
 
 ## Sources et dépendances
 

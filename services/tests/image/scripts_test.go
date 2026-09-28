@@ -2,6 +2,7 @@ package image
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,77 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReleaseUpload(t *testing.T) {
+	workflow := read(t, filepath.Join(repo, ".github/workflows/images.yml"))
+	// Exercise the final upload step with real checksums and a fake GitHub CLI.
+	const marker = "        run: |\n"
+	start := strings.LastIndex(workflow, marker)
+	if start < 0 {
+		t.Fatal("release upload step missing")
+	}
+	script := workflow[start+len(marker):]
+	for _, scenario := range []struct {
+		name, fail, want string
+		existing         bool
+	}{
+		{"first", "", "view upload upload", false},
+		{"rerun", "", "view delete-asset upload upload", true},
+		{"corrupt", "", "", true},
+		{"lookup-failure", "view", "view", true},
+		{"delete-failure", "delete-asset", "view delete-asset", true},
+		{"upload-failure", "upload", "view delete-asset upload", true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Chdir(tmp)
+			if err := os.Mkdir("dist", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			var sums string
+			for _, target := range []string{"zero-armv6", "zero2-arm64"} {
+				asset := "nabos-" + target + ".raucb"
+				write(t, filepath.Join("dist", asset), target)
+				sum := fmt.Sprintf("%x  ./%s\n", sha256.Sum256([]byte(target)), asset)
+				write(t, filepath.Join("dist", "SHA256SUMS-"+target), sum)
+				sums += sum
+			}
+			fake := newFakes(t, tmp, map[string]string{"gh": `
+[ "$1 $3" = "release v0.1.0" ] || exit 1
+[ "$2" != "$FAIL_COMMAND" ] || exit 1
+case "$2" in
+  view) if [ "$EXISTING_MANIFEST" = true ]; then echo SHA256SUMS; fi ;;
+  delete-asset) [ "$4 $5 $6 $7" = "SHA256SUMS --repo guilhem/nabos --yes" ] ;;
+  upload) [ "$4 $5 $6" = "--repo guilhem/nabos --clobber" ] ;;
+  *) exit 1 ;;
+esac`})
+			env := fake.env("GITHUB_REF_NAME=v0.1.0", "GITHUB_REPOSITORY=guilhem/nabos",
+				fmt.Sprintf("EXISTING_MANIFEST=%t", scenario.existing), "FAIL_COMMAND="+scenario.fail)
+			if scenario.name == "corrupt" {
+				write(t, "dist/nabos-zero2-arm64.raucb", "corrupted")
+			}
+			r := execute(t, "", env, "bash", "-e", "-o", "pipefail", "-c", script)
+			calls := fake.calls(t)
+			var commands []string
+			for _, call := range calls {
+				commands = append(commands, strings.Fields(call)[2])
+			}
+			if strings.Join(commands, " ") != scenario.want {
+				t.Fatalf("unexpected release operations: %v\n%s", calls, r.stderr)
+			}
+			if scenario.name == "first" || scenario.name == "rerun" {
+				if r.code != 0 ||
+					strings.Contains(calls[len(calls)-2], " ./SHA256SUMS ") ||
+					!strings.HasSuffix(calls[len(calls)-1], "--clobber SHA256SUMS") ||
+					read(t, "dist/SHA256SUMS") != sums {
+					t.Fatalf("upload failed or manifest published too early: %v\n%s", calls, r.stderr)
+				}
+			} else if r.code == 0 {
+				t.Fatalf("failed artifacts were published: %v\n%s", calls, r.stderr)
+			}
+		})
+	}
+}
 
 var (
 	bootInit = filepath.Join(rootfsDir, "usr/lib/nabos/boot-init")

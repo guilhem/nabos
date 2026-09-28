@@ -24,4 +24,4 @@ Pour modifier une source externe, mettre à jour sa révision et son SHA-256 dan
 
 Les changements aux pilotes, au démarrage, au son ou au rollback requièrent aussi les essais de la [fiche matérielle](docs/release-checklist.md). Indiquer clairement dans la PR ce qui a été réellement essayé et ce qui attend le matériel.
 
-Les images sur tags deviennent des brouillons de GitHub Releases. Leur publication suit la qualification matérielle ; l'approbation et le merge des PR restent des décisions distinctes.
+Le mainteneur crée la GitHub Release avec son statut et son changelog ; sa publication lance la CI, qui y ajoute les images signées sans modifier ces informations. La [procédure de release](docs/build.md#créer-une-release) décrit aussi le cas des brouillons. Le passage en stable suit la qualification matérielle ; l'approbation et le merge des PR restent des décisions distinctes.

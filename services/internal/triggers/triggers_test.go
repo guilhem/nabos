@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -67,9 +68,10 @@ func TestIFTTT(t *testing.T) {
 }
 
 func TestWebhook(t *testing.T) {
-	var got string
+	var got atomic.Value
+	got.Store("")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Method + " " + r.URL.RequestURI()
+		got.Store(r.Method + " " + r.URL.RequestURI())
 		switch r.URL.Path {
 		case "/fail":
 			w.WriteHeader(http.StatusInternalServerError)
@@ -97,8 +99,8 @@ func TestWebhook(t *testing.T) {
 	defer srv.Close()
 	c := NewClient()
 	ctx := context.Background()
-	if err := c.Webhook(ctx, srv.URL+"/hook?token=s3cret"); err != nil || got != "GET /hook?token=s3cret" {
-		t.Fatalf("webhook: %v %q", err, got)
+	if err := c.Webhook(ctx, srv.URL+"/hook?token=s3cret"); err != nil || got.Load() != "GET /hook?token=s3cret" {
+		t.Fatalf("webhook: %v %q", err, got.Load())
 	}
 	if err := c.Webhook(ctx, srv.URL+"/fail?token=s3cret"); err == nil || strings.Contains(err.Error(), "s3cret") {
 		t.Errorf("fail: %v", err)
@@ -106,14 +108,14 @@ func TestWebhook(t *testing.T) {
 	if err := c.Webhook(ctx, "ftp://h/x"); err == nil {
 		t.Error("ftp accepted")
 	}
-	if err := c.Webhook(ctx, srv.URL+"/redirect-ok"); err != nil || got != "GET /hook" {
-		t.Errorf("plain redirect: %v %q", err, got)
+	if err := c.Webhook(ctx, srv.URL+"/redirect-ok"); err != nil || got.Load() != "GET /hook" {
+		t.Errorf("plain redirect: %v %q", err, got.Load())
 	}
 	for path, want := range map[string]string{"/redirect-creds": "credentials", "/redirect-ftp": "http or https", "/redirect-loop": "10 redirects"} {
-		got = ""
+		got.Store("")
 		err := c.Webhook(ctx, srv.URL+path)
-		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "u:p") || got == "GET /hook" {
-			t.Errorf("%s: %v (reached %q)", path, err, got)
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "u:p") || got.Load() == "GET /hook" {
+			t.Errorf("%s: %v (reached %q)", path, err, got.Load())
 		}
 	}
 	if c.HTTP.CheckRedirect != nil {

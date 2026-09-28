@@ -8,7 +8,7 @@ NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et un bus MQ
 
 Les outils de fabrication et les tests propres à NabOS sont aussi en Go. Les projets externes Comitup et Linux Voice Assistant sont conservés avec leurs dépendances Python.
 
-La qualification du démarrage, des pilotes et du rollback sur les deux matériels est requise avant publication. Les constructions de développement et les tests de simulation ne constituent pas cette qualification.
+La qualification du démarrage, des pilotes et du rollback sur les deux matériels est requise avant diffusion en release stable. Les constructions de développement et les tests de simulation ne constituent pas cette qualification.
 
 ## Installation
 
@@ -52,7 +52,7 @@ Home Assistant expose les annonces comme boutons, utilisables depuis LVA. LVA, C
 
 ## Développement
 
-La [documentation de fabrication](docs/build.md) décrit les commandes locales, les runners GitHub standards, les dépendances archivées, les secrets de signature et le partitionnement. La [fiche de qualification](docs/release-checklist.md) accompagne les brouillons de release.
+La [documentation de fabrication](docs/build.md) décrit les commandes locales, les runners GitHub standards, les dépendances archivées, les secrets de signature et le partitionnement. Le mainteneur crée la release avec son statut et son changelog ; la CI y ajoute les artefacts. La [fiche de qualification](docs/release-checklist.md) accompagne le passage en stable.
 
 ```sh
 cargo test --locked --manifest-path core/Cargo.toml
