@@ -328,6 +328,11 @@ func writeAtomic(path string, s Settings) error {
 	if err != nil {
 		return err
 	}
+	return WriteFile(path, append(raw, '\n'))
+}
+
+// WriteFile replaces a private configuration file atomically and durably.
+func WriteFile(path string, raw []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -338,7 +343,7 @@ func writeAtomic(path string, s Settings) error {
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if _, err := f.Write(append(raw, '\n')); err != nil {
+	if _, err := f.Write(raw); err != nil {
 		f.Close()
 		return err
 	}

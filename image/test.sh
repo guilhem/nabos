@@ -87,6 +87,17 @@ sudo mount -o ro "${loop}p2" "$root"
 sudo mount -o ro "${loop}p1" "$boot"
 cmp "$expected_uboot" "$boot/u-boot.bin"
 [[ -x $root/usr/bin/dtoverlay ]] || { echo 'Missing runtime dtoverlay command' >&2; exit 1; }
+# Parse the shipped OpenSSH configuration (including inherited snippets) without
+# host keys: these are deliberately absent until the user enables SSH.
+ssh_config=$(sudo env QEMU_CPU=arm1176 chroot "$root" /usr/sbin/sshd -G)
+for setting in 'allowusers nabos' 'permitrootlogin no' 'authenticationmethods publickey' \
+  'passwordauthentication no' 'kbdinteractiveauthentication no' 'usepam yes' \
+  'strictmodes yes' 'authorizedkeysfile /data/nabos/ssh/authorized_keys'; do
+  grep -qxF "$setting" <<< "$ssh_config" || { echo "Unexpected SSH configuration: $setting" >&2; exit 1; }
+done
+[[ $(sudo chroot "$root" getent passwd nabos) == 'nabos:x:1000:1000:'*':/var/lib/nabos:/bin/bash' ]] ||
+  { echo 'Unexpected SSH account' >&2; exit 1; }
+sudo env QEMU_CPU=arm1176 chroot "$root" /usr/sbin/visudo --check
 for path in /nabos-build /usr/bin/gcc /usr/bin/make /usr/bin/cmake; do
   [[ ! -e $root$path && ! -L $root$path ]] || { echo "Build artifact shipped: $path" >&2; exit 1; }
 done

@@ -96,8 +96,22 @@ esac
 touch "$4.mounted"`,
 				"mountpoint": "test -f \"$2.mounted\"",
 				"umount":     "set -eu\n[ \"$1\" = --recursive ]\nrm \"$2.mounted\"",
-				"chroot":     "set -eu\n[ \"$1\" = \"$(dirname \"$(cat \"$STATE/copy\")\")/root\" ]\ncat > \"$STATE/lva-check\"",
-				"modinfo":    "set -eu\n[ \"$1 $2\" = '-F vermagic' ]\n[ -f \"$3\" ]\nprintf '%s SMP\n' \"$KERNEL\"",
+				"chroot": `set -eu
+[ "$1" = "$(dirname "$(cat "$STATE/copy")")/root" ]
+case "$2" in
+  /usr/sbin/sshd)
+    [ "$3" = -G ]
+    printf '%s\n' 'allowusers nabos' 'permitrootlogin no' 'authenticationmethods publickey' \
+      'passwordauthentication no' 'kbdinteractiveauthentication no' 'usepam yes' \
+      'strictmodes yes' 'authorizedkeysfile /data/nabos/ssh/authorized_keys' ;;
+  getent)
+    [ "$3 $4" = 'passwd nabos' ]
+    echo 'nabos:x:1000:1000::/var/lib/nabos:/bin/bash' ;;
+  /usr/sbin/visudo) [ "$3" = --check ] ;;
+  /bin/sh) cat > "$STATE/lva-check" ;;
+  *) exit 1 ;;
+esac`,
+				"modinfo": "set -eu\n[ \"$1 $2\" = '-F vermagic' ]\n[ -f \"$3\" ]\nprintf '%s SMP\n' \"$KERNEL\"",
 				"qemu-arm-static": `set -eu
 [ "$1 $2 $3" = '-cpu arm1176 -L' ]
 shift 4
@@ -145,6 +159,8 @@ esac`,
 			for _, call := range []string{
 				"unshare --mount --propagation private", "cp --reflink=auto --sparse=always -- " + original + " " + copy,
 				"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -v ./tests/integration",
+				"chroot " + work + "/root /usr/sbin/sshd -G", "chroot " + work + "/root getent passwd nabos",
+				"chroot " + work + "/root /usr/sbin/visudo --check",
 				"umount --recursive " + work + "/boot", "umount --recursive " + work + "/root", "losetup --detach /dev/loop-nabos-test",
 			} {
 				if !strings.Contains(calls, call) {

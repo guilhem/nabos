@@ -1,5 +1,5 @@
 // nab-service runs as nabos without a login session: allow reboot/power off and
-// manual clock setting and runtime jobs for voice/NTP only.
+// manual clock setting and runtime jobs for voice/NTP/SSH only.
 polkit.addRule(function (action, subject) {
 	if (subject.user !== "nabos") {
 		return polkit.Result.NOT_HANDLED;
@@ -16,7 +16,7 @@ polkit.addRule(function (action, subject) {
 			["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0) {
 			return polkit.Result.YES;
 		}
-		if (action.lookup("unit") === "systemd-timesyncd.service" &&
+		if (["systemd-timesyncd.service", "ssh.service"].indexOf(action.lookup("unit")) >= 0 &&
 			["start", "stop"].indexOf(action.lookup("verb")) >= 0) {
 			return polkit.Result.YES;
 		}

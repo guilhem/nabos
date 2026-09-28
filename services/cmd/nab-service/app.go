@@ -54,6 +54,7 @@ type App struct {
 	airFetched    time.Time
 	airQuery      airquality.Query
 	mastodonMu    sync.Mutex
+	sshMu         sync.Mutex
 	mastodonKick  chan struct{}
 	oauth         *oauthLogin
 

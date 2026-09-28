@@ -112,10 +112,13 @@ func (a *App) routes() http.Handler {
 	m.HandleFunc("POST /action", a.action)
 	m.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
 		_, clk := a.clockQuality()
+		keys, sshErr := a.readSSHKeys()
 		a.render(w, r, "settings", "Réglages", map[string]any{"Locales": locales, "Voice": a.voiceSupported(), "VoiceOn": a.voiceEnabled(),
+			"SSHKeys": keys, "SSHError": sshErr,
 			"Clock": clk, "Now": time.Now().In(a.location()).Format("2006-01-02T15:04")})
 	})
 	m.HandleFunc("POST /settings", a.saveSettings)
+	m.HandleFunc("POST /settings/ssh", a.saveSSHKeys)
 	a.serviceRoutes(m)
 	m.HandleFunc("POST /clock", func(w http.ResponseWriter, r *http.Request) {
 		t, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("now"), a.location())

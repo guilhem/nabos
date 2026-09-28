@@ -102,6 +102,8 @@ U-Boot lit noyau et Device Tree dans le slot choisi. Overlays et modules restent
 
 Le système racine est monté en lecture seule ; identité, connexion réseau, réglages et calibration sont persistants. Journaux et fichiers temporaires sont volatils. Aucun serveur SQL n'est installé : la configuration applicative est un fichier JSON versionné écrit atomiquement. Les évolutions de schéma doivent rester lisibles par la version précédente pour permettre le rollback.
 
+SSH utilise le service OpenSSH fourni par Raspberry Pi OS, conditionné par un fichier `/data/nabos/ssh/authorized_keys` non vide et des données persistantes disponibles. L'interface authentifiée valide les clés avec `ssh-keygen`, écrit ce fichier atomiquement et demande uniquement `start` ou `stop` sur `ssh.service` via Polkit. Les clés hôtes sont créées dans `/data/system/ssh/etc/ssh` au premier démarrage du service ; la configuration OpenSSH reste dans le slot pour recevoir les mises à jour. Le compte `nabos` a un shell, conserve son mot de passe verrouillé et dispose de sudo sans mot de passe. Gérer ses clés permet donc d'accorder un accès administrateur au système. Une ancienne version sans cette fonction ferme SSH en cas de rollback ; les clés restent sur `/data` pour le retour à une version compatible.
+
 ## Validation locale
 
 Les outils propres au dépôt sont regroupés dans `services/cmd/nab-image`.
