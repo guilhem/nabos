@@ -50,6 +50,7 @@ func TestImageIsolation(t *testing.T) {
 				filepath.Join(payload, "src/uboot/scripts/config"):                        "exit 0",
 				filepath.Join(fixture, "usr/bin/nab-core"):                                "echo shipped-core",
 				filepath.Join(fixture, "usr/bin/nab-service"):                             "echo shipped-service",
+				filepath.Join(fixture, "usr/bin/dtoverlay"):                               "exit 0",
 				filepath.Join(fixture, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"): "set -eu\n[ \"$1\" = --library-path ]\nshift 2\nexec \"$@\"",
 			} {
 				if err := os.WriteFile(name, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {

@@ -86,6 +86,7 @@ sudo udevadm settle
 sudo mount -o ro "${loop}p2" "$root"
 sudo mount -o ro "${loop}p1" "$boot"
 cmp "$expected_uboot" "$boot/u-boot.bin"
+[[ -x $root/usr/bin/dtoverlay ]] || { echo 'Missing runtime dtoverlay command' >&2; exit 1; }
 for path in /nabos-build /usr/bin/gcc /usr/bin/make /usr/bin/cmake; do
   [[ ! -e $root$path && ! -L $root$path ]] || { echo "Build artifact shipped: $path" >&2; exit 1; }
 done
