@@ -45,7 +45,7 @@ GitHub ne déclenche pas Actions lors de la création d'un **brouillon**. Pour l
 gh workflow run images.yml --repo guilhem/nabos --ref v0.1.0
 ```
 
-Le brouillon reste un brouillon. Sa publication déclenche aussi le workflow. Une relance remplace les artefacts de même nom (`gh release upload --clobber`) ; elle ne modifie pas les informations de la release. Pour ajouter les artefacts après publication, les releases immuables doivent être désactivées dans les paramètres du dépôt.
+Le brouillon reste un brouillon. Sa publication déclenche aussi le workflow. Une relance remplace les artefacts de même nom (`gh release upload --clobber`) ; elle ne modifie pas les informations de la release. L'ancien `SHA256SUMS` est retiré avant le remplacement des fichiers et rétabli seulement si tous les envois réussissent ; la recherche de mise à jour échoue tant que ce manifeste manque. Pour ajouter les artefacts après publication, les releases immuables doivent être désactivées dans les paramètres du dépôt.
 
 ## Sources et dépendances
 

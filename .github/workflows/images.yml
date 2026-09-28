@@ -121,6 +121,11 @@ jobs:
         run: |
           cd dist
           sha256sum --check SHA256SUMS-zero-armv6 SHA256SUMS-zero2-arm64
+          manifest=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | select(.name == "SHA256SUMS") | .name')
+          if [[ -n $manifest ]]; then
+            gh release delete-asset "$GITHUB_REF_NAME" SHA256SUMS --repo "$GITHUB_REPOSITORY" --yes
+          fi
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*
           cat SHA256SUMS-zero-armv6 SHA256SUMS-zero2-arm64 > SHA256SUMS
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS
