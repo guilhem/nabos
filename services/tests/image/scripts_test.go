@@ -2,6 +2,7 @@ package image
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,62 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReleaseUpload(t *testing.T) {
+	workflow := read(t, filepath.Join(repo, ".github/workflows/images.yml"))
+	// Exercise the final upload step with real checksums and a fake GitHub CLI.
+	const marker = "        run: |\n"
+	start := strings.LastIndex(workflow, marker)
+	if start < 0 {
+		t.Fatal("release upload step missing")
+	}
+	script := workflow[start+len(marker):]
+	for _, scenario := range []string{"valid", "corrupt", "upload-failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Chdir(tmp)
+			if err := os.Mkdir("dist", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			var sums string
+			for _, target := range []string{"zero-armv6", "zero2-arm64"} {
+				asset := "nabos-" + target + ".raucb"
+				write(t, filepath.Join("dist", asset), target)
+				sum := fmt.Sprintf("%x  ./%s\n", sha256.Sum256([]byte(target)), asset)
+				write(t, filepath.Join("dist", "SHA256SUMS-"+target), sum)
+				sums += sum
+			}
+			fake := newFakes(t, tmp, map[string]string{"gh": `
+[ "$1 $2 $3 $4 $5 $6" = "release upload v0.1.0 --repo guilhem/nabos --clobber" ] || exit 1
+[ "$FAIL_UPLOAD" != 1 ]`})
+			env := fake.env("GITHUB_REF_NAME=v0.1.0", "GITHUB_REPOSITORY=guilhem/nabos")
+			if scenario == "corrupt" {
+				write(t, "dist/nabos-zero2-arm64.raucb", "corrupted")
+			}
+			if scenario == "upload-failure" {
+				env = append(env, "FAIL_UPLOAD=1")
+			}
+			r := execute(t, "", env, "bash", "-e", "-o", "pipefail", "-c", script)
+			calls := fake.calls(t)
+			if scenario == "valid" {
+				if r.code != 0 || len(calls) != 2 ||
+					strings.Contains(calls[0], " ./SHA256SUMS ") ||
+					!strings.HasSuffix(calls[1], "--clobber SHA256SUMS") ||
+					read(t, "dist/SHA256SUMS") != sums {
+					t.Fatalf("upload failed or manifest published too early: %v\n%s", calls, r.stderr)
+				}
+			} else {
+				wantCalls := 0
+				if scenario == "upload-failure" {
+					wantCalls = 1
+				}
+				if r.code == 0 || len(calls) != wantCalls {
+					t.Fatalf("failed artifacts were published: %v\n%s", calls, r.stderr)
+				}
+			}
+		})
+	}
+}
 
 var (
 	bootInit = filepath.Join(rootfsDir, "usr/lib/nabos/boot-init")
