@@ -33,11 +33,11 @@ La CI utilise les secrets GitHub `RAUC_SIGNING_KEY` et `RAUC_SIGNING_CERT` (cont
 
 ## Créer une release
 
-1. Dans GitHub Releases, créer la release avec un tag `vX.Y.Z` sur le commit voulu, son titre, son changelog et son statut (prérelease ou release stable). Le commit choisi doit contenir ce workflow.
+1. Dans GitHub Releases, créer la release avec un tag `vX.Y.Z` (ou un tag SemVer comme `vX.Y.Z-rc.1` pour une préversion) sur le commit voulu, son titre, son changelog et son statut (prérelease ou release stable). Le commit choisi doit contenir ce workflow. Une version portant un suffixe de préversion reste réservée au canal Test même si le statut GitHub est stable.
 2. Publier la release : l'événement `release: published` lance les tests et la fabrication signée pour `zero-armv6` et `zero2-arm64`. Pousser seulement un tag ne lance plus la fabrication.
 3. Après le succès des deux cibles, la CI ajoute les artefacts à cette release existante. Elle conserve le titre, le changelog, le statut et le choix de dernière version. Le fichier global `SHA256SUMS` est ajouté en dernier, après les images et bundles.
 
-Pour une première qualification, choisir une **prérelease**, puis compléter la [fiche matérielle](release-checklist.md) avant de passer en stable. Une release publiée reste visible pendant la fabrication ; attendre la réussite du workflow et la présence de tous les artefacts avant de la diffuser. L'interface des appareils recherche uniquement la dernière release stable, et l'installation reste déclenchée par l'utilisateur.
+Pour une première qualification, choisir une **prérelease**, puis compléter la [fiche matérielle](release-checklist.md) avant de passer en stable. Une release publiée reste visible pendant la fabrication ; attendre la réussite du workflow et la présence de tous les artefacts avant de la diffuser. L'interface des appareils parcourt les releases publiées, les trie par version SemVer et propose celles plus récentes que le système installé. Le canal Stable exclut les préversions ; le canal Test les inclut. Les fichiers incomplets ne sont pas installables. Lorsque l'utilisateur active l'automatique, la version installable la plus élevée du canal choisi est installée pendant son créneau nocturne. Le choix GitHub « latest » ne remplace pas ces règles.
 
 GitHub ne déclenche pas Actions lors de la création d'un **brouillon**. Pour le remplir avant publication, créer d'abord le tag Git sur le commit voulu, puis le brouillon associé, et lancer manuellement le workflow sur ce tag existant :
 

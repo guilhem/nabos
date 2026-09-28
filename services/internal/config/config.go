@@ -59,6 +59,13 @@ type HomeAssistant struct {
 	Prefix   string `json:"discovery_prefix"`
 }
 
+type Updates struct {
+	Automatic bool   `json:"automatic"`
+	Channel   string `json:"channel"` // stable | test
+	Start     HM     `json:"start"`
+	End       HM     `json:"end"`
+}
+
 type Admin struct {
 	Salt       string `json:"salt"`
 	Hash       string `json:"hash"`
@@ -103,6 +110,7 @@ type Settings struct {
 	Weather       Weather              `json:"weather"`
 	HomeAssistant HomeAssistant        `json:"home_assistant"`
 	AutoCheck     bool                 `json:"auto_check_updates"`
+	Updates       Updates              `json:"updates"`
 	Services      Services             `json:"services"`
 	Tags          map[string]TagAction `json:"tags"`
 	Mastodon      mastodon.State       `json:"mastodon"`
@@ -117,6 +125,7 @@ func Defaults() Settings {
 		Clock:     Clock{Chime: true, SleepSounds: true, Wakeup: HM{7, 0}, Sleep: HM{22, 0}},
 		Weather:   Weather{Unit: "celsius", Animation: "weather_and_rain", Frequency: 0},
 		AutoCheck: true,
+		Updates:   Updates{Channel: "stable", Start: HM{3, 0}, End: HM{5, 0}},
 		Services: Services{TaichiFrequency: 30, SurpriseFrequency: 30, Eightball: true, Books: true, Radio: true, Webhooks: true, IFTTT: true,
 			AirQuality: AirQuality{Index: "aqi", Visual: "always"}},
 		Tags: map[string]TagAction{},
@@ -144,6 +153,12 @@ func (s *Settings) Validate() error {
 		return err
 	}
 	switch {
+	case s.Updates.Channel != "stable" && s.Updates.Channel != "test":
+		return errors.New("invalid update channel")
+	case !s.Updates.Start.valid() || !s.Updates.End.valid() || s.Updates.Start == s.Updates.End:
+		return errors.New("invalid update window")
+	case s.Updates.Automatic && !s.AutoCheck:
+		return errors.New("automatic installation requires update checks")
 	case !localeRe.MatchString(s.Locale):
 		return fmt.Errorf("invalid locale %q", s.Locale)
 	case s.Volume < 0 || s.Volume > 100:

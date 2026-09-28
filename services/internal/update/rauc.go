@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -77,4 +79,46 @@ func SlotInfo() (compatible, bootSlot string) {
 		bootSlot, _ = v.Value().(string)
 	}
 	return
+}
+
+// BootHealthFile holds the health verdict of this boot ("good A",
+// "stranded B"), written by root's health check in /run.
+var BootHealthFile = "/run/nabos-boot-health"
+
+// RaucProbe reads RAUC's operation and booted slot, and the health verdict
+// for that slot.
+func RaucProbe() (BootState, error) {
+	id, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return BootState{}, err
+	}
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return BootState{}, err
+	}
+	defer conn.Close()
+	s := BootState{BootID: strings.TrimSpace(string(id))}
+	obj := conn.Object(raucDest, "/")
+	for prop, dst := range map[string]*string{"Operation": &s.Operation, "BootSlot": &s.Slot} {
+		v, err := obj.GetProperty(raucIface + "." + prop)
+		if err != nil {
+			return BootState{}, err
+		}
+		if *dst, _ = v.Value().(string); *dst == "" {
+			return BootState{}, fmt.Errorf("RAUC %s unknown", prop)
+		}
+	}
+	marker, _ := os.ReadFile(BootHealthFile)
+	s.Health = markerHealth(string(marker), s.Slot)
+	return s, nil
+}
+
+// markerHealth returns the verdict of a health marker for slot, "" when it
+// concerns another slot or is malformed.
+func markerHealth(marker, slot string) string {
+	f := strings.Fields(marker)
+	if len(f) == 2 && f[1] == slot && (f[0] == "good" || f[0] == "stranded") {
+		return f[0]
+	}
+	return ""
 }

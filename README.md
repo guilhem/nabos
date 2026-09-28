@@ -19,7 +19,11 @@ La qualification du démarrage, des pilotes et du rollback sur les deux matérie
 
 L'installation se fait par flash d'une carte SD. SSH est désactivé par défaut ; l'administration locale utilise HTTP sur le réseau de confiance.
 
-Les mises à jour sont proposées dans l'interface après une recherche quotidienne sur GitHub Releases. L'installation est déclenchée par l'utilisateur. RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis valide le nouveau système après contrôle des services locaux. Les données et réglages sont conservés. Firmware Raspberry Pi et U-Boot restent ceux du flash initial.
+La page **Mises à jour** liste les nouvelles versions GitHub et leurs notes de publication. Elle permet de vérifier à la demande, de proposer les mises à jour chaque jour (réglage initial), ou d'activer leur installation automatique. Le canal **Stable** est sélectionné par défaut ; le canal **Test** inclut les préversions et s'applique aussi à l'automatique. Chaque version disponible peut être installée manuellement, puis activée avec le bouton de redémarrage.
+
+L'automatique attend le créneau réglable (03:00–05:00 par défaut, dans le fuseau du lapin), une heure fiable et la fin des lectures et interactions. Il ne redémarre que les installations qu'il a déclenchées. Désactiver l'automatique laisse une écriture déjà commencée se terminer, puis conserve le redémarrage manuel. Une release dont les fichiers sont encore en fabrication apparaît **En préparation**.
+
+RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis le contrôle de santé confirme le nouveau système. Les données et réglages sont conservés. Après un rollback, la version fautive est exclue de l'automatique ; un réessai manuel reste possible. Une coupure au résultat indéterminé suspend l'automatique jusqu'à une reprise manuelle. Firmware Raspberry Pi et U-Boot restent ceux du flash initial.
 
 ## Composants
 

@@ -58,19 +58,24 @@ type App struct {
 	oauth         *oauthLogin
 
 	clockKick, weatherKick chan struct{}
+	updateKick             chan struct{}
+	rebootSystem           func() error
 
-	mu          sync.Mutex
-	forecast    *weather.Forecast
-	wxErr       string
-	clk         clock.State
-	lastTag     map[string]any
-	network     string
-	nextWeather time.Time
-	wakeupDone  bool
-	bedtimeDone bool
-	indicator   string
-	voiceCancel context.CancelFunc
-	haErr       string
+	mu             sync.Mutex
+	forecast       *weather.Forecast
+	wxErr          string
+	clk            clock.State
+	lastTag        map[string]any
+	network        string
+	nextWeather    time.Time
+	wakeupDone     bool
+	bedtimeDone    bool
+	indicator      string
+	voiceCancel    context.CancelFunc
+	haErr          string
+	updateBusy     bool
+	updateError    string
+	updateRebooted bool
 }
 
 func NewApp(env Env) (*App, error) {
@@ -97,6 +102,8 @@ func NewApp(env Env) (*App, error) {
 		started:       time.Now(),
 		clockKick:     make(chan struct{}, 1),
 		weatherKick:   make(chan struct{}, 1),
+		updateKick:    make(chan struct{}, 1),
+		rebootSystem:  system.Reboot,
 		clk:           clock.State{LastChime: -1},
 		network:       "ok",
 		ctx:           context.Background(),
@@ -628,23 +635,6 @@ func (a *App) networkLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Minute):
-		}
-	}
-}
-
-func (a *App) updateLoop(ctx context.Context) {
-	wait := 5 * time.Minute
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-		wait = 24 * time.Hour
-		if a.upd.Configured() && a.store.Get().AutoCheck {
-			if _, err := a.upd.Check(ctx); err != nil {
-				slog.Warn("update check", "err", err)
-			}
 		}
 	}
 }

@@ -1,6 +1,5 @@
 {{define "top"}}<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-{{with .Data}}{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}{{end}}
 <title>{{.Title}}</title>
 <style>
 body{font-family:system-ui,sans-serif;margin:0;background:#f6f3fa;color:#222}
@@ -40,6 +39,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 
 {{define "home"}}{{template "top" .}}
 {{if .Data.Recovered}}<p class="err">Le fichier de réglages était illisible : réglages par défaut restaurés (copie : {{.Data.Recovered}}).</p>{{end}}
+{{if .Data.Update}}<p class="ok">Nouvelle version {{.Data.Update}} disponible. <a href="/updates">Voir les mises à jour</a></p>{{end}}
 <section><h2>État</h2><table>
 <tr><td>Lapin</td><td>{{if .Data.Online}}{{with .Data.Core}}{{if eq .State "idle"}}réveillé{{else if eq .State "asleep"}}endormi{{else}}occupé{{end}}{{end}}{{else}}cœur arrêté{{end}}</td></tr>
 <tr><td>Réseau</td><td>{{if eq .Data.Network "ok"}}Internet{{else if eq .Data.Network "lan"}}réseau local sans Internet{{else}}hors ligne{{end}}</td></tr>
@@ -74,7 +74,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label>Langue <select name="locale">{{range .Data.Locales}}<option{{if eq . $.S.Locale}} selected{{end}}>{{.}}</option>{{end}}</select></label>
 <label>Fuseau horaire <input name="timezone" value="{{.S.Timezone}}" required></label>
 <label>Volume <input type="range" name="volume" min="0" max="100" step="5" value="{{.S.Volume}}"></label>
-<label><input type="checkbox" name="auto_check"{{if .S.AutoCheck}} checked{{end}}> Chercher les mises à jour chaque jour</label>
+<p>Recherche et installation des nouvelles versions : <a href="/updates">Mises à jour</a>.</p>
 {{if .Data.Voice}}<label><input type="checkbox" name="voice"{{if .Data.VoiceOn}} checked{{end}}> Assistant vocal (Linux Voice Assistant, via Home Assistant)</label>{{end}}
 </section>
 <section><h2>Horloge et sommeil</h2>
@@ -118,17 +118,51 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{define "updates"}}{{template "top" .}}
 <section><h2>Système</h2>{{with .Data.Status}}<table>
 <tr><td>Version installée</td><td>{{.Current}}</td></tr>
-<tr><td>Dernière version</td><td>{{if .Latest}}{{.Latest}}{{else}}inconnue{{end}}{{if .Available}} — disponible{{end}}</td></tr>
-<tr><td>État</td><td>{{.State}}{{if or (eq .State "downloading") (eq .State "installing")}} {{.Progress}} %{{end}}</td></tr>
-{{if .Error}}<tr><td>Erreur</td><td>{{.Error}}</td></tr>{{end}}
-{{if not .Checked.IsZero}}<tr><td>Vérifié</td><td>{{.Checked.Format "02/01 15:04"}}</td></tr>{{end}}</table>{{end}}
-{{if .Data.Slot}}<p>Partition active : {{.Data.Slot}} ({{.Data.Compatible}})</p>{{end}}
+<tr><td>État</td><td role="status">{{$.Data.StateLabel}}{{if .Target}} — {{.Target}}{{end}}</td></tr>
+{{if not .Checked.IsZero}}<tr><td>Dernière recherche réussie</td><td>{{.Checked.Format "02/01/2006 15:04 MST"}}</td></tr>{{end}}
+</table>
+{{if or (eq .State "downloading") (eq .State "installing")}}<p><progress aria-label="Progression de la mise à jour" max="100" value="{{.Progress}}"></progress> {{.Progress}} %</p>{{end}}
+{{if .Checking}}<p role="status">Recherche des versions…</p>{{end}}
+<p><a href="/updates">Actualiser l’état</a></p>
+{{if .CheckError}}<p class="err" role="alert">Recherche indisponible : {{.CheckError}}. Les résultats précédents peuvent être anciens.</p>{{end}}
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+{{if .Suspended}}<p class="err">Installation automatique suspendue. {{if .RetryRequired}}Utilisez « Réessayer » pour reprendre manuellement.{{else}}Installez d’abord une version publiée pour activer l’automatique.{{end}}</p>{{end}}
+{{if .LastResult}}<p>Dernier résultat : {{.LastResult}}</p>{{end}}
+{{end}}
+{{if and .Data.LastError (ne .Data.LastError .Data.Status.Error)}}<p class="err" role="alert">{{.Data.LastError}}</p>{{end}}
+{{if .Data.Waiting}}<p>{{.Data.Waiting}}</p>{{end}}
 {{if .Data.Configured}}
-<form method="post" action="/updates/check"><button>Vérifier</button></form>
-{{if .Data.Status.Available}}<form method="post" action="/updates/install"><button>Installer {{.Data.Status.Latest}}</button></form>{{end}}
+<form method="post" action="/updates/check"><button{{if or .Data.Busy .Data.Status.Checking}} disabled{{end}}>Vérifier maintenant</button></form>
 {{if eq .Data.Status.State "reboot"}}<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><input type="hidden" name="back" value="/updates"><button>Redémarrer sur la nouvelle version</button></form>{{end}}
 {{else}}<p>Les mises à jour ne sont pas configurées sur cette image.</p>{{end}}
 <p>La nouvelle version s'installe sur la partition inactive. Si elle ne démarre pas correctement, le lapin revient tout seul à la version précédente.</p></section>
+{{if .Data.Configured}}
+<section><h2>Préférences</h2><form method="post" action="/updates/settings">
+<label>Mode <select name="mode">
+<option value="manual"{{if not .S.AutoCheck}} selected{{end}}>Vérifier à la demande</option>
+<option value="notify"{{if and .S.AutoCheck (not .S.Updates.Automatic)}} selected{{end}}>Proposer les mises à jour chaque jour</option>
+<option value="auto"{{if .S.Updates.Automatic}} selected{{end}}>Installer automatiquement</option>
+</select></label>
+<label>Canal <select name="channel"><option value="stable"{{if eq .S.Updates.Channel "stable"}} selected{{end}}>Stable</option><option value="test"{{if eq .S.Updates.Channel "test"}} selected{{end}}>Test : stables et préversions</option></select></label>
+<p>Le canal choisi s’applique aussi aux installations automatiques. Les préversions sont destinées aux essais.</p>
+<label>Début du créneau <input type="time" name="start" value="{{hm .S.Updates.Start}}" required></label>
+<label>Fin du créneau <input type="time" name="end" value="{{hm .S.Updates.End}}" required></label>
+<p>Heure du lapin : {{.S.Timezone}}. En mode automatique, installation et redémarrage attendent ce créneau et la fin des lectures ou interactions.</p>
+<button>Enregistrer les préférences</button></form></section>
+<section><h2>Nouvelles versions</h2>
+{{range .Data.Releases}}
+<article><h3>{{.Tag}} — {{if .Prerelease}}Test{{else}}Stable{{end}}</h3>
+{{if not .Published.IsZero}}<p>Publiée le {{.Published.Format "02/01/2006"}}</p>{{end}}
+{{if .Notes}}<details><summary>Notes de publication</summary><pre style="white-space:pre-wrap">{{.Notes}}</pre></details>{{end}}
+{{if .Blocked}}<p class="err">Exclue de l’automatique : {{.Blocked}}</p>{{end}}
+{{if .Ready}}
+<form method="post" action="/updates/install"><input type="hidden" name="tag" value="{{.Tag}}">
+{{if or .Blocked $.Data.Status.RetryRequired}}<input type="hidden" name="retry" value="true"><button{{if $.Data.Busy}} disabled{{end}}>Réessayer {{.Tag}} manuellement</button>
+{{else}}<button{{if $.Data.Busy}} disabled{{end}}>Installer {{.Tag}}</button>{{end}}
+</form>
+{{else}}<p>En préparation ou indisponible pour ce lapin : {{.Problem}}</p>{{end}}</article>
+{{else}}<p>Aucune version plus récente connue dans ce canal. Vous pouvez lancer une recherche.</p>{{end}}
+</section>{{end}}
 {{template "bottom" .}}{{end}}
 
 {{define "services"}}{{template "top" .}}
