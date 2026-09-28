@@ -223,7 +223,14 @@ func pause(ctx context.Context, d time.Duration) bool {
 
 func (c *Client) catchUp(ctx context.Context, token string, load Load, update Update, onEars func(int, int), onSound func(string)) error {
 	var statuses []Status
-	cursor, _ := statusNumber(load().LastStatusID)
+	initial := load()
+	cursor, _ := statusNumber(initial.LastStatusID)
+	var notBefore time.Time
+	if initial.LastStatusID == "" {
+		// Freeze the OAuth boundary for the whole initial batch, even while
+		// processing historical statuses establishes the local-ID cursor.
+		notBefore = initial.LastStatusDate
+	}
 	path := "/api/v1/conversations?limit=40"
 	// ponytail: cap at 4000 conversations; use a durable page cursor if this ceiling is reached.
 	for page := 0; page < 100; page++ {
@@ -254,8 +261,9 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 	path = "/api/v1/notifications?limit=40&types%5B%5D=mention"
 	for page := 0; page < 100; page++ {
 		var notifications []struct {
-			Type   string  `json:"type"`
-			Status *Status `json:"status"`
+			Type      string    `json:"type"`
+			CreatedAt time.Time `json:"created_at"`
+			Status    *Status   `json:"status"`
 		}
 		next, err := c.page(ctx, token, path, &notifications)
 		if err != nil {
@@ -263,15 +271,15 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 		}
 		older := len(notifications) > 0
 		for _, n := range notifications {
-			if n.Status == nil {
+			if !notBefore.IsZero() {
+				older = older && n.CreatedAt.Before(notBefore)
+			} else if n.Status != nil {
+				id, err := statusNumber(n.Status.ID)
+				older = older && err == nil && id <= cursor
+			} else {
 				older = false
-				continue
 			}
-			id, err := statusNumber(n.Status.ID)
-			if err != nil || id > cursor {
-				older = false
-			}
-			if n.Type == "mention" {
+			if n.Type == "mention" && n.Status != nil {
 				statuses = append(statuses, *n.Status)
 			}
 		}
@@ -292,7 +300,7 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 		return a < b
 	})
 	for _, st := range statuses {
-		if err := c.process(ctx, token, st, load, update, onEars, onSound); err != nil {
+		if err := c.process(ctx, token, st, notBefore, update, onEars, onSound); err != nil {
 			return err
 		}
 	}
@@ -332,7 +340,7 @@ func (c *Client) page(ctx context.Context, token, path string, result any) (stri
 	return u.RequestURI(), nil
 }
 
-func (c *Client) process(ctx context.Context, token string, st Status, load Load, update Update, onEars func(int, int), onSound func(string)) error {
+func (c *Client) process(ctx context.Context, token string, st Status, notBefore time.Time, update Update, onEars func(int, int), onSound func(string)) error {
 	id, err := statusNumber(st.ID)
 	if err != nil || st.CreatedAt.IsZero() {
 		return nil
@@ -345,9 +353,9 @@ func (c *Client) process(ctx context.Context, token string, st Status, load Load
 		if old, e := statusNumber(s.LastStatusID); s.LastStatusID != "" && e == nil && id <= old {
 			return nil
 		}
-		// Federated delivery and remote clocks can put newer IDs before the
-		// last processed creation date. Only the local ID orders delivery.
-		if st.Visibility == "direct" && st.Account.ID != "" && st.Account.ID != s.AccountID {
+		// Only the initial OAuth snapshot has a creation-time boundary.
+		// Subsequent delivery is ordered by local ID, despite remote clocks.
+		if !st.CreatedAt.Before(notBefore) && st.Visibility == "direct" && st.Account.ID != "" && st.Account.ID != s.AccountID {
 			sender, e := c.handle(st.Account.Acct)
 			if e == nil && !strings.EqualFold(sender, s.Username+"@"+c.Instance()) {
 				if kind, left, right, ok := ParseMessage(st.Content); ok {
@@ -451,7 +459,7 @@ func (c *Client) stream(ctx context.Context, token string, load Load, update Upd
 		default:
 			return nil
 		}
-		return c.process(streamCtx, token, st, load, update, onEars, onSound)
+		return c.process(streamCtx, token, st, time.Time{}, update, onEars, onSound)
 	}
 	for scanner.Scan() {
 		line := scanner.Text()

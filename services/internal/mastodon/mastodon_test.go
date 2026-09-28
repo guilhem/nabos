@@ -202,7 +202,7 @@ func TestCatchUpDedupMalformedAndTokenErrors(t *testing.T) {
 		t.Error("duplicate proposal")
 	}
 	malformed := Status{ID: "garbage", Visibility: "direct", CreatedAt: now, Account: Account{ID: "2", Acct: "peer"}, Content: "<p>(NabPairing Divorce - " + protocolURL + ")</p>"}
-	if err := c.process(context.Background(), "good", malformed, load, update, nil, play); err != nil || s.PairingState != "waiting_approval" {
+	if err := c.process(context.Background(), "good", malformed, time.Time{}, update, nil, play); err != nil || s.PairingState != "waiting_approval" {
 		t.Fatalf("malformed status changed state: %+v %v", s, err)
 	}
 	if _, err := c.VerifyAccount(context.Background(), "bad"); err == nil || strings.Contains(err.Error(), "bad") {
@@ -399,6 +399,54 @@ func TestNotificationsRecoverIntermediateDirectMessages(t *testing.T) {
 	}
 	if s.PairingState != "married" || s.LastStatusID != "4" || len(ears) != 2 || ears[0] != [2]int{2, 4} || ears[1] != [2]int{4, 6} {
 		t.Fatalf("recovery: state=%+v ears=%v", s, ears)
+	}
+}
+
+func TestFreshAccountSkipsHistoryThenAcceptsDelayedDelivery(t *testing.T) {
+	old := time.Now().Add(-2 * time.Hour)
+	status := func(id, kind string) Status {
+		return Status{ID: id, CreatedAt: old, Visibility: "direct", Account: Account{ID: "peer-id", Acct: "peer"},
+			Content: "<p>(NabPairing " + kind + " - " + protocolURL + ")</p>"}
+	}
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/conversations":
+			fmt.Fprint(w, `[]`)
+		case "/api/v1/notifications":
+			pages++
+			w.Header().Set("Link", `<http://`+r.Host+`/api/v1/notifications?max_id=1>; rel="next"`)
+			json.NewEncoder(w).Encode([]any{
+				map[string]any{"type": "mention", "created_at": old, "status": status("2", "Acceptation")},
+				map[string]any{"type": "mention", "created_at": old, "status": status("1", "Proposal")},
+			})
+		default:
+			t.Errorf("historical message triggered a request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c, _ := NewClient(srv.URL, srv.Client())
+	var s State
+	if err := s.SetAccount("token", Account{ID: "self", Username: "rabbit"}); err != nil {
+		t.Fatal(err)
+	}
+	update := func(f func(*State) error) error { return f(&s) }
+	var sounds []string
+	play := func(sound string) { sounds = append(sounds, sound) }
+	if err := c.catchUp(context.Background(), "token", func() State { return s }, update, nil, play); err != nil {
+		t.Fatal(err)
+	}
+	if pages != 1 || s.LastStatusID != "2" || s.PairingState != "" || len(sounds) != 0 {
+		t.Fatalf("history replayed: pages=%d state=%+v sounds=%v", pages, s, sounds)
+	}
+	for range 2 {
+		if err := c.process(context.Background(), "token", status("3", "Proposal"), time.Time{}, update, nil, play); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.LastStatusID != "3" || s.PairingState != "waiting_approval" || len(sounds) != 1 {
+		t.Fatalf("new delayed delivery: state=%+v sounds=%v", s, sounds)
 	}
 }
 
