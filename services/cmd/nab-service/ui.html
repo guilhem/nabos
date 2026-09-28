@@ -6,6 +6,7 @@
 body{font-family:system-ui,sans-serif;margin:0;background:#f6f3fa;color:#222}
 header{background:#7a2a8c;color:#fff;padding:.6em 1em;display:flex;flex-wrap:wrap;gap:.8em;align-items:center}
 header a{color:#fff;text-decoration:none}header b{margin-right:auto}
+header nav{display:flex;flex-wrap:wrap;gap:.8em}
 main{max-width:44em;margin:auto;padding:1em}
 section{background:#fff;border-radius:.6em;padding:1em;margin-bottom:1em;box-shadow:0 1px 3px #0002}
 h1{font-size:1.4em}h2{margin-top:0;font-size:1.1em}label{display:block;margin:.5em 0}
@@ -13,7 +14,7 @@ input,select,button{font-size:1em;padding:.4em;max-width:100%}button{background:
 .actions form{display:inline}.ok{background:#dff5e1;padding:.6em;border-radius:.4em}.err{background:#fde2e2;padding:.6em;border-radius:.4em}
 table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pre{overflow:auto;font-size:.8em}
 </style></head><body>
-<header><b>🐰 NabOS</b>{{if .Auth}}<a href="/">Accueil</a><a href="/settings">Réglages</a><a href="/tags">Étiquettes</a><a href="/sounds">Sons</a><a href="/updates">Mises à jour</a>
+<header><b>🐰 NabOS</b>{{if .Auth}}<nav aria-label="Navigation principale"><a href="/">Accueil</a><a href="/settings">Réglages</a><a href="/services">Services</a><a href="/tags">Étiquettes</a><a href="/sounds">Sons</a><a href="/updates">Mises à jour</a></nav>
 <form method="post" action="/logout"><button>Déconnexion</button></form>{{end}}</header>
 <main><h1>{{.Title}}</h1>{{if .Flash}}<p class="ok">{{.Flash}}</p>{{end}}{{if .Error}}<p class="err">{{.Error}}</p>{{end}}
 {{end}}
@@ -28,7 +29,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label>Mot de passe (8 à 128 caractères)<br><input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
 <label>Confirmation<br><input type="password" name="confirm" minlength="8" maxlength="128" required autocomplete="new-password"></label>
 <button>Enregistrer</button></form>
-<p>Mot de passe oublié plus tard ? Un clic suivi d'un appui long sur le bouton l'efface ; revenez ensuite sur cette page.</p></section>
+<p>Mot de passe oublié plus tard ? Cliquez deux fois sur le bouton, puis maintenez-le appuyé pendant 10 secondes pour l'effacer ; revenez ensuite sur cette page.</p></section>
 {{template "bottom" .}}{{end}}
 
 {{define "login"}}{{template "top" .}}
@@ -130,15 +131,87 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <p>La nouvelle version s'installe sur la partition inactive. Si elle ne démarre pas correctement, le lapin revient tout seul à la version précédente.</p></section>
 {{template "bottom" .}}{{end}}
 
+{{define "services"}}{{template "top" .}}
+<form method="post" action="/services/settings">
+<section><h2>Tai-chi</h2>
+<label>Fréquence (0 = uniquement à la demande, 1 à 255) <input type="number" name="taichi_frequency" min="0" max="255" value="{{.S.Services.TaichiFrequency}}" required></label>
+{{with index .Data.Errors "taichi"}}<p class="err" role="alert">{{.}}</p>{{end}}
+</section>
+<section><h2>Surprises</h2><label>Fréquence <select name="surprise_frequency">
+<option value="0"{{if eq .S.Services.SurpriseFrequency 0}} selected{{end}}>Uniquement à la demande</option>
+<option value="30"{{if eq .S.Services.SurpriseFrequency 30}} selected{{end}}>Rares</option>
+<option value="50"{{if eq .S.Services.SurpriseFrequency 50}} selected{{end}}>Occasionnelles</option>
+<option value="125"{{if eq .S.Services.SurpriseFrequency 125}} selected{{end}}>Fréquentes</option>
+<option value="250"{{if eq .S.Services.SurpriseFrequency 250}} selected{{end}}>Très fréquentes</option></select></label>
+{{with index .Data.Errors "surprise"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
+<section><h2>Boule magique</h2><label><input type="checkbox" name="eightball"{{if .S.Services.Eightball}} checked{{end}}> Activer la boule magique</label>
+<p>Sur le lapin, cliquez puis maintenez le bouton pour poser une question.</p>
+{{with index .Data.Errors "eightball"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
+<section><h2>Livres</h2><p>Oreille gauche : chapitre précédent ; oreille droite : suivant. Un clic interrompt la lecture.</p><label><input type="checkbox" name="books"{{if .S.Services.Books}} checked{{end}}> Activer les livres</label>
+{{with index .Data.Errors "book"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
+<section><h2>Radio</h2><p>Utilisez l’adresse directe d’un flux MP3, sans liste de lecture M3U/HLS. Un clic sur la tête ou « Interrompre » arrête la radio.</p><label><input type="checkbox" name="radio"{{if .S.Services.Radio}} checked{{end}}> Activer la radio</label>
+{{with index .Data.Errors "radio"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
+<section><h2>Webhooks</h2><label><input type="checkbox" name="webhooks"{{if .S.Services.Webhooks}} checked{{end}}> Activer les webhooks</label>
+{{with index .Data.Errors "webhook"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
+<section><h2>IFTTT</h2><label><input type="checkbox" name="ifttt"{{if .S.Services.IFTTT}} checked{{end}}> Activer IFTTT</label>
+<label>Clé <input type="password" name="ifttt_key" maxlength="512" placeholder="{{if .S.Services.IFTTTKey}}inchangée{{else}}non configurée{{end}}" autocomplete="off"></label>
+<label><input type="checkbox" name="clear_ifttt_key"> Effacer la clé</label>
+{{with index .Data.Errors "ifttt"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
+<section><h2>Qualité de l'air</h2><label><input type="checkbox" name="air_enabled"{{if .S.Services.AirQuality.Enabled}} checked{{end}}> Activer la qualité de l’air</label>
+<p>Utilise le lieu des réglages météo, ou la localisation par adresse IP. Obtenez votre jeton sur <a href="https://aqicn.org/data-platform/token/">WAQI</a>.</p>
+<label>Jeton WAQI <input type="password" name="air_token" maxlength="512" placeholder="{{if .S.Services.AirQuality.Token}}inchangé{{else}}non configuré{{end}}" autocomplete="off"></label>
+<label><input type="checkbox" name="clear_air_token"> Effacer le jeton</label>
+<label>Indice <select name="air_index"><option value="aqi"{{if eq .S.Services.AirQuality.Index "aqi"}} selected{{end}}>AQI</option><option value="pm25"{{if eq .S.Services.AirQuality.Index "pm25"}} selected{{end}}>PM2,5</option></select></label>
+<label>Animation <select name="air_visual"><option value="always"{{if eq .S.Services.AirQuality.Visual "always"}} selected{{end}}>Toujours</option><option value="alert"{{if eq .S.Services.AirQuality.Visual "alert"}} selected{{end}}>Seulement en cas d'alerte</option><option value="nothing"{{if eq .S.Services.AirQuality.Visual "nothing"}} selected{{end}}>Aucune</option></select></label>
+{{with index .Data.Errors "airquality"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
+<button>Enregistrer les services</button></form>
+<section><h2>Essayer un service</h2><div class="actions">
+<form method="post" action="/services/action"><input type="hidden" name="name" value="taichi"><button>Faire du tai-chi</button></form>
+<form method="post" action="/services/action"><input type="hidden" name="name" value="surprise"><button>Jouer une surprise</button></form>
+<form method="post" action="/services/action"><input type="hidden" name="name" value="eightball"><button{{if not .S.Services.Eightball}} disabled{{end}}>Boule magique</button></form>
+<form method="post" action="/services/action"><input type="hidden" name="name" value="airquality"><button{{if not .S.Services.AirQuality.Enabled}} disabled{{end}}>Qualité de l'air</button></form></div>
+<h3>Surprise personnalisée</h3><form method="post" action="/services/action"><input type="hidden" name="name" value="surprise">
+<label>Langue <select name="language">{{range .Data.Languages}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+<label>Type <select name="surprise_kind"><option value="">Au hasard</option>{{range .Data.SurpriseKinds}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><button>Jouer</button></form>
+<h3>Catalogue de livres</h3>{{range .Data.Books}}<form method="post" action="/services/action"><input type="hidden" name="name" value="book"><input type="hidden" name="isbn" value="{{.ISBN}}">
+<label>{{.Title}} ({{.ISBN}}) — voix <select name="voice">{{range .Voices}}<option value="{{.ID}}">{{.Description}}</option>{{end}}</select></label>
+<button{{if or (not $.S.Services.Books) (not .Voices)}} disabled{{end}}>Lire</button></form>{{else}}<p>Aucun livre installé.</p>{{end}}
+{{if .S.Tags}}<h3>Actions associées aux étiquettes</h3>{{range $uid, $association := .S.Tags}}
+<form method="post" action="/services/action"><input type="hidden" name="name" value="{{$association.App}}"><input type="hidden" name="uid" value="{{$uid}}">
+<button{{if or (and (eq $association.App "radio") (not $.S.Services.Radio)) (and (eq $association.App "ifttt") (not $.S.Services.IFTTT)) (and (eq $association.App "webhook") (not $.S.Services.Webhooks))}} disabled{{end}}>Lancer {{$association.App}} — {{$uid}}</button></form>{{end}}{{end}}
+</section>
+<section><h2>Mastodon</h2>
+{{if .S.Mastodon.Username}}<p>Connecté : {{.S.Mastodon.Username}} sur {{.S.Mastodon.Instance}}.</p>{{else}}<p>Non connecté.</p>{{end}}
+{{if .S.Mastodon.SpouseHandle}}<p>Partenaire : {{.S.Mastodon.SpouseHandle}} — {{if eq .S.Mastodon.PairingState "married"}}associé{{else if eq .S.Mastodon.PairingState "waiting_approval"}}en attente de votre réponse{{else if eq .S.Mastodon.PairingState "proposed"}}invitation envoyée{{else}}non associé{{end}}.</p>{{end}}
+{{with index .Data.Errors "mastodon"}}<p class="err" role="alert">{{.}}</p>{{end}}
+{{if .S.Mastodon.Username}}
+<form method="post" action="/services/mastodon/action"><label>Compte du partenaire <input name="spouse" value="{{.S.Mastodon.SpouseHandle}}" placeholder="nom@instance.example"></label><button name="action" value="propose"{{if .S.Mastodon.PairingState}} disabled{{end}}>Proposer</button></form>
+<div class="actions"><form method="post" action="/services/mastodon/action"><button name="action" value="accept"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Accepter</button></form>
+<form method="post" action="/services/mastodon/action"><button name="action" value="reject"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Refuser</button></form>
+<form method="post" action="/services/mastodon/action"><button name="action" value="divorce"{{if and (ne .S.Mastodon.PairingState "married") (ne .S.Mastodon.PairingState "proposed")}} disabled{{end}}>Séparer / annuler la proposition</button></form>
+<form method="post" action="/services/mastodon/action"><button name="action" value="disconnect">Déconnecter</button></form></div>
+{{else}}<form method="post" action="/services/mastodon/connect"><label>Instance Mastodon <input name="instance" placeholder="mastodon.social" required></label><button>Connecter</button></form>{{end}}</section>
+{{template "bottom" .}}{{end}}
+
 {{define "tags"}}{{template "top" .}}
 <section><h2>Dernière étiquette</h2>{{with .Data.Tag}}<table>
 <tr><td>Identifiant</td><td>{{.uid}} ({{.tech}})</td></tr><tr><td>Événement</td><td>{{.event}}</td></tr>
 <tr><td>Contenu</td><td>{{.support}}{{if .app}} — {{.app}}{{end}}</td></tr></table>{{else}}<p>Posez une étiquette sur le nez du lapin puis rechargez la page.</p>{{end}}</section>
 <section><h2>Programmer l'étiquette</h2><form method="post" action="/tags/write">
 <label>Action <select name="kind"><option value="clock_sleep">Dormir</option><option value="clock_wakeup">Se réveiller</option>
-<option value="weather_today">Météo du jour</option><option value="weather_tomorrow">Météo de demain</option></select></label>
+<option value="weather_today">Météo du jour</option><option value="weather_tomorrow">Météo de demain</option>
+<option value="eightball">Boule magique</option><option value="surprise">Surprise</option><option value="taichi">Tai-chi</option><option value="airquality">Qualité de l'air</option><option value="book">Livre</option><option value="ifttt">IFTTT</option><option value="radio">Radio</option><option value="webhook">Webhook</option></select></label>
+<label>Langue (surprise, boule magique) <select name="language">{{range .Data.Languages}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+<label>Type de surprise <select name="surprise_kind">{{range .Data.SurpriseKinds}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+<label>Livre <select name="isbn"><option value="">Choisir un livre</option>{{range .Data.Books}}<option value="{{.ISBN}}">{{.Title}} ({{.ISBN}})</option>{{end}}</select></label>
+<label>Voix du livre <input name="voice" list="book-voices" placeholder="nom de la voix"></label><datalist id="book-voices">{{range .Data.Books}}{{range .Voices}}<option value="{{.ID}}">{{.Description}}</option>{{end}}{{end}}</datalist>
+<label>Valeur (événement IFTTT ou adresse de radio/webhook) <input name="value" maxlength="2048" autocomplete="off"></label>
 <label>Image (0-255) <input type="number" name="picture" min="0" max="255" value="0"></label>
-<button>Écrire (laisser l'étiquette posée)</button></form></section>
+<button>Écrire (laisser l'étiquette posée)</button>
+<button name="mode" value="associate">Associer sans réécrire</button>
+<p>Pour une ancienne étiquette radio, IFTTT ou webhook, choisissez l'action déjà inscrite et sa nouvelle valeur, puis « Associer sans réécrire ». Cela fonctionne aussi avec une étiquette verrouillée.</p></form></section>
+<section><h2>Associations enregistrées</h2>{{range $uid, $action := .S.Tags}}<div class="actions"><p>{{$uid}} — {{$action.App}} : {{$action.Value}}</p>
+<form method="post" action="/tags/remove"><input type="hidden" name="uid" value="{{$uid}}"><button aria-label="Supprimer l'association {{$uid}}">Supprimer</button></form></div>{{else}}<p>Aucune association locale.</p>{{end}}</section>
 {{template "bottom" .}}{{end}}
 
 {{define "sounds"}}{{template "top" .}}

@@ -57,7 +57,7 @@ func (b *Bridge) Discovery(prefix string) map[string]any {
 	d := func(component, obj string) string {
 		return fmt.Sprintf("%s/%s/%s/%s/config", prefix, component, b.Node, obj)
 	}
-	return map[string]any{
+	discovery := map[string]any{
 		d("sensor", "state"): with(base("État", "state"), "state_topic", b.topic("state"), "value_template", "{{ value_json.state }}", "icon", "mdi:rabbit"),
 		d("switch", "sleep"): with(base("Sommeil", "sleep"), "state_topic", b.topic("state"), "value_template", "{{ 'ON' if value_json.state == 'asleep' else 'OFF' }}",
 			"command_topic", b.topic("sleep/set"), "icon", "mdi:sleep"),
@@ -70,10 +70,14 @@ func (b *Bridge) Discovery(prefix string) map[string]any {
 		d("number", "right_ear"): with(base("Oreille droite", "right_ear"), "state_topic", b.topic("state"), "value_template", "{{ value_json.right_ear }}",
 			"command_topic", b.topic("right_ear/set"), "min", 0, "max", 16, "mode", "slider"),
 		d("event", "button"): with(base("Bouton", "button"), "state_topic", b.topic("button"),
-			"event_types", []string{"click", "double_click", "triple_click", "hold", "click_and_hold"}),
+			"event_types", []string{"click", "double_click", "triple_click", "hold", "click_and_hold", "double_click_and_hold"}),
 		d("sensor", "tag"): with(base("Dernière étiquette", "tag"), "state_topic", b.topic("rfid"), "value_template", "{{ value_json.uid }}",
 			"json_attributes_topic", b.topic("rfid"), "icon", "mdi:nfc"),
 	}
+	for name, label := range map[string]string{"taichi": "Tai-chi", "surprise": "Surprise", "eightball": "Boule magique", "airquality": "Qualité de l'air", "carrot": "Carotte", "birthday": "Anniversaire", "autopromo": "Autopromotion", "weather_tomorrow": "Météo de demain"} {
+		discovery[d("button", name)] = with(base(label, name), "command_topic", b.topic(name+"/press"))
+	}
+	return discovery
 }
 
 // ParseCommand validates a message received on nabos/<node>/<x>/(set|press).
@@ -86,7 +90,7 @@ func (b *Bridge) ParseCommand(topic string, payload []byte) (Command, bool) {
 	switch rest {
 	case "sleep/set":
 		return Command{"sleep", v}, v == "ON" || v == "OFF"
-	case "chime/press", "weather/press":
+	case "chime/press", "weather/press", "weather_tomorrow/press", "taichi/press", "surprise/press", "eightball/press", "airquality/press", "carrot/press", "birthday/press", "autopromo/press":
 		return Command{strings.TrimSuffix(rest, "/press"), ""}, true
 	case "volume/set", "left_ear/set", "right_ear/set":
 		var n float64

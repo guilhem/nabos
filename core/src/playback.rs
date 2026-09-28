@@ -2,10 +2,10 @@
 
 use crate::chor;
 use crate::hw::leds::{Rgb, BOTTOM, CENTER, LEFT, NOSE, RIGHT};
+use crate::hw::player::Source;
 use crate::hw::{Cancel, Hw};
 use crate::protocol::{Animation, Item, TestKind, STREAMING_URN};
 use crate::resources::Kind;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
@@ -75,7 +75,7 @@ impl Drop for ChorRunner {
 }
 
 struct Loaded {
-    audio: Option<Vec<PathBuf>>,
+    audio: Option<Vec<Source>>,
     choreography: Option<String>,
 }
 
@@ -83,17 +83,20 @@ fn preload(hw: &Hw, items: &[Item]) -> Vec<Loaded> {
     items
         .iter()
         .map(|it| Loaded {
-            audio: it.audio.as_ref().map(|list| {
-                list.iter()
-                    .filter_map(|r| {
-                        let f = hw.res.find(Kind::Sound, r);
-                        if f.is_none() {
-                            warn!("could not find sound {r}");
-                        }
-                        f
-                    })
-                    .collect()
-            }),
+            audio: match (&it.stream, &it.audio) {
+                (Some(url), _) => Some(vec![Source::Stream(url.clone())]),
+                (None, list) => list.as_ref().map(|list| {
+                    list.iter()
+                        .filter_map(|r| {
+                            let f = hw.res.find(Kind::Sound, r);
+                            if f.is_none() {
+                                warn!("could not find sound {r}");
+                            }
+                            f.map(Source::File)
+                        })
+                        .collect()
+                }),
+            },
             choreography: it.choreography.clone(),
         })
         .collect()
@@ -185,7 +188,9 @@ pub async fn rfid_feedback(hw: Arc<Hw>) {
     let mut runner = ChorRunner::new(hw.clone());
     runner.start("system/rfid.chor").await;
     if let Some(f) = hw.res.find(Kind::Sound, "rfid/rfid.wav") {
-        hw.player.play_list(&[f], &Cancel::never()).await;
+        hw.player
+            .play_list(&[Source::File(f)], &Cancel::never())
+            .await;
     }
     runner.stop().await;
     hw.leds.set_all([0, 0, 0]);
@@ -193,7 +198,9 @@ pub async fn rfid_feedback(hw: Arc<Hw>) {
 
 pub async fn abort_feedback(hw: &Arc<Hw>) {
     if let Some(f) = hw.res.find(Kind::Sound, "system/abort.wav") {
-        hw.player.play_list(&[f], &Cancel::never()).await;
+        hw.player
+            .play_list(&[Source::File(f)], &Cancel::never())
+            .await;
     }
 }
 

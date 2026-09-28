@@ -1,6 +1,19 @@
 package bus
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+func TestCancellationIsNotAServiceFailure(t *testing.T) {
+	if !errors.Is((Result{Status: "canceled"}).Err(), context.Canceled) {
+		t.Fatal("cancellation was not preserved")
+	}
+	if (Result{Status: "error"}).Err() == nil {
+		t.Fatal("core error ignored")
+	}
+}
 
 func TestHardwareRequiredForUpdateConfirmation(t *testing.T) {
 	h := map[string]any{"left_ear": "ok", "right_ear": "ok", "leds": true, "button": true}

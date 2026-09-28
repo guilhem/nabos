@@ -11,7 +11,7 @@ cargo fmt --manifest-path core/Cargo.toml --check
 cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go vet ./... && go test -race ./...)
-(cd services && NABOS_INTEGRATION=1 go test -count=1 ./tests/integration)
+(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nab-service)
 ```
 
 Les réglages doivent rester lisibles par la version précédente après rollback. Les commandes MQTT sont identifiées, expirables et non retenues. Ne pas déplacer la temporisation des mouvements hors du cœur local.

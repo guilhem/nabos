@@ -4,7 +4,9 @@ Two programs run on the rabbit and talk through the local Mosquitto broker
 (MQTT 5, `127.0.0.1:1883`, anonymous, loopback only):
 
 - `nab-core` (Rust, `core/`): hardware, state machine, queue, choreographies, audio.
-- `nab-service` (Go, `services/`): web UI, settings, clock, weather, Home Assistant,
+- `nab-service` (Go, `services/`): web UI, settings, clock, weather, the nine PyNab
+  services (tai-chi, surprise, 8-ball, air quality, IFTTT, webhook, radio, book,
+  Mastodon), Home Assistant,
   Linux Voice Assistant, updates.
 
 Every topic starts with `nabos/v1`. Payloads are UTF-8 JSON objects with `"v": 1`.
@@ -19,6 +21,7 @@ Every topic starts with `nabos/v1`. Payloads are UTF-8 JSON objects with `"v": 1
 | `nabos/v1/core/availability` | core → all | 1 | yes (LWT) | `online` / `offline` (plain text) |
 | `nabos/v1/core/event/button` | core → all | 1 | no | button event |
 | `nabos/v1/core/event/ears` | core → all | 1 | no | ears event |
+| `nabos/v1/core/event/ear_moved` | core → all | 1 | no | manual ear movement |
 | `nabos/v1/core/event/rfid` | core → all | 1 | no | RFID event |
 | `nabos/v1/service/settings` | service → core | 1 | yes | runtime settings |
 | `nabos/v1/service/availability` | service → all | 1 | yes (LWT) | `online` / `offline` |
@@ -58,7 +61,8 @@ is published per accepted id, when the command finishes.
 
 ## Actions
 
-Sequence item: `{"audio": ["res", ...], "choreography": "res"}`, both optional.
+Sequence item: `{"audio": ["res", ...], "stream": "url", "choreography": "res"}`, all optional,
+`audio` and `stream` mutually exclusive.
 
 - Audio resources are resolved against the sounds roots, first in `<root>/<locale>/<res>`
   then `<root>/<res>`. A last path component starting with `*` picks a random match
@@ -66,14 +70,19 @@ Sequence item: `{"audio": ["res", ...], "choreography": "res"}`, both optional.
 - Choreography: a resource under the choreographies roots (`system/rfid.chor`),
   or `urn:x-chor:streaming` / `urn:x-chor:streaming:N` (N = palette 0–7).
 - Resources are relative paths without `..`, backslash, NUL, leading `/`,
-  256 chars max. Remote URLs are not accepted by the core: the service downloads
-  into `/data/nabos/media/sounds/cache/` first.
+  256 chars max. Remote URLs are not accepted as resources. Continuous radio
+  uses the separate loopback `stream` field below.
+- `stream` (`play` only, refused in `message`): exactly
+  `http://127.0.0.1:<port>/radio/<token>`, port 1024–65535 in plain decimal, token
+  16–64 chars `[A-Za-z0-9_-]`, nothing after it. The service serves it on loopback
+  (radio relay); the core hands it to `mpg123` and the item ends when the service
+  closes the stream. No other URL is accepted.
 
 | Action | Args | Behaviour |
 |---|---|---|
 | `play` | `{"sequence":[item ≤32], "cancelable":true}` | Queued, played when idle. Audio ≤16 per item. |
 | `message` | `{"signature":item?, "body":[item ≤32], "cancelable":true}` | Queued. Ears to 0, signature, body, signature, default streaming choreography. |
-| `cancel` | `{"target":"<id>"?}` | Cancels the playing command (or the given id). Errors `not_playing`, `not_cancelable`. Queued targets are removed and answered `canceled`. |
+| `cancel` | `{"target":"<id>"?}` | Without `target`: cancels the playing command if it is cancelable. With `target`: cancels that command, even a playing `cancelable: false` one (owner cancel); queued targets are removed and answered `canceled`. Errors `not_playing`, `not_cancelable` (untargeted only). |
 | `info` | `{"info_id":"weather", "animation":{"tempo":1–1000,"colors":[{"left":"rrggbb","center":"rrggbb","right":"rrggbb"} ≤64]} or null}` | Idle loop animation, 15 s per info, rotating. `null` removes it. `info_id` ≤ 64 chars, ≤ 16 infos. |
 | `indicator` | `{"animation":{…} or null}` | Overrides infos while idle or asleep (voice assistant feedback). |
 | `ears` | `{"left":0–16?, "right":0–16?}` | Sets the idle position, moves immediately when idle. |
@@ -85,8 +94,13 @@ Sequence item: `{"audio": ["res", ...], "choreography": "res"}`, both optional.
 
 A `click` while a cancelable command plays cancels
 it (with `system/abort.wav`) and is not published. Every other button event is
-published. Shutdown and reboot belong to the service (logind), triggered by
-`triple_click`.
+published, including clicks during a `cancelable: false` command, which the
+service may handle and stop with a targeted `cancel`. Shutdown and reboot belong
+to the service (logind), triggered by `triple_click`.
+
+The core holds no interactive session or lease: exclusivity between service
+features is the service's job. If the service dies, the playing command still ends
+by itself (finite audio, or a stream closed with the service) and the queue resumes.
 
 ## State (retained)
 
@@ -106,12 +120,18 @@ Ear status: `ok`, `broken`, `missing`.
 ```json
 {"v":1,"event":"click","time":1790000000.12}
 {"v":1,"left":3,"right":null,"time":1790000000.5}
+{"v":1,"ear":"left","time":1790000000.1}
 {"v":1,"event":"detected","tech":"st25tb","uid":"d0:02:18:00:00:00:00:01","support":"formatted",
  "locked":false,"picture":42,"app":"clock","data":"\u0000","time":1790000000.7}
 ```
 
-Button events: `down`, `up`, `click`, `double_click`, `triple_click`, `hold`,
-`click_and_hold`. RFID `support`: `formatted`, `foreign-data`, `locked`, `empty`,
+Button events: `down`, `up`, `click`, `double_click`, `triple_click`, `hold` (2 s),
+`click_and_hold` (click, then 2 s press), `double_click_and_hold` (two clicks, then
+the third press held 10 s, measured by the core). A third press released within
+150 ms is a `triple_click`; released later but before 10 s it emits nothing.
+`ear_moved` is published as soon as an ear is turned by hand (`ear`: `left` or
+`right`); the `ears` event with detected positions still follows after 0.5 s
+of stillness. RFID `support`: `formatted`, `foreign-data`, `locked`, `empty`,
 `unknown`. `app`, `picture` and `data` are present for Nabaztag-formatted tags;
 `data` is the application payload decoded as UTF-8 up to the first `0xFF`.
 RFID application identifiers use the Nabaztag tag format (1 eightball … 5 clock, 9 weather, 13 webhook, 255 none).
@@ -184,6 +204,20 @@ Keep locale directories and resource paths intact.
 | `NABOS_TIMESYNC_CLOCK` | `/var/lib/systemd/timesync/clock` (timesyncd saved clock, must persist) |
 | `NABOS_NET_PROBE` | `api.github.com:443` (TCP reachability test for the belly colour) |
 
+`config.json` also stores `services` (frequencies, deadlines, switches and API
+keys), `tags` (UID → `{app,value}` for radio/IFTTT/webhook) and `mastodon` (OAuth
+credentials, pairing state and message cursor). Older settings without these
+fields load defaults. The file remains mode 0600 and writes are atomic. Secrets
+are not prefilled in web forms. Existing formatted tags can be associated locally
+without rewriting their payload, including locked tags.
+
+Only one Go media owner is active at a time. A book or 8-ball session keeps
+ownership across its commands, forwards button/ear events and cancels its own
+command by ID. The radio is preempted by other audio and sleep; MQTT/core loss
+cancels active radio and interactive sessions. The radio relay serves one
+consumer with a fixed-size copy buffer, upstream read deadline and a private
+loopback URL. It never downloads a complete stream to disk.
+
 - `GET /healthz`: loopback only, no auth. `200` when MQTT is connected and the core is
   `online`, `503` otherwise. Use it before `rauc status mark-good`.
 - D-Bus (system bus) through polkit rules for user `nabos`:
@@ -217,14 +251,16 @@ signature and the `compatible`.
 ### First password
 
 The first admin password can only be set within 5 minutes after a press on the
-rabbit's head button (physical presence). A click followed by a hold erases a
-forgotten password. Sessions are in memory (32 at most, 7 days).
+rabbit's head button (physical presence). Two clicks then a third press held 10 s
+(`double_click_and_hold`) erase a forgotten password. Sessions are in memory
+(32 at most, 7 days).
 
 ## End-to-end test
 
-`(cd services && NABOS_INTEGRATION=1 go test -count=1 ./tests/integration)`
+`(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nab-service)`
 starts Mosquitto, `nab-core --simulate` and
 `nab-service`, and checks execution, deduplication, expiration, cancel, retained
-refusal, validation, broker and core restarts and the web flow. By default it builds
+refusal, validation, broker and core restarts, the web flow, exclusive interactive
+playback and RFID dispatch. By default it builds
 native binaries; `NAB_CORE_BIN`, `NAB_SERVICE_BIN` (commands, e.g.
 `qemu-arm-static -L <sysroot> <sysroot>/usr/bin/nab-core`) and `MOSQUITTO` override them.

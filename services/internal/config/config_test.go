@@ -1,11 +1,39 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestServiceSettingsAreIsolatedAndSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	st, _ := Open(path)
+	uid := "d0:02:18:00:00:00:00:01"
+	_, err := st.Update(func(s *Settings) error { s.Tags[uid] = TagAction{"webhook", "http://192.168.1.2/run"}; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := st.Get()
+	delete(copy.Tags, uid)
+	if len(st.Get().Tags) != 1 {
+		t.Fatal("Get leaked mutable map")
+	}
+	failed, err := st.Update(func(s *Settings) error { delete(s.Tags, uid); return errors.New("abort") })
+	delete(failed.Tags, uid)
+	if err == nil || len(st.Get().Tags) != 1 {
+		t.Fatal("failed update changed state")
+	}
+	if _, err = st.Update(func(s *Settings) error { s.Tags[uid] = TagAction{"radio", "file:///etc/passwd"}; return nil }); err == nil {
+		t.Fatal("unsafe URL accepted")
+	}
+	re, err := Open(path)
+	if err != nil || len(re.Get().Tags) != 1 || !re.Get().Services.Books {
+		t.Fatal("restart", err)
+	}
+}
 
 func TestCorruptFileIsMovedAsideAndDefaultsUsed(t *testing.T) {
 	dir := t.TempDir()

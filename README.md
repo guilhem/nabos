@@ -26,7 +26,7 @@ Les mises à jour sont proposées dans l'interface après une recherche quotidie
 | Composant | Rôle |
 |---|---|
 | `core/` — `nab-core` | Matériel, états, séquences, chorégraphies, synchronisation avec le son |
-| `services/` — `nab-service` | Interface locale, réglages, horloge, météo, ressources, Home Assistant, mises à jour |
+| `services/` — `nab-service` | Interface locale, réglages, services pynab en Go, Home Assistant, mises à jour |
 | Mosquitto | Transport MQTT 5 local ; [contrat JSON v1](docs/protocol-v1.md) |
 | PipeWire + WirePlumber | Lecture et capture ALSA ; compatibilité PulseAudio pour la voix |
 | NetworkManager + Comitup | Connexion Wi-Fi et configuration initiale |
@@ -36,6 +36,20 @@ Linux Voice Assistant est préinstallé uniquement sur ARM64 et **désactivé pa
 
 Les pilotes oreilles, WM8960, CR14 et ST25R391x et la bibliothèque `rpi_ws281x` commandent le matériel. Un seul lecteur RFID est activé selon la carte détectée. Les sons et chorégraphies sont rangés dans `assets/`.
 
+## Services
+
+L’onglet **Services** configure le tai-chi, les surprises (langues, anniversaires et messages saisonniers), la boule magique, la qualité de l’air, IFTTT, les webhooks, la radio, les livres et le jumelage Mastodon. L’horloge et la météo restent dans **Réglages**. Les formats de tags et les médias proviennent de pynab `f24d3e1` ; leurs attributions sont dans [NOTICE](NOTICE).
+
+- Une fréquence de zéro suspend le tai-chi ou les surprises automatiques ; les déclenchements manuels restent disponibles. Les prochaines échéances sont conservées après redémarrage et les annonces périmées ne sont pas rejouées.
+- La qualité de l’air demande un jeton WAQI personnel et reprend la localisation météo, ou la géolocalisation par adresse IP. L’interface affiche les erreurs des services connectés.
+- **Étiquettes** programme les anciens formats RFID. Pour la radio, IFTTT et les webhooks, l’adresse ou l’événement est enregistré localement par UID. « Associer sans réécrire » permet de conserver un tag existant, même verrouillé. Il faut configurer l’association sur chaque lapin.
+- La radio accepte une adresse directe de flux **MP3** (pas une liste M3U/HLS ou de l’AAC). Go relaie le flux sans fichier temporaire, avec un tampon borné. Un clic, « Interrompre », le sommeil ou une autre annonce l’arrête.
+- Pendant un livre, l’oreille gauche recule d’un chapitre, la droite avance et un clic interrompt. Les annonces attendent la fin de la session. Le catalogue et les voix fournis par pynab sont inclus ; ses consignes de lecture sont en français.
+- Un clic puis maintien active l’écoute de la boule magique ; le relâchement déclenche la réponse. Pour réinitialiser l’administration, faire **deux clics puis maintenir un troisième appui pendant 10 secondes**. Trois clics brefs restent l’extinction.
+- Mastodon utilise OAuth et les messages directs `NabPairing`, compatibles avec pynab. Le jumelage, les positions et le curseur des messages sont persistants ; le flux se reconnecte et rattrape les messages après une coupure.
+
+Home Assistant expose les annonces comme boutons, utilisables depuis LVA. LVA, Comitup et NabBlockly restent des projets externes.
+
 ## Développement
 
 La [documentation de fabrication](docs/build.md) décrit les commandes locales, les runners GitHub standards, les dépendances archivées, les secrets de signature et le partitionnement. La [fiche de qualification](docs/release-checklist.md) accompagne les brouillons de release.
@@ -43,7 +57,7 @@ La [documentation de fabrication](docs/build.md) décrit les commandes locales, 
 ```sh
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go test -race ./...)
-(cd services && NABOS_INTEGRATION=1 go test -count=1 ./tests/integration)
+(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nab-service)
 ```
 
 Le dernier contrôle requiert Mosquitto et ses clients. Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).

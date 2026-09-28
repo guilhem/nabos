@@ -478,6 +478,17 @@ func TestEndToEnd(t *testing.T) {
 		h.command("c3", "cancel", nil, in(time.Minute), false)
 		expect(h.result("c3", 10*time.Second)["error"], "not_playing")
 	})
+	h.check("only a targeted cancel stops noncancelable playback", func() {
+		owned := map[string]any{"sequence": long["sequence"], "cancelable": false}
+		at := time.Now()
+		h.command("owned", "play", owned, in(time.Minute), false)
+		h.stateSince(at, "playing", 5*time.Second)
+		h.command("untargeted", "cancel", nil, in(time.Minute), false)
+		expect(h.result("untargeted", 5*time.Second)["error"], "not_cancelable")
+		h.command("targeted", "cancel", map[string]any{"target": "owned"}, in(time.Minute), false)
+		expect(h.status("targeted"), "ok")
+		expect(h.status("owned"), "canceled")
+	})
 	h.check("command expires while queued", func() {
 		h.command("blocker", "play", long, in(time.Minute), false)
 		h.command("short", "play", abort, in(time.Second), false)

@@ -36,6 +36,8 @@ pub fn app_name(id: u8) -> String {
 pub struct Item {
     /// None: no "audio" key. Some(empty) still means "audio item" (an explicit audio item).
     pub audio: Option<Vec<String>>,
+    /// Loopback stream served by nab-service (play only, exclusive with audio).
+    pub stream: Option<String>,
     pub choreography: Option<String>,
 }
 
@@ -150,6 +152,25 @@ fn valid_choreography(c: &str) -> bool {
     valid_resource(c) && !c.contains(':')
 }
 
+/// Exactly `http://127.0.0.1:<port>/radio/<token>`: port 1024-65535 in plain
+/// decimal, token 16-64 chars `[A-Za-z0-9_-]`, nothing else.
+pub fn valid_stream(url: &str) -> bool {
+    let Some((port, token)) = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|r| r.split_once("/radio/"))
+    else {
+        return false;
+    };
+    !port.starts_with('0')
+        && port.len() <= 5
+        && port.bytes().all(|b| b.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|p| p >= 1024)
+        && (16..=64).contains(&token.len())
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 fn err<T>(msg: impl Into<String>) -> Result<T, String> {
     Err(msg.into())
 }
@@ -184,7 +205,7 @@ fn opt_bool(m: &serde_json::Map<String, Value>, key: &str, default: bool) -> Res
     }
 }
 
-fn parse_item(v: &Value) -> Result<Item, String> {
+fn parse_item(v: &Value, allow_stream: bool) -> Result<Item, String> {
     let m = obj(v)?;
     let audio = match m.get("audio") {
         None => None,
@@ -211,6 +232,13 @@ fn parse_item(v: &Value) -> Result<Item, String> {
             return err(format!("invalid audio resource {bad:?}"));
         }
     }
+    let stream = match m.get("stream") {
+        None | Some(Value::Null) => None,
+        Some(_) if !allow_stream => return err("stream is only allowed in play"),
+        Some(_) if audio.is_some() => return err("stream and audio are exclusive"),
+        Some(Value::String(s)) if valid_stream(s) => Some(s.clone()),
+        Some(other) => return err(format!("invalid stream {other}")),
+    };
     let choreography = match m.get("choreography") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) if valid_choreography(s) => Some(s.clone()),
@@ -218,13 +246,16 @@ fn parse_item(v: &Value) -> Result<Item, String> {
     };
     Ok(Item {
         audio,
+        stream,
         choreography,
     })
 }
 
-fn parse_items(v: Option<&Value>, key: &str) -> Result<Vec<Item>, String> {
+fn parse_items(v: Option<&Value>, key: &str, allow_stream: bool) -> Result<Vec<Item>, String> {
     match v {
-        Some(Value::Array(a)) if a.len() <= 32 => a.iter().map(parse_item).collect(),
+        Some(Value::Array(a)) if a.len() <= 32 => {
+            a.iter().map(|i| parse_item(i, allow_stream)).collect()
+        }
         Some(Value::Array(_)) => err(format!("{key}: at most 32 items")),
         _ => err(format!("{key} must be a list")),
     }
@@ -294,15 +325,15 @@ fn parse_action(action: &str, args: &Value) -> Result<Action, String> {
     let m = obj(args)?;
     Ok(match action {
         "play" => Action::Play {
-            sequence: parse_items(m.get("sequence"), "sequence")?,
+            sequence: parse_items(m.get("sequence"), "sequence", true)?,
             cancelable: opt_bool(m, "cancelable", true)?,
         },
         "message" => Action::Message {
             signature: match m.get("signature") {
                 None | Some(Value::Null) => None,
-                Some(s) => Some(parse_item(s)?),
+                Some(s) => Some(parse_item(s, false)?),
             },
-            body: parse_items(m.get("body"), "body")?,
+            body: parse_items(m.get("body"), "body", false)?,
             cancelable: opt_bool(m, "cancelable", true)?,
         },
         "cancel" => Action::Cancel {
@@ -461,6 +492,61 @@ mod tests {
         assert!(cmd(r#"{"v":1,"id":"g","expires_at":1060,"action":"reboot"}"#).is_err());
         // past expiration parses (engine answers "expired")
         assert!(cmd(r#"{"v":1,"id":"h","expires_at":10,"action":"wakeup"}"#).is_ok());
+    }
+
+    #[test]
+    fn streams() {
+        let play = |item: &str| {
+            cmd(&format!(
+                r#"{{"v":1,"id":"s","expires_at":1060,"action":"play","args":{{"sequence":[{item}]}}}}"#
+            ))
+        };
+        let url = "http://127.0.0.1:40123/radio/Ab_-0123456789xyz";
+        let ok = play(&format!(
+            r#"{{"stream":"{url}","choreography":"urn:x-chor:streaming"}}"#
+        ))
+        .unwrap();
+        let Action::Play { sequence, .. } = ok.action else {
+            panic!()
+        };
+        assert_eq!(sequence[0].stream.as_deref(), Some(url));
+        assert_eq!(sequence[0].audio, None);
+        for bad in [
+            "https://127.0.0.1:40123/radio/Ab_-0123456789xyz",
+            "http://localhost:40123/radio/Ab_-0123456789xyz",
+            "http://127.0.0.1/radio/Ab_-0123456789xyz",
+            "http://127.0.0.1:80/radio/Ab_-0123456789xyz",
+            "http://127.0.0.1:65536/radio/Ab_-0123456789xyz",
+            "http://127.0.0.1:+4012/radio/Ab_-0123456789xyz",
+            "http://127.0.0.1:04012/radio/Ab_-0123456789xyz",
+            "http://127.0.0.1:40123/radio/short",
+            "http://127.0.0.1:40123/radio/Ab_-0123456789xyz/x",
+            "http://127.0.0.1:40123/radio/Ab_-0123456789xyz?x=1",
+            "http://127.0.0.1:40123/other/Ab_-0123456789xyz",
+            "http://example.com:40123/radio/Ab_-0123456789xyz",
+        ] {
+            assert!(play(&format!(r#"{{"stream":"{bad}"}}"#)).is_err(), "{bad}");
+        }
+        assert!(valid_stream(&format!(
+            "http://127.0.0.1:65535/radio/{}",
+            "a".repeat(64)
+        )));
+        assert!(!valid_stream(&format!(
+            "http://127.0.0.1:65535/radio/{}",
+            "a".repeat(65)
+        )));
+        // exclusive with audio, even an empty audio list
+        assert!(play(&format!(r#"{{"stream":"{url}","audio":[]}}"#)).is_err());
+        // never in a message
+        for args in [
+            format!(r#"{{"body":[{{"stream":"{url}"}}]}}"#),
+            format!(r#"{{"signature":{{"stream":"{url}"}},"body":[]}}"#),
+        ] {
+            assert!(cmd(&format!(
+                r#"{{"v":1,"id":"m","expires_at":1060,"action":"message","args":{args}}}"#
+            ))
+            .is_err());
+        }
     }
 
     #[test]

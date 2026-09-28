@@ -2,6 +2,7 @@
 //! (MTL opcodes from nominal.010120_as3.mtl, streaming subset).
 
 use crate::hw::leds::{BOTTOM, CENTER, LEFT, NOSE, RIGHT};
+use crate::hw::player::Source;
 use crate::hw::{Cancel, Hw};
 use crate::protocol::STREAMING_URN;
 use crate::resources::Kind;
@@ -194,7 +195,7 @@ impl Interp {
                     .res
                     .find(Kind::Sound, MIDI_LIST[fastrand::usize(..MIDI_LIST.len())])
                 {
-                    self.hw.player.start(p);
+                    self.hw.player.start(Source::File(p));
                 }
                 Some(i)
             }
