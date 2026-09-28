@@ -255,3 +255,38 @@ func TestReplayArchiveWithReadOnlyTree(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestComponentArchive(t *testing.T) {
+	for _, name := range []string{"nab-core", "../nab-core"} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o755, Size: 6})
+			tw.Write([]byte("binary"))
+			tw.Close()
+			dir := t.TempDir()
+			archive := filepath.Join(dir, "component.tar")
+			os.WriteFile(archive, buf.Bytes(), 0o644)
+			out := filepath.Join(dir, "out")
+			err := run([]string{"extract", archive, out})
+			if name != "nab-core" {
+				if err == nil {
+					t.Fatal("component archive escaped its destination")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary := filepath.Join(out, name)
+			data, err := os.ReadFile(binary)
+			if err != nil || string(data) != "binary" {
+				t.Fatalf("component contents %q: %v", data, err)
+			}
+			info, err := os.Stat(binary)
+			if err != nil || info.Mode().Perm() != 0o755 {
+				t.Fatalf("executable mode lost: %v, %v", info, err)
+			}
+		})
+	}
+}

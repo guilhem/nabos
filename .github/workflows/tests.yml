@@ -24,7 +24,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
+            core/target
+          key: cargo-test-${{ runner.os }}-${{ runner.arch }}-1.98.1-${{ hashFiles('core/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-${{ runner.arch }}-1.98.1-${{ hashFiles('core/Cargo.lock') }}-
       - name: Rust
         run: |
           cargo fmt --manifest-path core/Cargo.toml --check
@@ -39,5 +42,6 @@ jobs:
       - name: Shell and protocol checks
         working-directory: services
         run: |
-          bash -n ../image/build.sh ../image/prepare.sh ../image/host-deps.sh
+          for script in ../image/*.sh; do bash -n "$script"; done
+          shellcheck -x ../image/*.sh
           NABOS_INTEGRATION=1 go test -count=1 -v ./tests/integration

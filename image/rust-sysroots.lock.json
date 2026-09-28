@@ -1,0 +1,38 @@
+{
+  "zero-armv6": {
+    "libc6": {
+      "sha256": "436b0fb93c80dded5ace51fbbc487b8a0b59a08d7bad9e914038cd7e4ec9a68b",
+      "url": "https://archive.raspbian.org/raspbian/pool/main/g/glibc/libc6_2.41-12+rpi1+deb13u2_armhf.deb"
+    },
+    "libc6-dev": {
+      "sha256": "592f76e44e983e76489a29ac60b6c7cda9a4ae1e94f9df446efb8a31154293e2",
+      "url": "https://archive.raspbian.org/raspbian/pool/main/g/glibc/libc6-dev_2.41-12+rpi1+deb13u2_armhf.deb"
+    },
+    "libgcc-14-dev": {
+      "sha256": "02552a49f7c754961de873133d6d2ec40a6ee3cb7205e37b3751019face9af3b",
+      "url": "https://archive.raspbian.org/raspbian/pool/main/g/gcc-14/libgcc-14-dev_14.2.0-19+rpi1_armhf.deb"
+    },
+    "libgcc-s1": {
+      "sha256": "f7526cd48780b10cf71df12b086a38ab542e68f6faa6345480b019bbc6b7c461",
+      "url": "https://archive.raspbian.org/raspbian/pool/main/g/gcc-14/libgcc-s1_14.2.0-19+rpi1_armhf.deb"
+    }
+  },
+  "zero2-arm64": {
+    "libc6": {
+      "sha256": "8784eda966b189c777a384dac5ce009e8fc9b52d006926c5a013e7fa8aa688cc",
+      "url": "https://snapshot.debian.org/archive/debian/20260928T000000Z/pool/main/g/glibc/libc6_2.41-12+deb13u4_arm64.deb"
+    },
+    "libc6-dev": {
+      "sha256": "71e373cb5e9da975b02fb4af555929cb1977560e2dd8245de4eb8a7b03677a08",
+      "url": "https://snapshot.debian.org/archive/debian/20260928T000000Z/pool/main/g/glibc/libc6-dev_2.41-12+deb13u4_arm64.deb"
+    },
+    "libgcc-14-dev": {
+      "sha256": "64b8ebc7182a69aa9525df6eab5e7eb849b947e350d821549f8a8a3e9b19e5ba",
+      "url": "https://snapshot.debian.org/archive/debian/20260928T000000Z/pool/main/g/gcc-14/libgcc-14-dev_14.2.0-19_arm64.deb"
+    },
+    "libgcc-s1": {
+      "sha256": "1108bc87879833d6d9a145f22a4a15cddb34e065b4b5f4b97bee586adbac2851",
+      "url": "https://snapshot.debian.org/archive/debian/20260928T000000Z/pool/main/g/gcc-14/libgcc-s1_14.2.0-19_arm64.deb"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+name: Go service
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [zero-armv6, zero2-arm64]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-1.27.1-${{ hashFiles('services/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-1.27.1-${{ hashFiles('services/go.sum') }}-
+      - name: Cross-compile service and archive inputs
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          version="dev-${GITHUB_SHA:0:12}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version=$GITHUB_REF_NAME; fi
+          bash image/build-go.sh "$TARGET" "$version" "build/go/$TARGET"
+          mkdir -p build/components
+          tar -C "build/go/$TARGET" -cf "build/components/go-$TARGET.tar" .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: go-${{ matrix.target }}
+          path: build/components/go-${{ matrix.target }}.tar
+          if-no-files-found: error
+          retention-days: 1
