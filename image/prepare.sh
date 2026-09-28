@@ -107,8 +107,9 @@ build-packages|packages)
     [[ -f /lib/modules/$kernel/build/Module.symvers ]] || { echo 'Matching kernel build symbols missing' >&2; exit 1; }
     [[ $(dpkg-query -W -f='${Version}' "linux-image-$kernel") == \
        "$(dpkg-query -W -f='${Version}' "linux-headers-$kernel")" ]] || { echo 'Kernel/header package version mismatch' >&2; exit 1; }
-    for option in CONFIG_BCM2835_WDT=y CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y; do
-      grep -qxF "$option" "/lib/modules/$kernel/build/.config" || { echo "Kernel lacks $option" >&2; exit 1; }
+    for option in CONFIG_BCM2835_WDT=y CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y \
+      'CONFIG_SQUASHFS=[ym]' CONFIG_SQUASHFS_ZSTD=y; do
+      grep -qxE "$option" "/lib/modules/$kernel/build/.config" || { echo "Kernel lacks $option" >&2; exit 1; }
     done
     printf '%s\n' "$kernel" > /nabos-build/kernel-release
     dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /nabos-build/builder-packages.tsv

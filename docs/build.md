@@ -61,6 +61,8 @@ La fabrication sépare compilation, livraison et tests :
 
 Il n'y a pas de deuxième résolution de paquets sur Internet pour l'image livrée, ni de reconstruction après validation. Ces tests exécutent les services en simulation et le script de démarrage dans le sandbox ; ils ne démarrent pas un noyau Raspberry Pi complet. Les essais matériels restent nécessaires. La compression de l'image et des entrées utilise `xz -T0`, avec des horodatages séparés dans les logs.
 
+Les bundles `.raucb` utilisent SquashFS avec Zstd niveau 15. La fabrication vérifie `CONFIG_SQUASHFS=y` ou `m` et `CONFIG_SQUASHFS_ZSTD=y` dans la configuration des en-têtes correspondant au noyau livré. Pour une mise à jour, le noyau déjà démarré sur le lapin doit aussi prendre en charge SquashFS/Zstd pour ouvrir le bundle ; le support dans le nouveau noyau seul ne suffit pas.
+
 Pour assembler des composants déjà construits, placer les trois fichiers `go-<cible>.tar`, `rust-<cible>.tar` et `uboot-<cible>.tar` dans un répertoire, puis passer `--components /chemin/composants` à `image/build.sh`. Rust et les compilateurs cross ne sont alors pas nécessaires au job d'image. Sans cette option, le script appelle les cibles `go`, `rust` et `uboot` du Makefile.
 
 Le Makefile appelle directement `go build`, `cargo build` et le Makefile d'U-Boot, qui gèrent leurs compilations incrémentales. Il prépare aussi les entrées verrouillées et vérifie la compatibilité ARMv6. Les mêmes cibles servent en CI et en local :

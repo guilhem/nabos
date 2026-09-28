@@ -241,7 +241,8 @@ mkdir "$work/bundle"
 ln "$work/images/rootfs.ext4" "$work/bundle/rootfs.ext4"
 printf '[update]\ncompatible=%s\nversion=%s\n\n[bundle]\nformat=verity\n\n[image.rootfs]\nfilename=rootfs.ext4\n' \
   "$compatible" "$version" > "$work/bundle/manifest.raucm"
-rauc bundle --cert="$signing_cert" --key="$signing_key" "$work/bundle" "$out/nabos-$target.raucb"
+rauc bundle --mksquashfs-args="-comp zstd -Xcompression-level 15" \
+  --cert="$signing_cert" --key="$signing_key" "$work/bundle" "$out/nabos-$target.raucb"
 rauc info --keyring="$signing_cert" "$out/nabos-$target.raucb"
 echo "$(date -u +%FT%TZ) Compressing SD image"
 xz -T0 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
