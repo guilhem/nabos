@@ -12,6 +12,9 @@ Créer la release avec son changelog et le statut choisi ; la CI y ajoute les ar
 - [ ] Coupure d'alimentation pendant écriture ; échec du nouveau démarrage ; rollback après épuisement des tentatives, sans Internet.
 - [ ] Watchdog : première alimentation par Linux moins de 16 secondes après U-Boot, y compris à froid sur Zero ; blocage avant systemd et racine absente provoquent un redémarrage (délai de reprise de 300 secondes), puis un rollback.
 - [ ] Réseau, identité, authentification, réglages et calibration conservés après mise à jour et rollback.
+- [ ] Interface de mise à jour : choix d'une version, canaux Stable/Test, réglages conservés et automatique désactivé lors de la migration.
+- [ ] Automatique nocturne : heure fiable, fin des lectures/radio/voix, créneau traversant minuit, désactivation avant redémarrage et une seule tentative par créneau.
+- [ ] Reprise après redémarrage de nab-service et coupure en fin d'installation : aucune seconde écriture ni redémarrage intempestif ; échec ou rollback visible dans l'interface, version exclue de l'automatique, réessai manuel possible.
 - [ ] Horloge, sommeil, lecture et RFID utilisables sans Internet ni Home Assistant.
 - [ ] Tai-chi et surprises : programmation, langues, déclenchement manuel, sommeil et redémarrage ; tags pynab existants et nouvellement écrits.
 - [ ] Boule magique au clic puis maintien ; récupération administrateur uniquement après deux clics puis maintien de 10 secondes, sans extinction accidentelle.

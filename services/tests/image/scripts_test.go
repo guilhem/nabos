@@ -232,6 +232,8 @@ type healthCase struct {
 	own, other, otherFS string
 	sinks, sources      string
 	mounts              map[string]string
+	raucFails           bool // mark-good fails
+	stuck               bool // never healthy: stop the check after a few seconds
 }
 
 // mounts returns findmnt answers for a correct boot-init run; "" removes an entry.
@@ -250,7 +252,9 @@ func mounts(changes map[string]string) map[string]string {
 	return table
 }
 
-func checkHealth(t *testing.T, c healthCase) (string, []string) {
+// checkHealth runs the health check and returns its output, the commands it
+// ran and the boot health marker left for nab-service.
+func checkHealth(t *testing.T, c healthCase) (string, []string, string) {
 	t.Helper()
 	def := func(v *string, d string) {
 		if *v == "" {
@@ -267,6 +271,8 @@ func checkHealth(t *testing.T, c healthCase) (string, []string) {
 		c.mounts = mounts(nil)
 	}
 	tmp := t.TempDir()
+	marker := filepath.Join(tmp, "nabos-boot-health")
+	write(t, marker, "good "+c.slot+"\n") // stale verdict of an earlier run
 	counter := filepath.Join(tmp, "curl-count")
 	write(t, counter, "0")
 	write(t, filepath.Join(tmp, "sinks"), c.sinks)
@@ -283,22 +289,34 @@ func checkHealth(t *testing.T, c healthCase) (string, []string) {
 		"pactl":   `[ "$XDG_RUNTIME_DIR $LC_ALL $1" = "/run/user/1000 C list" ] && cat ` + tmp + "/$2",
 		// findmnt -n -o COLUMNS --mountpoint PATH
 		"findmnt":     `eval "p=\$$#"; case $p in ` + cases + "*) exit 1;; esac",
-		"rauc":        "exit 0",
+		"rauc":        fmt.Sprintf("exit %d", map[bool]int{false: 0, true: 1}[c.raucFails]),
 		"blkid":       "echo " + c.otherFS,
 		"fw_printenv": fmt.Sprintf("case $2 in BOOT_%s_LEFT) echo %s;; *) echo %s;; esac", c.slot, c.own, c.other),
 	})
 	cmdline := filepath.Join(tmp, "cmdline")
 	write(t, cmdline, "root=/dev/mmcblk0p2 ro rauc.slot="+c.slot+" quiet\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	limit := 30 * time.Second
+	if c.stuck {
+		limit = 6 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", health)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = append(os.Environ(), fake.env("NABOS_CMDLINE="+cmdline, "NABOS_HEALTH_TIMEOUT=2",
-		"NABOS_HEALTH_INTERVAL=1", "NABOS_BOOT_INIT="+bootInit)...)
+		"NABOS_HEALTH_INTERVAL=1", "NABOS_BOOT_INIT="+bootInit, "NABOS_BOOT_HEALTH="+marker)...)
 	out, _ := cmd.Output()
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && !c.stuck {
 		t.Fatal("health check timed out")
 	}
-	return string(out), fake.calls(t)
+	verdict := ""
+	if fi, err := os.Stat(marker); err == nil {
+		if fi.Mode().Perm() != 0o644 {
+			t.Errorf("marker mode %v", fi.Mode())
+		}
+		verdict = read(t, marker)
+	}
+	return string(out), fake.calls(t), verdict
 }
 
 func TestHealth(t *testing.T) {
@@ -322,9 +340,19 @@ func TestHealth(t *testing.T) {
 	}
 
 	check("healthy slot is marked good", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{})
+		_, calls, marker := checkHealth(t, healthCase{})
 		confirmed(t, calls, true)
 		rebooted(t, calls, false)
+		if marker != "good A\n" {
+			t.Errorf("marker %q", marker)
+		}
+	})
+	check("failed mark-good leaves no verdict", func(t *testing.T) {
+		_, calls, marker := checkHealth(t, healthCase{raucFails: true})
+		confirmed(t, calls, true)
+		if marker != "" {
+			t.Errorf("marker %q", marker)
+		}
 	})
 	check("persist list matches boot-init", func(t *testing.T) {
 		m := regexp.MustCompile(`(?m)^PERSIST="([^"]+)"`).FindStringSubmatch(read(t, bootInit))
@@ -333,17 +361,20 @@ func TestHealth(t *testing.T) {
 		}
 	})
 	check("volatile data is never confirmed", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{mounts: mounts(map[string]string{"/data": "tmpfs tmpfs"})})
+		_, calls, marker := checkHealth(t, healthCase{mounts: mounts(map[string]string{"/data": "tmpfs tmpfs"})})
 		confirmed(t, calls, false)
+		if marker != "" {
+			t.Errorf("stale marker %q", marker)
+		}
 	})
 	for _, path := range []string{"/etc/machine-id", "/var/lib/nabos", "/etc/NetworkManager/system-connections"} {
 		check("missing bind "+path+" is never confirmed", func(t *testing.T) {
-			_, calls := checkHealth(t, healthCase{mounts: mounts(map[string]string{path: ""})})
+			_, calls, _ := checkHealth(t, healthCase{mounts: mounts(map[string]string{path: ""})})
 			confirmed(t, calls, false)
 		})
 	}
 	check("bind from elsewhere is never confirmed", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{mounts: mounts(map[string]string{"/var/lib/comitup": "tmpfs"})})
+		_, calls, _ := checkHealth(t, healthCase{mounts: mounts(map[string]string{"/var/lib/comitup": "tmpfs"})})
 		confirmed(t, calls, false)
 	})
 	check("card name matches the pinned sound overlay", func(t *testing.T) {
@@ -357,31 +388,31 @@ func TestHealth(t *testing.T) {
 		}
 	})
 	check("null sink is not audio hardware", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{sinks: nullSink, sources: nullMonitor})
+		_, calls, _ := checkHealth(t, healthCase{sinks: nullSink, sources: nullMonitor})
 		confirmed(t, calls, false)
 		rebooted(t, calls, true)
 	})
 	check("monitor is not a microphone", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{sources: nullMonitor + wm8960Monitor})
+		_, calls, _ := checkHealth(t, healthCase{sources: nullMonitor + wm8960Monitor})
 		confirmed(t, calls, false)
 	})
 	check("WM8960 next to null sink is enough", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{sinks: nullSink + wm8960Sink, sources: wm8960Capture + nullMonitor})
+		_, calls, _ := checkHealth(t, healthCase{sinks: nullSink + wm8960Sink, sources: wm8960Capture + nullMonitor})
 		confirmed(t, calls, true)
 	})
 	check("unhealthy slot with attempts reboots", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{healthyAfter: 100})
+		_, calls, _ := checkHealth(t, healthCase{healthyAfter: 100})
 		rebooted(t, calls, true)
 		confirmed(t, calls, false)
 	})
 	check("exhausted slot falls back to installed other slot", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{healthyAfter: 100, own: "0", other: "3"})
+		_, calls, _ := checkHealth(t, healthCase{healthyAfter: 100, own: "0", other: "3"})
 		rebooted(t, calls, true)
 	})
 	check("no reboot loop when other slot is empty", func(t *testing.T) {
 		// Initial image: slot B has no filesystem, slot A is out of attempts.
 		// Stay up, keep checking, confirm once healthy.
-		out, calls := checkHealth(t, healthCase{healthyAfter: 5, own: "0", other: "3", otherFS: `""`})
+		out, calls, _ := checkHealth(t, healthCase{healthyAfter: 5, own: "0", other: "3", otherFS: `""`})
 		rebooted(t, calls, false)
 		confirmed(t, calls, true)
 		if !strings.Contains(out, "staying up unconfirmed") {
@@ -389,20 +420,36 @@ func TestHealth(t *testing.T) {
 		}
 	})
 	check("all attempts exhausted stays up", func(t *testing.T) {
-		_, calls := checkHealth(t, healthCase{slot: "B", healthyAfter: 4, own: "0", other: "0"})
+		_, calls, marker := checkHealth(t, healthCase{slot: "B", healthyAfter: 4, own: "0", other: "0"})
 		rebooted(t, calls, false)
 		confirmed(t, calls, true)
+		if marker != "good B\n" {
+			t.Errorf("marker %q", marker)
+		}
+	})
+	check("stranded slot is reported for manual repair", func(t *testing.T) {
+		_, calls, marker := checkHealth(t, healthCase{healthyAfter: 100, own: "0", other: "0", stuck: true})
+		rebooted(t, calls, false)
+		confirmed(t, calls, false)
+		if marker != "stranded A\n" {
+			t.Errorf("marker %q", marker)
+		}
 	})
 	check("not booted from a slot does nothing", func(t *testing.T) {
 		tmp := t.TempDir()
 		fake := newFakes(t, tmp, map[string]string{"rauc": "exit 0", "systemctl": "exit 0"})
 		cmdline := filepath.Join(tmp, "cmdline")
 		write(t, cmdline, "root=/dev/mmcblk0p2\n")
-		if r := execute(t, "", fake.env("NABOS_CMDLINE="+cmdline, "NABOS_BOOT_INIT="+bootInit), "sh", health); r.code != 0 {
+		marker := filepath.Join(tmp, "nabos-boot-health")
+		write(t, marker, "good A\n")
+		if r := execute(t, "", fake.env("NABOS_CMDLINE="+cmdline, "NABOS_BOOT_INIT="+bootInit, "NABOS_BOOT_HEALTH="+marker), "sh", health); r.code != 0 {
 			t.Fatalf("exit %d: %s", r.code, r.stderr)
 		}
 		if calls := fake.calls(t); len(calls) != 0 {
 			t.Errorf("calls %q", calls)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Error("stale marker kept")
 		}
 	})
 }

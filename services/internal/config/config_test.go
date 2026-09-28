@@ -90,3 +90,36 @@ func TestNewerVersionAndUnknownFieldsStayReadable(t *testing.T) {
 		t.Fatalf("rollback compatibility: %v %+v", err, st.Get())
 	}
 }
+
+func TestUpdatePreferencesMigrateWithoutEnablingInstallation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"auto_check_updates":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil || st.Get().AutoCheck || st.Get().Updates.Automatic || st.Get().Updates.Channel != "stable" || st.Get().Updates.Start != (HM{3, 0}) {
+		t.Fatalf("migration: %v %+v", err, st.Get())
+	}
+	for _, change := range []func(*Settings){
+		func(s *Settings) { s.Updates.Channel = "unknown" },
+		func(s *Settings) { s.Updates.Start.Hour = 24 },
+		func(s *Settings) { s.Updates.End = s.Updates.Start },
+		func(s *Settings) { s.Updates.Automatic = true },
+	} {
+		if _, err := st.Update(func(s *Settings) error { change(s); return nil }); err == nil {
+			t.Fatal("invalid update policy accepted")
+		}
+	}
+	_, err = st.Update(func(s *Settings) error {
+		s.AutoCheck, s.Updates.Automatic = true, true
+		s.Updates.Channel, s.Updates.Start, s.Updates.End = "test", HM{23, 0}, HM{2, 0}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil || reopened.Get().Updates != st.Get().Updates {
+		t.Fatal("update preferences lost on restart", err)
+	}
+}

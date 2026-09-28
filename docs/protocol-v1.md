@@ -241,12 +241,40 @@ loopback URL. It never downloads a complete stream to disk.
 
 ### Releases
 
-Each release tag `vX.Y.Z` carries the bundles and a `SHA256SUMS` asset
+Each release tag `vX.Y.Z` (including SemVer prereleases such as `v1.2.0-rc.1`) carries the bundles and a `SHA256SUMS` asset
 (`sha256sum` format, one line per asset). The service only accepts assets whose URL
 is `https://github.com/<repo>/releases/download/<tag>/<name>`, redirects to
 `*.githubusercontent.com`, the announced size (≤ 2 GiB) and the listed checksum,
 resumes interrupted downloads, then hands the local file to RAUC, which checks the
 signature and the `compatible`.
+
+The local authenticated `/updates` page lists newer releases and publication
+notes, with a `stable` channel (default) or `test` channel (including prereleases).
+`POST /updates/settings` accepts `mode=manual|notify|auto`, `channel=stable|test`,
+and `start`/`end` local times in `HH:MM` form. Settings retain
+`auto_check_updates` and add `updates` with `automatic`, `channel`, `start`, and
+`end` (`hour`/`min`). Missing fields default to automatic installation disabled,
+stable channel, 03:00–05:00. `POST /updates/check` refreshes the catalogue;
+`POST /updates/install` selects a `tag`, with `retry=true` for an explicit manual
+retry after a failure. Installations never accept a download URL from the browser.
+
+Automatic checks start after five minutes, then run daily; policy changes trigger
+a check. The installation and reboot gates are evaluated every minute. Automatic
+updates require a confirmed current boot, an exact clock, the configured window
+and an idle core/media/voice stack. Windows use the device timezone and may cross
+midnight. One automatic attempt is recorded per window start date, including
+across service restarts and daylight-saving changes. A started RAUC write finishes
+even when the window closes; an automatic reboot waits for another eligible window.
+Manually requested installations keep a manual reboot.
+
+The update journal is `/data/nabos/updates/state.json`. It records the pending
+bundle, source/target slots, boot identity, origin, phase, last automatic attempt
+and blocked versions using an atomic, durable write. The root-owned runtime
+marker `/run/nabos-boot-health` is published by the health script only after
+successful `mark-good`; the script can also mark an exhausted system for manual
+repair. A rollback blocks that version from automatic installation. Ambiguous
+recovery or an unreadable journal suspends automatic installation until an
+explicit manual recovery. Catalogue refreshes never replace installation state.
 
 ### First password
 

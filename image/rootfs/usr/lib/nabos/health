@@ -3,10 +3,15 @@
 # Unhealthy after the timeout: reboot so U-Boot spends another attempt and falls
 # back to the other slot when this one runs out. When no installed slot has
 # attempts left, stay up (reachable for repair or update) and keep checking.
+# The verdict for nab-service goes to a root-owned, world-readable marker:
+# "good SLOT" once RAUC confirmed the slot, "stranded SLOT" while left
+# unconfirmed. A previous verdict of this boot is removed first.
 set -u
 TIMEOUT=${NABOS_HEALTH_TIMEOUT:-300}
 INTERVAL=${NABOS_HEALTH_INTERVAL:-5}
 CMDLINE=${NABOS_CMDLINE:-/proc/cmdline}
+MARKER=${NABOS_BOOT_HEALTH:-/run/nabos-boot-health}
+rm -f "$MARKER"
 # DATA and PERSIST: what boot-init mounted before systemd.
 NABOS_BOOT_INIT_LIB=1 . "${NABOS_BOOT_INIT:-/usr/lib/nabos/boot-init}"
 
@@ -57,6 +62,10 @@ healthy() {
 
 left() { fw_printenv -n "BOOT_$1_LEFT" 2> /dev/null || echo 0; }
 
+mark() {
+	printf '%s %s\n' "$1" "$slot" > "$MARKER.tmp" && chmod 0644 "$MARKER.tmp" && mv -f "$MARKER.tmp" "$MARKER"
+}
+
 waited=0
 stay=
 until healthy; do
@@ -74,10 +83,12 @@ until healthy; do
 			exec systemctl reboot
 		fi
 		echo "no slot has attempts left: staying up unconfirmed"
+		mark stranded
 		stay=1
 	fi
 	sleep "$INTERVAL"
 	waited=$((waited + INTERVAL))
 done
 echo "slot $slot healthy, marking it good"
-exec rauc status mark-good
+rauc status mark-good || exit
+mark good

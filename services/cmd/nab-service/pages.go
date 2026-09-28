@@ -23,7 +23,6 @@ import (
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/pynab"
 	"github.com/guilhem/nabos/services/internal/system"
-	"github.com/guilhem/nabos/services/internal/update"
 	"github.com/guilhem/nabos/services/internal/web"
 )
 
@@ -134,22 +133,7 @@ func (a *App) routes() http.Handler {
 		}
 		back(w, r, "/settings", err, "")
 	})
-	m.HandleFunc("GET /updates", func(w http.ResponseWriter, r *http.Request) {
-		compatible, slot := update.SlotInfo()
-		a.render(w, r, "updates", "Mises à jour", map[string]any{"Status": a.upd.Status(), "Configured": a.upd.Configured(), "Compatible": compatible, "Slot": slot})
-	})
-	m.HandleFunc("POST /updates/check", func(w http.ResponseWriter, r *http.Request) {
-		_, err := a.upd.Check(r.Context())
-		back(w, r, "/updates", err, "Vérification terminée")
-	})
-	m.HandleFunc("POST /updates/install", func(w http.ResponseWriter, r *http.Request) {
-		go func() {
-			if err := a.upd.InstallLatest(context.Background()); err != nil {
-				slog.Error("update", "err", err)
-			}
-		}()
-		back(w, r, "/updates", nil, "Installation lancée")
-	})
+	a.updateRoutes(m)
 	m.HandleFunc("GET /tags", func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		tag := a.lastTag
@@ -198,6 +182,7 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		"Clock": clk, "Now": time.Now().In(a.location()).Format("15:04"),
 	}
 	a.mu.Unlock()
+	data["Update"] = a.proposedUpdate()
 	a.render(w, r, "home", "Nabaztag", data)
 }
 
@@ -231,7 +216,14 @@ func (a *App) action(w http.ResponseWriter, r *http.Request) {
 		err = a.do(ctx, "play", map[string]any{"sequence": []any{map[string]any{"audio": []string{res}}}}, 5*time.Minute)
 		msg = "Son joué"
 	case "reboot":
-		err = system.Reboot()
+		a.mu.Lock()
+		updating := a.updateBusy
+		a.mu.Unlock()
+		if state := a.upd.Status().State; updating || state == "installing" || state == "downloading" {
+			err = errors.New("attendez la fin de la mise à jour")
+		} else {
+			err = a.rebootSystem()
+		}
 		msg = "Redémarrage…"
 	case "poweroff":
 		err = system.PowerOff()
@@ -315,7 +307,6 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		if pw := f("ha_password"); pw != "" {
 			h.Password = pw
 		}
-		s.AutoCheck = f("auto_check") == "on"
 		return nil
 	})
 	if err != nil {
