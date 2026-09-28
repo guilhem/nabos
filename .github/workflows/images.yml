@@ -11,6 +11,7 @@ on:
       - 'assets/**'
       - 'LICENSE'
       - 'NOTICE'
+      - 'Makefile'
       - '.github/workflows/**'
   pull_request:
     paths:
@@ -21,6 +22,7 @@ on:
       - 'assets/**'
       - 'LICENSE'
       - 'NOTICE'
+      - 'Makefile'
       - '.github/workflows/**'
   workflow_dispatch:
 permissions:
@@ -31,10 +33,14 @@ concurrency:
 jobs:
   test:
     uses: ./.github/workflows/tests.yml
-  components:
-    uses: ./.github/workflows/components.yml
+  go:
+    uses: ./.github/workflows/go.yml
+  rust:
+    uses: ./.github/workflows/rust.yml
+  uboot:
+    uses: ./.github/workflows/uboot.yml
   build:
-    needs: [test, components]
+    needs: [test, go, rust, uboot]
     strategy:
       fail-fast: false
       matrix:

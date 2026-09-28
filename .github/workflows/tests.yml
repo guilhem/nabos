@@ -38,4 +38,7 @@ jobs:
         run: |
           for script in ../image/*.sh; do bash -n "$script"; done
           shellcheck -x ../image/*.sh
+          for component in go rust uboot; do
+            { printf 'set -euo pipefail\n'; make -C .. --no-print-directory -n "$component"; } | shellcheck -s bash -
+          done
           NABOS_INTEGRATION=1 go test -count=1 -v ./tests/integration

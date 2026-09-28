@@ -81,10 +81,10 @@ if [[ -n $replay ]]; then
   cmp "$repo/services/go.sum" "$payload/inputs/go.sum"
   cmp "$repo/image/lva-requirements.lock" "$payload/inputs/lva-requirements.lock"
 fi
-# CI supplies per-component artifacts; local/replay builds use the same scripts.
+# CI supplies per-component artifacts; local/replay builds use the same Make targets.
 revision=$(git -C "$repo" rev-parse HEAD)
-replay_args=()
-if [[ -n $replay ]]; then replay_args=("$payload/inputs"); fi
+replay_inputs=
+if [[ -n $replay ]]; then replay_inputs=$payload/inputs; fi
 for component in go rust uboot; do
   component_out=$work/components/$component
   if [[ -n $components ]]; then
@@ -93,10 +93,9 @@ for component in go rust uboot; do
     if [[ $component == go ]]; then
       [[ $(cat "$component_out/version") == "$version" ]] || { echo 'Service version mismatch' >&2; exit 1; }
     fi
-  elif [[ $component == go ]]; then
-    bash "$repo/image/build-go.sh" "$target" "$version" "$component_out" "${replay_args[@]}"
   else
-    bash "$repo/image/build-$component.sh" "$target" "$component_out" "${replay_args[@]}"
+    make -C "$repo" "$component" TARGET="$target" VERSION="$version" \
+      OUT="$component_out" INPUTS="$replay_inputs"
   fi
   cp -a "$component_out/inputs/." "$payload/inputs/"
 done
