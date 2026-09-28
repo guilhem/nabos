@@ -35,6 +35,7 @@ type State struct {
 	RightEar       *int      `json:"spouse_right_ear_position"`
 	LastStatusID   string    `json:"last_processed_status_id"`
 	LastStatusDate time.Time `json:"last_processed_status_date"`
+	HistoryBefore  time.Time `json:"history_before"`
 }
 
 type Account struct {
@@ -183,6 +184,7 @@ func (s *State) SetAccount(token string, a Account) error {
 		s.clearPairing()
 		s.LastStatusID = ""
 		s.LastStatusDate = time.Now().UTC()
+		s.HistoryBefore = s.LastStatusDate
 	}
 	s.AccessToken, s.AccountID, s.Username, s.DisplayName, s.Avatar = token, a.ID, a.Username, a.DisplayName, a.Avatar
 	return nil
@@ -192,6 +194,7 @@ func (s *State) ClearAccount() {
 	s.AccessToken, s.AccountID, s.Username, s.DisplayName, s.Avatar = "", "", "", "", ""
 	s.clearPairing()
 	s.LastStatusID, s.LastStatusDate = "", time.Time{}
+	s.HistoryBefore = time.Time{}
 }
 
 func (s *State) clearPairing() {

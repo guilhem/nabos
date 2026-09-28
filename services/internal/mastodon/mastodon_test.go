@@ -434,10 +434,31 @@ func TestFreshAccountSkipsHistoryThenAcceptsDelayedDelivery(t *testing.T) {
 	update := func(f func(*State) error) error { return f(&s) }
 	var sounds []string
 	play := func(sound string) { sounds = append(sounds, sound) }
+	updates := 0
+	interrupted := func(f func(*State) error) error {
+		updates++
+		if updates == 2 {
+			return fmt.Errorf("interrupted initial catch-up")
+		}
+		return update(f)
+	}
+	if err := c.catchUp(context.Background(), "token", func() State { return s }, interrupted, nil, play); err == nil {
+		t.Fatal("expected interruption after the first historical status")
+	}
+	if s.LastStatusID != "1" || s.HistoryBefore.IsZero() {
+		t.Fatalf("initial boundary lost at interruption: %+v", s)
+	}
+	// Reload persisted state as after a service restart, with a nonempty ID
+	// cursor that still belongs to an unfinished initial catch-up.
+	raw, _ := json.Marshal(s)
+	s = State{}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.catchUp(context.Background(), "token", func() State { return s }, update, nil, play); err != nil {
 		t.Fatal(err)
 	}
-	if pages != 1 || s.LastStatusID != "2" || s.PairingState != "" || len(sounds) != 0 {
+	if pages != 2 || s.LastStatusID != "2" || !s.HistoryBefore.IsZero() || s.PairingState != "" || len(sounds) != 0 {
 		t.Fatalf("history replayed: pages=%d state=%+v sounds=%v", pages, s, sounds)
 	}
 	for range 2 {

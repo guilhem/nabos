@@ -225,8 +225,8 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 	var statuses []Status
 	initial := load()
 	cursor, _ := statusNumber(initial.LastStatusID)
-	var notBefore time.Time
-	if initial.LastStatusID == "" {
+	notBefore := initial.HistoryBefore
+	if notBefore.IsZero() && initial.LastStatusID == "" {
 		// Freeze the OAuth boundary for the whole initial batch, even while
 		// processing historical statuses establishes the local-ID cursor.
 		notBefore = initial.LastStatusDate
@@ -303,6 +303,14 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 		if err := c.process(ctx, token, st, notBefore, update, onEars, onSound); err != nil {
 			return err
 		}
+	}
+	if !notBefore.IsZero() {
+		return update(func(s *State) error {
+			if s.AccessToken == token {
+				s.HistoryBefore = time.Time{}
+			}
+			return nil
+		})
 	}
 	return nil
 }
