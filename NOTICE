@@ -3,11 +3,17 @@ The full license is in LICENSE.
 
 Reused implementation and media
 
-The hardware, choreography, clock and weather implementations adapt work by
-the PyNab contributors: https://github.com/nabaztag2018/pynab.
-The device feedback, clock, weather, sleep/wakeup sounds and choreography files
-also come from that project. Their contents and embedded metadata are unchanged;
-resource directories were renamed and file aliases were materialized.
+The hardware, choreography, clock, weather, tai-chi, surprise, 8-ball, book,
+air quality, radio, IFTTT, webhook and Mastodon implementations adapt work
+by the PyNab contributors:
+https://github.com/nabaztag2018/pynab.
+The device feedback, clock, weather, sleep/wakeup, surprise, 8-ball, air
+quality, book, Mastodon and radio sounds, the book titles and voice
+descriptions, and the choreography files also come from that project, at
+commit f24d3e1f7c65f7011e49b55c0e9736f3c13434b7. Their contents and embedded
+metadata are unchanged; resource directories were renamed, file aliases were
+materialized, and the 8-ball listen choreography embedded in PyNab's source was
+written to its own file.
 Attribution to the original contributors is retained here, independently of
 NabOS's repository, build, runtime and update infrastructure.
 
