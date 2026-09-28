@@ -5,8 +5,8 @@ set -euo pipefail
 phase=${1:?packages, drivers or finalize}
 target=${2:?zero-armv6 or zero2-arm64}
 case "$target" in
-  zero-armv6) flavour=rpi-v6; defconfig=rpi_0_w_defconfig ;;
-  zero2-arm64) flavour=rpi-v8; defconfig=rpi_arm64_defconfig ;;
+  zero-armv6) flavour=rpi-v6 ;;
+  zero2-arm64) flavour=rpi-v8 ;;
   *) exit 2 ;;
 esac
 export DEBIAN_FRONTEND=noninteractive
@@ -118,18 +118,6 @@ drivers)
   cmake --build "$src/led-build" --parallel 2
   cmake --install "$src/led-build"
   ldconfig
-  # Native target compiler also gives ARMv6 the correct libgcc ABI.
-  make -C "$src/uboot" "$defconfig"
-  "$src/uboot/scripts/kconfig/merge_config.sh" -m -O "$src/uboot" "$src/uboot/.config" /nabos-build/image/boot/uboot.config
-  make -C "$src/uboot" olddefconfig
-  for option in CONFIG_ENV_IS_IN_MMC=y CONFIG_ENV_REDUNDANT=y CONFIG_ENV_SIZE=0x10000 \
-    CONFIG_ENV_OFFSET=0x100000 CONFIG_ENV_OFFSET_REDUND=0x200000 CONFIG_OF_LIBFDT_OVERLAY=y \
-    CONFIG_WDT=y CONFIG_WDT_BCM2835=y CONFIG_CMD_WDT=y CONFIG_WATCHDOG=y \
-    '# CONFIG_WATCHDOG_AUTOSTART is not set'; do
-    grep -qxF "$option" "$src/uboot/.config" || { echo "U-Boot lacks $option" >&2; exit 1; }
-  done
-  make -C "$src/uboot" -j2
-  cp "$src/uboot/u-boot.bin" /nabos-build/u-boot.bin
   ;;
 finalize)
   kernel=$(cat /nabos-build/kernel-release)

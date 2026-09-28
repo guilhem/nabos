@@ -11,8 +11,8 @@ on:
       - 'assets/**'
       - 'LICENSE'
       - 'NOTICE'
-      - '.github/workflows/images.yml'
-      - '.github/workflows/tests.yml'
+      - 'Makefile'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'core/**'
@@ -22,8 +22,8 @@ on:
       - 'assets/**'
       - 'LICENSE'
       - 'NOTICE'
-      - '.github/workflows/images.yml'
-      - '.github/workflows/tests.yml'
+      - 'Makefile'
+      - '.github/workflows/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -33,18 +33,22 @@ concurrency:
 jobs:
   test:
     uses: ./.github/workflows/tests.yml
+  go:
+    uses: ./.github/workflows/go.yml
+  rust:
+    uses: ./.github/workflows/rust.yml
+  uboot:
+    uses: ./.github/workflows/uboot.yml
   build:
-    needs: test
+    needs: [test, go, rust, uboot]
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: zero-armv6
             runner: ubuntu-24.04
-            rust-target: arm-unknown-linux-gnueabihf
           - target: zero2-arm64
             runner: ubuntu-24.04-arm
-            rust-target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
@@ -54,14 +58,12 @@ jobs:
           go-version: '1.27.1'
           cache-dependency-path: services/go.sum
       - name: Build dependencies
-        run: |
-          bash image/host-deps.sh
-          rustup toolchain install 1.98.1 --profile minimal --target '${{ matrix.rust-target }}'
-          rustup default 1.98.1
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        run: bash image/host-deps.sh
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          path: ~/.cargo/registry
-          key: cargo-${{ runner.arch }}-${{ hashFiles('core/Cargo.lock') }}
+          pattern: '*-${{ matrix.target }}'
+          path: build/components
+          merge-multiple: true
       - name: Prepare signing material
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -80,9 +82,9 @@ jobs:
           RAUC_CERT: ${{ runner.temp }}/rauc-cert.pem
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            bash image/build.sh "$TARGET" "$GITHUB_REF_NAME"
+            bash image/build.sh "$TARGET" "$GITHUB_REF_NAME" --components build/components
           else
-            bash image/build.sh "$TARGET" "dev-${GITHUB_SHA:0:12}" --development
+            bash image/build.sh "$TARGET" "dev-${GITHUB_SHA:0:12}" --development --components build/components
           fi
       - name: Remove signing key
         if: always()

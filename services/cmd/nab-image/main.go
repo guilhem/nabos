@@ -26,7 +26,7 @@ const usage = `usage:
   nab-image get LOCK KEY...                        print string values at dotted keys
   nab-image fetch LOCK TARGET DIR [--sources-only] download and verify locked inputs
   nab-image unpack LOCK INPUTS SRC                 extract locked source archives to SRC/NAME
-  nab-image extract ARCHIVE.tar.xz DIR             extract a build-inputs replay archive
+  nab-image extract ARCHIVE.tar[.xz] DIR           extract component or replay inputs
   nab-image drivers LOCK --archives DIR [--kernel KERNEL]
                                                    patch and build driver overlays (and modules)`
 
@@ -50,7 +50,7 @@ func run(args []string) error {
 	case cmd == "unpack" && len(args) == 3:
 		return unpackSources(args[0], args[1], args[2])
 	case cmd == "extract" && len(args) == 2:
-		return extractXZ(args[0], args[1])
+		return extractArchive(args[0], args[1])
 	case cmd == "drivers" && len(args) >= 3:
 		return drivers(args[0], args[1:])
 	}
@@ -261,6 +261,19 @@ func unpackSources(lockPath, inputs, src string) error {
 		}
 	}
 	return nil
+}
+
+func extractArchive(archive, dir string) error {
+	if strings.HasSuffix(archive, ".xz") {
+		return extractXZ(archive, dir)
+	}
+	f, err := os.Open(archive)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = extract(tar.NewReader(f), dir, false)
+	return err
 }
 
 // extractXZ extracts a replay archive; xz itself only decompresses.

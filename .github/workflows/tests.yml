@@ -17,14 +17,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto mosquitto-clients shellcheck device-tree-compiler
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.98.1
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
+          toolchain: '1.98.1'
+          components: rustfmt,clippy
+          cache-workspaces: core
       - name: Rust
         run: |
           cargo fmt --manifest-path core/Cargo.toml --check
@@ -39,5 +36,9 @@ jobs:
       - name: Shell and protocol checks
         working-directory: services
         run: |
-          bash -n ../image/build.sh ../image/prepare.sh ../image/host-deps.sh
+          for script in ../image/*.sh; do bash -n "$script"; done
+          shellcheck -x ../image/*.sh
+          for component in go rust uboot; do
+            { printf 'set -euo pipefail\n'; make -C .. --no-print-directory -n "$component"; } | shellcheck -s bash -
+          done
           NABOS_INTEGRATION=1 go test -count=1 -v ./tests/integration

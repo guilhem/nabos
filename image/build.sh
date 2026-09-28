@@ -10,22 +10,25 @@ if [[ ${NABOS_BUILD_NAMESPACE:-} != 1 ]]; then
     bash "$0" "$@"
 fi
 repo=$(cd "$(dirname "$0")/.." && pwd)
-target=${1:?Usage: image/build.sh zero-armv6|zero2-arm64 VERSION [--development] [--replay INPUTS.tar.xz]}
+target=${1:?Usage: image/build.sh TARGET VERSION [--development] [--replay INPUTS.tar.xz | --components DIR]}
 version=${2:?release version required}
 shift 2
 development=false
 replay=
+components=
 while (( $# )); do
   case $1 in
     --development) development=true; shift ;;
     --replay) replay=$(realpath "${2:?archive required}"); shift 2 ;;
+    --components) components=$(realpath "${2:?component directory required}"); shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+[[ -z $replay || -z $components ]] || { echo 'Choose --replay or --components' >&2; exit 2; }
 [[ $target == zero-armv6 || $target == zero2-arm64 ]] || exit 2
 [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,63}$ ]] || { echo 'Invalid version' >&2; exit 2; }
 # python3 is required by the upstream U-Boot build; NabOS host helpers use Go.
-for tool in sudo python3 curl xz tar sfdisk losetup e2fsck resize2fs genimage mkfs.vfat mkfs.ext4 mcopy mkimage mkenvimage rauc openssl clang ld.lld cargo go patch; do
+for tool in sudo python3 curl xz tar sfdisk losetup e2fsck resize2fs genimage mkfs.vfat mkfs.ext4 mcopy mkimage mkenvimage rauc openssl go patch jq; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
 sudo -n true
@@ -34,17 +37,13 @@ lock=$repo/image/sources.lock.json
 mkdir -p "$repo/build/iot"
 nab_image=$repo/build/iot/nab-image
 (cd "$repo/services" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -o "$nab_image" ./cmd/nab-image)
-mapfile -t expected < <("$nab_image" get "$lock" tools.rust tools.go)
-found=("$(rustc --version | cut -d' ' -f2)" "$(go env GOVERSION)")
-found[1]=${found[1]#go}
-[[ ${#expected[@]} == 2 && ${expected[*]} == "${found[*]}" ]] ||
-  { echo "Toolchain mismatch: expected rust/go ${expected[*]}, got ${found[*]}" >&2; exit 1; }
+[[ $(go env GOVERSION) == "go$("$nab_image" get "$lock" tools.go)" ]] ||
+  { echo 'Go toolchain mismatch' >&2; exit 1; }
 keys=()
-for key in arch rust_target goarch goarm compatible extract_sha256 kernel_image dtb; do keys+=("targets.$target.$key"); done
+for key in arch compatible extract_sha256 kernel_image dtb; do keys+=("targets.$target.$key"); done
 mapfile -t values < <("$nab_image" get "$lock" "${keys[@]}")
 (( ${#values[@]} == ${#keys[@]} )) || { echo "Incomplete target lock: $target" >&2; exit 1; }
-arch=${values[0]}; rust_target=${values[1]}; goarch=${values[2]}; goarm=${values[3]}
-compatible=${values[4]}; image_hash=${values[5]}; kernel_image=${values[6]}; dtb=${values[7]}
+arch=${values[0]}; compatible=${values[1]}; image_hash=${values[2]}; kernel_image=${values[3]}; dtb=${values[4]}
 mkdir -p "$repo/dist/$target"
 work=$(mktemp -d "$repo/build/iot/$target.XXXXXX")
 out=$repo/dist/$target
@@ -82,6 +81,24 @@ if [[ -n $replay ]]; then
   cmp "$repo/services/go.sum" "$payload/inputs/go.sum"
   cmp "$repo/image/lva-requirements.lock" "$payload/inputs/lva-requirements.lock"
 fi
+# CI supplies per-component artifacts; local/replay builds use the same Make targets.
+revision=$(git -C "$repo" rev-parse HEAD)
+replay_inputs=
+if [[ -n $replay ]]; then replay_inputs=$payload/inputs; fi
+for component in go rust uboot; do
+  component_out=$work/components/$component
+  if [[ -n $components ]]; then
+    "$nab_image" extract "$components/$component-$target.tar" "$component_out"
+    printf '%s\n' "$target" "$revision" | cmp - "$component_out/build-info"
+    if [[ $component == go ]]; then
+      [[ $(cat "$component_out/version") == "$version" ]] || { echo 'Service version mismatch' >&2; exit 1; }
+    fi
+  else
+    make -C "$repo" "$component" TARGET="$target" VERSION="$version" \
+      OUT="$component_out" INPUTS="$replay_inputs"
+  fi
+  cp -a "$component_out/inputs/." "$payload/inputs/"
+done
 "$nab_image" fetch "$lock" "$target" "$payload/inputs"
 cp "$lock" "$payload/inputs/sources.lock.json"
 cp "$repo/core/Cargo.lock" "$repo/services/go.sum" "$payload/inputs/"
@@ -122,39 +139,21 @@ fi
 in_target() { sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /bin/bash /nabos-build/image/prepare.sh "$1" "$target"; }
 in_target packages
 # Execute boot.scr in U-Boot's actual parser, including both slot choices and
-# failure paths. Build this out of tree before the native target U-Boot build.
+# failure paths. This sandbox is native to the image assembly runner.
 make -C "$payload/src/uboot" O="$work/uboot-sandbox" sandbox_defconfig
 "$payload/src/uboot/scripts/config" --file "$work/uboot-sandbox/.config" \
   -d SANDBOX_SDL -d TOOLS_MKEFICAPSULE -d UNIT_TEST -d EFI_CAPSULE_AUTHENTICATE \
   -d EFI_CAPSULE_ON_DISK -d CMD_UPL -d UPL
 make -C "$payload/src/uboot" O="$work/uboot-sandbox" olddefconfig
-make -C "$payload/src/uboot" O="$work/uboot-sandbox" -j2 CONFIG_PYLIBFDT= u-boot tools
+make -C "$payload/src/uboot" O="$work/uboot-sandbox" -j"$(nproc)" CONFIG_PYLIBFDT= u-boot tools
 in_target drivers
 # Locked source archives are retained; release images do not need build objects.
 sudo rm -rf "$payload/src/led-build"
 
-# Cross-link against the image's libc and libgcc, never Ubuntu's ARMv7 runtime.
-linker=$work/target-cc
-if [[ $arch == armhf ]]; then
-  triple=arm-linux-gnueabihf; cpu=(-mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=hard)
-else
-  triple=aarch64-linux-gnu; cpu=(-mcpu=cortex-a53)
-fi
-wrapper "$linker" clang "--target=$triple" "--sysroot=$root" "--gcc-toolchain=$root/usr" -fuse-ld=lld "${cpu[@]}"
-linker_key=CARGO_TARGET_$(tr '[:lower:]-' '[:upper:]_' <<< "$rust_target")_LINKER
-if [[ ! -d $payload/inputs/cargo-vendor ]]; then
-  cargo vendor --locked --manifest-path "$repo/core/Cargo.toml" "$payload/inputs/cargo-vendor" > /dev/null
-fi
-env "$linker_key=$linker" CARGO_TARGET_DIR="$work/rust-target" \
-  cargo --config 'source.crates-io.replace-with="vendored-sources"' \
-    --config "source.vendored-sources.directory=\"$payload/inputs/cargo-vendor\"" \
-    build --locked --offline --release --manifest-path "$repo/core/Cargo.toml" --target "$rust_target"
 export GOMODCACHE="$payload/inputs/go-modcache"
-if [[ -n $replay ]]; then export GOPROXY=off; else (cd "$repo/services" && go mod download); fi
-(cd "$repo/services" && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" GOARM="$goarm" \
-  go build -trimpath -ldflags="-s -w -X main.version=$version" -o "$work/nab-service" ./cmd/nab-service)
-sudo install -m755 "$work/rust-target/$rust_target/release/nab-core" "$root/usr/bin/nab-core"
-sudo install -m755 "$work/nab-service" "$root/usr/bin/nab-service"
+export GOPROXY=off
+sudo install -m755 "$work/components/rust/nab-core" "$root/usr/bin/nab-core"
+sudo install -m755 "$work/components/go/nab-service" "$root/usr/bin/nab-service"
 # Exercise the target binaries against a real broker before assembling artifacts.
 # ARMv6 uses the actual image's loader/libc and an ARM1176 CPU, including Go's runtime.
 for name in nab-core nab-service; do
@@ -172,7 +171,6 @@ for name in nab-core nab-service; do
 done
 (cd "$repo/services" && NABOS_INTEGRATION=1 NAB_CORE_BIN="$work/nab-core-test" NAB_SERVICE_BIN="$work/nab-service-test" \
   go test -count=1 -timeout 20m -v ./tests/integration)
-rm -rf "$work/rust-target"
 # Git checkout ownership/umask must not grant the runner write access to system units.
 tar --create --file=- --directory="$repo/image/rootfs" --owner=0 --group=0 --mode=go-w . |
   sudo tar --extract --file=- --directory="$root"
@@ -217,7 +215,7 @@ sudo ln -sfn /run/NetworkManager/resolv.conf "$root/etc/resolv.conf"
 for file in "$root"/boot/firmware/{bootcode.bin,start*.elf,fixup*.dat}; do
   [[ -f $file ]] && cp "$file" "$work/boot/"
 done
-cp "$payload/u-boot.bin" "$work/boot/u-boot.bin"
+cp "$work/components/uboot/u-boot.bin" "$work/boot/u-boot.bin"
 cp "$root/boot/firmware/LICENCE.broadcom" "$work/boot/"
 cp "$repo/image/boot/config.txt" "$work/boot/config.txt"
 cp "$root/boot/dtb/"*.dtb "$work/boot/"
@@ -225,7 +223,6 @@ sed -e "s/@TARGET@/$target/g" -e "s/@KERNEL_IMAGE@/$kernel_image/g" -e "s/@DTB@/
   "$repo/image/boot/boot.env.in" > "$work/boot/boot.env"
 mkimage -A arm -T script -C none -n 'NabOS RAUC A/B' -d "$repo/image/boot/boot.cmd" "$work/boot/boot.scr"
 cp "$root/usr/share/nabos/packages.tsv" "$out/packages-$target.tsv"
-revision=$(git rev-parse HEAD)
 status=$(git status --porcelain)
 dirty=false
 if [[ -n $status ]]; then dirty=true; fi
@@ -257,10 +254,13 @@ printf '[update]\ncompatible=%s\nversion=%s\n\n[bundle]\nformat=verity\n\n[image
   "$compatible" "$version" > "$work/bundle/manifest.raucm"
 rauc bundle --cert="$signing_cert" --key="$signing_key" "$work/bundle" "$out/nabos-$target.raucb"
 rauc info --keyring="$signing_cert" "$out/nabos-$target.raucb"
-xz -T2 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
+echo "$(date -u +%FT%TZ) Compressing SD image"
+xz -T0 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
 cp "$repo/image/sources.lock.json" "$out/sources-$target.lock.json"
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > "$out/host-packages-$target.tsv"
-sudo tar -C "$payload/inputs" -cJf "$out/build-inputs-$target.tar.xz" .
+echo "$(date -u +%FT%TZ) Archiving build inputs"
+sudo tar -C "$payload/inputs" -I 'xz -T0' -cf "$out/build-inputs-$target.tar.xz" .
+echo "$(date -u +%FT%TZ) Finished compression"
 sudo chown "$(id -u):$(id -g)" "$out/build-inputs-$target.tar.xz"
 large=$(find "$out" -maxdepth 1 -type f -size +2147483647c -printf '%f\n')
 [[ -z $large ]] || { echo "Exceeds the GitHub Release 2 GiB asset limit: $large" >&2; exit 1; }

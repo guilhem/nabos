@@ -9,7 +9,7 @@ Les deux cibles partent des images **officielles datées** de Raspberry Pi OS Li
 
 ## Commandes
 
-Utiliser un hôte jetable avec `sudo` sans interaction, Go 1.27.1 et Rust 1.98.1, avec la cible Rust correspondante installée par `rustup target add`. Les commandes sont identiques dans GitHub Actions et en local :
+Utiliser un hôte jetable avec `sudo` sans interaction, Go 1.27.1 et Rust 1.98.1, avec la cible Rust correspondante installée par `rustup target add`. Pour une compilation locale complète, installer aussi le compilateur U-Boot (`gcc-arm-linux-gnueabihf` pour ARMv6, `gcc-aarch64-linux-gnu` pour ARM64), `bc` et `python3-pyelftools` sur l'hôte. Les scripts sont les mêmes en CI et en local :
 
 ```sh
 bash image/host-deps.sh
@@ -33,9 +33,27 @@ La CI utilise les secrets GitHub `RAUC_SIGNING_KEY` et `RAUC_SIGNING_CERT` (cont
 
 ## Sources et dépendances
 
-La préparation se fait dans le système cible : installation APT, compilation des pilotes et de U-Boot, puis ajout du cœur Rust et du programme Go compilés en CI. Le linker Rust utilise la libc et libgcc de l'image ARMv6 ; les bibliothèques ARMv7 d'Ubuntu ne sont pas utilisées. La version du noyau vient des répertoires installés et de leurs symboles, jamais de `uname -r` dans le chroot.
+Les workflows réutilisables `go.yml`, `rust.yml` et `uboot.yml` ont chacun leur matrice de plateformes `[zero-armv6, zero2-arm64]` : six jobs indépendants, en parallèle des tests. `actions/setup-go` gère les modules et objets Go avec son cache intégré ; `actions-rust-lang/setup-rust-toolchain` installe Rust et gère le cache Cargo et sysroot ; U-Boot utilise ccache. Les caches sont séparés par cible et chaîne de compilation. Le job d'image attend leurs succès, récupère les archives de la même exécution et vérifie leur cible, leur révision et la version du service avant installation.
 
-Chaque image archive les `.deb` ajoutés/remplacés avec SHA-256 et inventaire. Les sources des pilotes, les dépendances Cargo/Go et les wheels Python ARM64 sont aussi archivés. Les fichiers Cargo.lock et go.sum sont vérifiés lors d'une reconstruction. Pour réutiliser les dépendances d'une release :
+Go et Rust sont cross-compilés sur x86-64. Rust utilise un petit sysroot dont les quatre paquets sont verrouillés par URL et SHA-256 dans `image/rust-sysroots.lock.json` : libc, fichiers de démarrage et libgcc. Les paquets ARMv6 viennent de Raspbian, jamais de Debian/Ubuntu ARMv7. U-Boot ARMv6 est cross-compilé sur x86-64 avec sa libgcc privée ; U-Boot ARM64 est construit sur un runner ARM64. Ses options A/B et watchdog ainsi que l'architecture de l'ELF sont vérifiées avant publication de l'artefact.
+
+La préparation dans le système cible conserve APT et les petits composants C/pilotes qui dépendent de son noyau et de ses bibliothèques. La version du noyau vient des répertoires installés et de leurs symboles, jamais de `uname -r`. Les tests d'intégration exécutent les binaires livrés contre le système cible (QEMU ARM1176 pour ARMv6), puis le sandbox U-Boot vérifie le démarrage avant assemblage et signature. La compression de l'image et des entrées utilise `xz -T0`, avec des horodatages séparés dans les logs.
+
+Pour assembler des composants déjà construits, placer les trois fichiers `go-<cible>.tar`, `rust-<cible>.tar` et `uboot-<cible>.tar` dans un répertoire, puis passer `--components /chemin/composants` à `image/build.sh`. Rust et les compilateurs cross ne sont alors pas nécessaires au job d'image. Sans cette option, le script appelle les cibles `go`, `rust` et `uboot` du Makefile.
+
+Le Makefile appelle directement `go build`, `cargo build` et le Makefile d'U-Boot, qui gèrent leurs compilations incrémentales. Il prépare aussi les entrées verrouillées et vérifie la compatibilité ARMv6. Les mêmes cibles servent en CI et en local :
+
+```sh
+make go TARGET=zero-armv6 VERSION=dev-local
+make rust TARGET=zero-armv6
+make uboot TARGET=zero-armv6
+# Ajouter l'archive pour le job d'assemblage :
+make package-go TARGET=zero-armv6 VERSION=dev-local
+```
+
+Les sorties sont dans `build/<composant>/<cible>/` et les archives dans `build/components/`. Les cibles `package-rust` et `package-uboot` suivent la même convention. `OUT=/chemin/sortie` change le répertoire de sortie ; `INPUTS=/chemin/entrees-archivees` active le replay sans téléchargement des dépendances. La compilation Go utilise `CGO_ENABLED=0`, `GOOS=linux` et `GOARCH=arm GOARM=6` ou `GOARCH=arm64`.
+
+Chaque image archive les `.deb` ajoutés/remplacés avec SHA-256 et inventaire. Les sources des pilotes, les dépendances Cargo/Go, le sysroot Rust, les paquets du compilateur U-Boot et les wheels Python ARM64 sont aussi archivés. Les verrous Cargo, Go et sysroot sont vérifiés lors d'une reconstruction. Les caches de téléchargement restent une optimisation : une disparition des anciens paquets des miroirs exige de mettre à jour le verrou ou de fournir les entrées archivées. Le répertoire APT `inputs/debs` n'est pas mis en cache : son manifeste active le mode replay et figerait la résolution des paquets.
 
 Les dépendances de Linux Voice Assistant et son backend de build sont verrouillés par URL de wheel et SHA-256 dans `image/lva-requirements.lock` (CPython 3.13 ARM64). Le paquet LVA est construit sans résolution supplémentaire ; l'installation dans l'image est ensuite faite hors ligne.
 
@@ -44,7 +62,7 @@ bash image/build.sh zero-armv6 v2.0.0 --development \
   --replay /chemin/build-inputs-zero-armv6.tar.xz
 ```
 
-Le code et `sources.lock.json` doivent correspondre à cette release. L'image Raspberry Pi officielle est retéléchargée et vérifiée. Les opérations APT et pip dans le chroot utilisent alors les dépendances archivées, sans résolution sur un dépôt vivant. Cela reproduit les entrées logicielles ; les horodatages, signatures et identifiants de systèmes de fichiers ne sont pas déclarés reproductibles bit à bit.
+Le code et les fichiers de verrouillage doivent correspondre à cette release. Utiliser la même architecture d'hôte que la CI de la cible pour exécuter le compilateur U-Boot archivé : x86-64 pour ARMv6, ARM64 pour ARM64. L'image Raspberry Pi officielle est retéléchargée et vérifiée. Les compilations des composants et les opérations APT/pip dans le chroot utilisent alors les dépendances archivées, sans résolution sur un dépôt vivant. Les utilitaires de l'hôte restent ceux d'Ubuntu 24.04. Cela reproduit les entrées logicielles ; les horodatages, signatures et identifiants de systèmes de fichiers ne sont pas déclarés reproductibles bit à bit.
 
 ## Partitionnement et démarrage
 
