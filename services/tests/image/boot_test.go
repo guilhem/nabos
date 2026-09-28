@@ -73,6 +73,9 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	write(f.t, filepath.Join(tree, "boot/kernel"), strings.Repeat("not a real kernel", 64))
 	dtb := filepath.Join(vendorDTBs, dtbs[target])
 	if _, err := os.Stat(dtb); err != nil {
+		if os.Getenv("NABOS_IMAGE_BOOT") != "" {
+			f.t.Fatal(err)
+		}
 		dtb = filepath.Join(f.tmp, "base.dtb")
 	}
 	copyFile(f.t, dtb, filepath.Join(tree, "boot/dtb", dtbs[target]))
@@ -95,6 +98,9 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 	copyFile(t, filepath.Join(f.tmp, "boot.scr"), filepath.Join(boot, "boot.scr"))
 	copyFile(t, filepath.Join(f.tmp, "uboot.env.bin"), filepath.Join(boot, "uboot.env"))
 	env := strings.NewReplacer("@TARGET@", target, "@DTB@", dtbs[target]).Replace(read(t, filepath.Join(bootDir, "boot.env.in")))
+	if boot := os.Getenv("NABOS_IMAGE_BOOT"); boot != "" && target == os.Getenv("NABOS_IMAGE_TARGET") {
+		env = read(t, filepath.Join(boot, "boot.env"))
+	}
 	write(t, filepath.Join(boot, "boot.env"), env)
 	parts := []string{boot, "", "", ""}
 	if slotA {
@@ -154,6 +160,7 @@ func (f *bootFixture) boot(disk, envChanges string, watchdog bool) ([]string, st
 		args = []string{"-d", filepath.Join(f.tmp, "control.dtb")}
 	}
 	cmd := exec.Command(filepath.Join(sandbox, "u-boot"), append(args, "-c", commands)...)
+	cmd.Dir = f.tmp // saveenv and sandbox state belong to this fixture.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +220,10 @@ func newBootFixture(t *testing.T) *bootFixture {
 	run(t, baseDTS, dtc, "-@", "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "base.dtb"), "-")
 	run(t, controlDTS, dtc, "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "control.dtb"), "-")
 	for name, repo := range map[string]string{"tagtagtag-sound": "sound", "tagtagtag-ears": "ears"} {
+		if overlays := os.Getenv("NABOS_IMAGE_OVERLAYS"); overlays != "" {
+			f.overlays[name] = filepath.Join(overlays, name+".dtbo")
+			continue
+		}
 		var dts string
 		if real := find(filepath.Join(sources, repo), name+"-overlay.dts"); len(real) > 0 {
 			// The pinned driver overlays, preprocessed like image/prepare.sh does.
@@ -226,11 +237,16 @@ func newBootFixture(t *testing.T) *bootFixture {
 		run(t, dts, dtc, "-@", "-I", "dts", "-O", "dtb", "-o", out, "-")
 		f.overlays[name] = out
 	}
-	run(t, "", filepath.Join(sandbox, "tools/mkimage"), "-A", "arm", "-T", "script", "-C", "none",
-		"-d", filepath.Join(bootDir, "boot.cmd"), filepath.Join(f.tmp, "boot.scr"))
-	// Same packing as image/build.sh; comment lines must be dropped by mkenvimage.
-	run(t, "", filepath.Join(sandbox, "tools/mkenvimage"), "-r", "-s", "0x10000",
-		"-o", filepath.Join(f.tmp, "uboot.env.bin"), filepath.Join(bootDir, "uboot.env"))
+	if boot := os.Getenv("NABOS_IMAGE_BOOT"); boot != "" {
+		copyFile(t, filepath.Join(boot, "boot.scr"), filepath.Join(f.tmp, "boot.scr"))
+		copyFile(t, os.Getenv("NABOS_IMAGE_ENV"), filepath.Join(f.tmp, "uboot.env.bin"))
+	} else {
+		run(t, "", filepath.Join(sandbox, "tools/mkimage"), "-A", "arm", "-T", "script", "-C", "none",
+			"-d", filepath.Join(bootDir, "boot.cmd"), filepath.Join(f.tmp, "boot.scr"))
+		// Same packing as image/build.sh; comment lines must be dropped by mkenvimage.
+		run(t, "", filepath.Join(sandbox, "tools/mkenvimage"), "-r", "-s", "0x10000",
+			"-o", filepath.Join(f.tmp, "uboot.env.bin"), filepath.Join(bootDir, "uboot.env"))
+	}
 	return f
 }
 
@@ -261,20 +277,34 @@ func lower(lines []string) []string {
 }
 
 func TestBootScript(t *testing.T) {
+	targets := []string{"zero-armv6", "zero2-arm64"}
+	if target := os.Getenv("NABOS_IMAGE_TARGET"); target != "" {
+		targets = []string{target}
+	}
+	for _, target := range targets {
+		t.Run(target, func(t *testing.T) { testBootScript(t, target) })
+	}
+}
+
+func testBootScript(t *testing.T, target string) {
 	f := newBootFixture(t)
-	armv6 := func(t *testing.T, slotB, broken bool, env string, watchdog bool) ([]string, string) {
+	bootFailure := "Unrecognized zImage" // bootz rejects the fixture's dummy kernel.
+	if target == "zero2-arm64" {
+		bootFailure = "booti_setup"
+	}
+	boot := func(t *testing.T, slotB, broken bool, env string, watchdog bool) ([]string, string) {
 		f.t = t
-		return f.boot(f.disk("zero-armv6", true, slotB, broken), env, watchdog)
+		return f.boot(f.disk(target, true, slotB, broken), env, watchdog)
 	}
 
 	t.Run("stored environment is complete", func(t *testing.T) {
-		_, text := armv6(t, false, false, "printenv bootcmd bootdelay scriptaddr;", true)
+		_, text := boot(t, false, false, "printenv bootcmd bootdelay scriptaddr;", true)
 		containsAll(t, strings.Split(text, "\n"), "bootcmd=load mmc 0:1 ${scriptaddr} boot.scr && source ${scriptaddr}",
 			"bootdelay=-2", "scriptaddr=0x05400000")
 	})
 
 	t.Run("first boot uses slot A and never tries empty B", func(t *testing.T) {
-		lines, output := armv6(t, false, false, "", true)
+		lines, output := boot(t, false, false, "", true)
 		if lines[0] != "nabos: trying slot A, 2 attempts left after this one" {
 			t.Errorf("first line %q", lines[0])
 		}
@@ -285,10 +315,10 @@ func TestBootScript(t *testing.T) {
 		if !strings.Contains(output, "Started watchdog@7e100000") {
 			t.Error("watchdog not started")
 		}
-		if !strings.Contains(output, "Unrecognized zImage") { // bootz was used for ARMv6
-			t.Error("bootz not used")
+		if !strings.Contains(output, bootFailure) {
+			t.Errorf("kernel boot command not used for %s", target)
 		}
-		// Only reached in the sandbox because bootz returned.
+		// Only reached in the sandbox because the kernel boot command returned.
 		want := []string{"nabos: slot A did not boot", "nabos: slot B has no attempts left",
 			"nabos: no bootable slot, restoring boot attempts"}
 		if !slices.Equal(lines[max(0, len(lines)-3):], want) {
@@ -297,7 +327,7 @@ func TestBootScript(t *testing.T) {
 	})
 
 	t.Run("primary B without kernel falls through to A in the same boot", func(t *testing.T) {
-		lines, _ := armv6(t, false, false, "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 3;", true)
+		lines, _ := boot(t, false, false, "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 3;", true)
 		want := []string{"nabos: trying slot B, 2 attempts left after this one", "nabos: slot B did not boot",
 			"nabos: trying slot A, 2 attempts left after this one"}
 		if !slices.Equal(lines[:min(3, len(lines))], want) {
@@ -307,7 +337,7 @@ func TestBootScript(t *testing.T) {
 	})
 
 	t.Run("slot B boots from partition 3", func(t *testing.T) {
-		lines, output := armv6(t, true, false, "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
+		lines, output := boot(t, true, false, "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
 		if lines[0] != "nabos: trying slot B, 0 attempts left after this one" {
 			t.Errorf("first line %q", lines[0])
 		}
@@ -318,15 +348,15 @@ func TestBootScript(t *testing.T) {
 	})
 
 	t.Run("missing watchdog never hands control to kernel", func(t *testing.T) {
-		lines, output := armv6(t, false, false, "", false)
+		lines, output := boot(t, false, false, "", false)
 		containsAll(t, lines, "nabos: cannot arm watchdog")
-		if strings.Contains(output, "Unrecognized zImage") {
+		if strings.Contains(output, bootFailure) {
 			t.Error("kernel started without watchdog")
 		}
 	})
 
 	t.Run("exhausted slots restore attempts and reset", func(t *testing.T) {
-		lines, output := armv6(t, false, false, "setenv BOOT_A_LEFT 0;", true)
+		lines, output := boot(t, false, false, "setenv BOOT_A_LEFT 0;", true)
 		want := []string{"nabos: slot A has no attempts left", "nabos: slot B has no attempts left",
 			"nabos: no bootable slot, restoring boot attempts"}
 		if !slices.Equal(lines, want) || !strings.Contains(output, "<reset>") {
@@ -335,7 +365,7 @@ func TestBootScript(t *testing.T) {
 	})
 
 	t.Run("missing A/B state defaults to A", func(t *testing.T) {
-		lines, _ := armv6(t, false, false, "env delete BOOT_ORDER BOOT_A_LEFT BOOT_B_LEFT;", true)
+		lines, _ := boot(t, false, false, "env delete BOOT_ORDER BOOT_A_LEFT BOOT_B_LEFT;", true)
 		if lines[0] != "nabos: trying slot A, 2 attempts left after this one" {
 			t.Errorf("first line %q", lines[0])
 		}
@@ -343,18 +373,8 @@ func TestBootScript(t *testing.T) {
 	})
 
 	t.Run("broken overlay boots the plain DTB", func(t *testing.T) {
-		lines, _ := armv6(t, false, true, "", true)
+		lines, _ := boot(t, false, true, "", true)
 		containsAll(t, lines, "nabos: overlay failed, using the plain DTB")
 		booting(t, lines, "A")
-	})
-
-	t.Run("ARM64 uses booti", func(t *testing.T) {
-		f.t = t
-		lines, output := f.boot(f.disk("zero2-arm64", true, false, false), "", true)
-		containsAll(t, lines, "nabos: overlay tagtagtag-sound applied", "nabos: overlay tagtagtag-ears applied")
-		containsAll(t, lower(lines), "nabos: board revision 0x009000c1")
-		if !strings.Contains(output, "booti_setup") || strings.Contains(output, "Unrecognized zImage") {
-			t.Error("booti not used")
-		}
 	})
 }

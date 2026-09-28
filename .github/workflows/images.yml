@@ -76,7 +76,7 @@ jobs:
           test -n "$SIGNING_CERT"
           printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/rauc-key.pem"
           printf '%s\n' "$SIGNING_CERT" > "$RUNNER_TEMP/rauc-cert.pem"
-      - name: Build SD image and RAUC bundle
+      - name: Assemble clean image, test disposable copy and sign
         env:
           TARGET: ${{ matrix.target }}
           RAUC_KEY: ${{ runner.temp }}/rauc-key.pem

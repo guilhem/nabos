@@ -2,7 +2,7 @@
 # Executed inside the target Raspberry Pi OS filesystem, never on the host.
 set -euo pipefail
 [[ -f /etc/rpi-issue && -d /nabos-build ]] || { echo 'Target chroot required' >&2; exit 1; }
-phase=${1:?packages, drivers or finalize}
+phase=${1:?build-packages, packages, drivers, wheels or finalize}
 target=${2:?zero-armv6 or zero2-arm64}
 case "$target" in
   zero-armv6) flavour=rpi-v6 ;;
@@ -14,15 +14,16 @@ runtime=(ca-certificates curl dbus dbus-user-session polkitd systemd-timesyncd o
   pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils alsa-utils
   libasound2t64 libmpg123-0t64 mpg123 mosquitto mosquitto-clients
   network-manager comitup avahi-daemon rauc rauc-service u-boot-tools libubootenv-tool i2c-tools raspi-utils-dt
-  util-linux fdisk e2fsprogs python3)
+  util-linux fdisk e2fsprogs python3 device-tree-compiler)
 development=(build-essential cmake pkg-config libasound2-dev libssl-dev
-  bison flex bc device-tree-compiler python3-dev python3-setuptools python3-pyelftools
+  bison flex bc python3-dev python3-setuptools python3-pyelftools
   "linux-headers-$flavour")
 inputs=/nabos-build/inputs
 src=/nabos-build/src
+stage=/nabos-build/runtime
 
 case "$phase" in
-packages)
+build-packages|packages)
   # dpkg post-install scripts must not start daemons in the build chroot.
   printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
   chmod 755 /usr/sbin/policy-rc.d
@@ -37,6 +38,13 @@ packages)
   if [[ $target == zero2-arm64 ]]; then
     runtime+=(python3-venv libmpv2 libgomp1)
   fi
+  packages=("${runtime[@]}" "linux-image-$flavour")
+  if [[ $phase == build-packages ]]; then
+    packages+=("${development[@]}")
+  else
+    # The delivery image uses only the package resolution already built against.
+    [[ -f "$inputs/debs/manifest.tsv" ]] || { echo 'Builder package archive required' >&2; exit 1; }
+  fi
   if [[ -f "$inputs/debs/manifest.tsv" ]]; then
     # Replay uses the complete archived package set, not a live APT resolution.
     (cd "$inputs/debs" && sha256sum --check SHA256SUMS)
@@ -45,23 +53,35 @@ packages)
     replay_apt=(-o Dir::Etc::sourcelist=/run/nabos-apt.list -o Dir::Etc::sourceparts=-
       -o Dir::State::lists=/run/nabos-apt-lists)
     apt-get "${replay_apt[@]}" update
-    apt-get "${replay_apt[@]}" install --yes --no-install-recommends \
-      "${runtime[@]}" "${development[@]}" "linux-image-$flavour"
+    apt-get "${replay_apt[@]}" install --yes --no-install-recommends "${packages[@]}"
+    # Development packages may have upgraded runtime libraries in the builder.
+    # Reuse those exact archived upgrades without installing development packages.
+    apt-get "${replay_apt[@]}" upgrade --yes --with-new-pkgs --no-install-recommends
+    if [[ $phase == packages ]]; then
+      # The official Lite base already includes GCC, Make and kernel headers.
+      # Remove those inherited tools; our own build dependencies stay in the clone.
+      apt-get "${replay_apt[@]}" purge --yes --auto-remove \
+        "${development[@]}" gcc g++ cpp make dpkg-dev 'linux-headers-*'
+    fi
   else
     apt-get update
     # APT does not retry all TLS EOFs. Retry only fetching, before dpkg changes
     # the image; successful downloads stay cached and remain hash-checked.
     for attempt in 1 2 3; do
       if apt-get install --download-only --yes --no-install-recommends \
-        "${runtime[@]}" "${development[@]}" "linux-image-$flavour"; then break; fi
+        "${packages[@]}"; then break; fi
       (( attempt < 3 )) || exit 1
     done
-    apt-get install --no-download --yes --no-install-recommends "${runtime[@]}" "${development[@]}" "linux-image-$flavour"
+    apt-get install --no-download --yes --no-install-recommends "${packages[@]}"
     cp /var/cache/apt/archives/*.deb "$inputs/debs/"
     dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > "$inputs/debs/manifest.tsv"
     (cd "$inputs/debs" && dpkg-scanpackages . /dev/null | gzip -n > Packages.gz
       sha256sum ./*.deb Packages.gz > SHA256SUMS)
   fi
+  # Purging inherited tools must not remove any runtime dependency (e.g. dtoverlay).
+  dpkg-query -W -f='${binary:Package}\t${db:Status-Status}\n' "${runtime[@]}" "linux-image-$flavour" |
+    awk -F '\t' '$2 != "installed" { print "Missing runtime package: " $0; failed = 1 }
+      END { exit failed }'
   # A fixed uid is shared by headless PipeWire and the application services.
   if ! getent passwd nabos >/dev/null; then
     existing=$(getent passwd 1000 || true)
@@ -83,15 +103,26 @@ packages)
   mapfile -t kernels < <(find /lib/modules -mindepth 1 -maxdepth 1 -type d -name "*-$flavour" -printf '%f\n' | sort -V)
   (( ${#kernels[@]} > 0 )) || { echo "No $flavour kernel installed" >&2; exit 1; }
   kernel=${kernels[-1]}
-  [[ -f /lib/modules/$kernel/build/Module.symvers ]] || { echo 'Matching kernel build symbols missing' >&2; exit 1; }
-  for option in CONFIG_BCM2835_WDT=y CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y; do
-    grep -qxF "$option" "/lib/modules/$kernel/build/.config" || { echo "Kernel lacks $option" >&2; exit 1; }
-  done
-  printf '%s\n' "$kernel" > /nabos-build/kernel-release
+  if [[ $phase == build-packages ]]; then
+    [[ -f /lib/modules/$kernel/build/Module.symvers ]] || { echo 'Matching kernel build symbols missing' >&2; exit 1; }
+    [[ $(dpkg-query -W -f='${Version}' "linux-image-$kernel") == \
+       "$(dpkg-query -W -f='${Version}' "linux-headers-$kernel")" ]] || { echo 'Kernel/header package version mismatch' >&2; exit 1; }
+    for option in CONFIG_BCM2835_WDT=y CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y; do
+      grep -qxF "$option" "/lib/modules/$kernel/build/.config" || { echo "Kernel lacks $option" >&2; exit 1; }
+    done
+    printf '%s\n' "$kernel" > /nabos-build/kernel-release
+    dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /nabos-build/builder-packages.tsv
+  else
+    [[ $kernel == "$(cat /nabos-build/kernel-release)" ]] || { echo 'Builder/runtime kernel mismatch' >&2; exit 1; }
+    dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /tmp/runtime-packages.tsv
+    awk -F '\t' 'NR == FNR { versions[$1 FS $3] = $2; next }
+      versions[$1 FS $3] != $2 { print "Builder/runtime package mismatch: " $0; failed = 1 }
+      END { exit failed }' /nabos-build/builder-packages.tsv /tmp/runtime-packages.tsv
+  fi
   ;;
 drivers)
   kernel=$(cat /nabos-build/kernel-release)
-  mkdir -p "/lib/modules/$kernel/updates/nabos" /boot/firmware/overlays
+  mkdir -p "$stage/usr/lib/modules/$kernel/updates/nabos" "$stage/boot/firmware/overlays"
   for driver in ears sound cr14 nfc; do
     directory=$src/$driver
     [[ -d $directory ]] || exit 1
@@ -99,30 +130,28 @@ drivers)
       patch --directory="$directory" -p1 < "/nabos-build/image/patches/$driver.patch"
     fi
     make -C "/lib/modules/$kernel/build" M="$directory" -j2 modules
-    find "$directory" -maxdepth 1 -name '*.ko' -exec install -m644 '{}' "/lib/modules/$kernel/updates/nabos/" \;
+    find "$directory" -maxdepth 1 -name '*.ko' -exec install -m644 '{}' "$stage/usr/lib/modules/$kernel/updates/nabos/" \;
     for overlay in "$directory"/*-overlay.dts; do
       [[ -f $overlay ]] || continue
       # Kernel headers are unavailable to dtc's parser; preprocess DTS first.
       cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I "/lib/modules/$kernel/build/include" "$overlay" |
-        dtc -@ -I dts -O dtb -o "/boot/firmware/overlays/$(basename "${overlay%-overlay.dts}").dtbo"
+        dtc -@ -I dts -O dtb -o "$stage/boot/firmware/overlays/$(basename "${overlay%-overlay.dts}").dtbo"
     done
   done
-  depmod -a "$kernel"
   make -C "$src/sound" tagtagtag-mixerd
-  install -Dm755 "$src/sound/tagtagtag-mixerd" /usr/local/sbin/tagtagtag-mixerd
-  install -Dm644 "$src/sound/mixer.conf.default" /var/lib/tagtagtag-sound/mixer.conf.default
-  install -m644 "$src/sound/mixer.conf.default" /var/lib/tagtagtag-sound/mixer.conf
-  install -Dm644 "$src/sound/tagtagtag-mixerd.service" /usr/lib/systemd/system/tagtagtag-mixerd.service
+  install -Dm755 "$src/sound/tagtagtag-mixerd" "$stage/usr/local/sbin/tagtagtag-mixerd"
+  install -Dm644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf.default"
+  install -m644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf"
+  install -Dm644 "$src/sound/tagtagtag-mixerd.service" "$stage/usr/lib/systemd/system/tagtagtag-mixerd.service"
   # Keep the existing DMA/PWM library instead of reimplementing LED timing.
   cmake -S "$src/led" -B "$src/led-build" -DBUILD_SHARED=ON -DBUILD_TEST=OFF -DCMAKE_INSTALL_PREFIX=/usr
   cmake --build "$src/led-build" --parallel 2
-  cmake --install "$src/led-build"
-  ldconfig
+  # Copy the shared library only; CMake's install also includes development headers.
+  install -Dm644 "$src/led-build/libws2811.so" "$stage/usr/lib/libws2811.so"
   ;;
-finalize)
-  kernel=$(cat /nabos-build/kernel-release)
+wheels)
   if [[ $target == zero2-arm64 ]]; then
-    # Build/install all Python wheels in CI. The device never runs pip.
+    # Only the disposable builder runs the Python build backend.
     mkdir -p "$inputs/wheels" /opt/linux-voice-assistant
     cp -a "$src/lva/." /opt/linux-voice-assistant/
     export SETUPTOOLS_SCM_PRETEND_VERSION=1.1.15
@@ -140,11 +169,23 @@ finalize)
       "$pip" wheel --no-deps --no-build-isolation --wheel-dir "$inputs/wheels" /opt/linux-voice-assistant
       (cd "$inputs/wheels" && sha256sum ./*.whl > SHA256SUMS)
     fi
-    "$pip" install --no-index --find-links "$inputs/wheels" linux-voice-assistant==1.1.15
+    # Upstream resolves its data files relative to the module source directory.
+    mkdir -p "$stage/opt/linux-voice-assistant"
+    for item in linux_voice_assistant version.txt sounds wakewords LICENSE.md; do
+      cp -a "$src/lva/$item" "$stage/opt/linux-voice-assistant/"
+    done
+  fi
+  ;;
+finalize)
+  kernel=$(cat /nabos-build/kernel-release)
+  depmod -a "$kernel"
+  ldconfig
+  if [[ $target == zero2-arm64 ]]; then
+    (cd "$inputs/wheels" && sha256sum --check SHA256SUMS)
+    python3 -m venv /opt/linux-voice-assistant/.venv
+    pip=/opt/linux-voice-assistant/.venv/bin/pip
+    "$pip" install --no-cache-dir --only-binary=:all: --no-index --find-links "$inputs/wheels" linux-voice-assistant==1.1.15
     "$pip" list --format=freeze > "$inputs/wheels/manifest.txt"
-    # SoundCard connects to PulseAudio on import; no audio server runs in the chroot.
-    /opt/linux-voice-assistant/.venv/bin/python -c \
-      'from importlib.metadata import version; print({p: version(p) for p in ("linux-voice-assistant", "aioesphomeapi", "soundcard")})'
   fi
   # U-Boot loads the kernel and vendor DTB from the selected root partition.
   mkdir -p /boot/dtb
@@ -166,9 +207,9 @@ finalize)
   for service in ssh sshd apt-daily.timer apt-daily-upgrade.timer unattended-upgrades regenerate_ssh_host_keys userconfig resize2fs_once cloud-init cloud-init-local cloud-config cloud-final; do
     systemctl mask "$service"
   done
-  apt-get purge --yes --auto-remove "${development[@]}"
   apt-get clean
   rm -rf /var/lib/apt/lists/* /tmp/*
+  find /var/log -type f -exec truncate -s0 '{}' +
   # SSH keys, machine identity and random seeds belong to the device, not the image.
   rm -f /etc/ssh/ssh_host_* /var/lib/systemd/random-seed
   dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /usr/share/nabos/packages.tsv

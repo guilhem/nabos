@@ -7,6 +7,6 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   genimage=17-2 rauc=1.11.3-2 \
   curl ca-certificates xz-utils python3 jq fdisk util-linux e2fsprogs dosfstools mtools \
-  u-boot-tools libubootenv-tool squashfs-tools openssl clang lld patch \
+  u-boot-tools libubootenv-tool squashfs-tools openssl clang lld patch kmod \
   qemu-user-static binfmt-support device-tree-compiler mosquitto mosquitto-clients \
   build-essential bison flex libssl-dev zlib1g-dev python3-dev python3-setuptools
