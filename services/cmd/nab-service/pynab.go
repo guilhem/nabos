@@ -68,6 +68,18 @@ func (a *App) stopRadio() {
 	}
 }
 
+// Results are not retained: a lost core cannot finish any of its old media.
+func (a *App) stopMedia() {
+	a.stopInteraction()
+	a.stopRadio()
+	a.mu.Lock()
+	cancel := a.mediaCancel
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // All media passes through this gate. Interactive sequences keep it between
 // chapters, so a chime cannot slip between a book's cancellation and next page.
 func (a *App) media(ctx context.Context, action string, args any, wait time.Duration) error {
@@ -94,6 +106,17 @@ func (a *App) cancelMedia(id string) {
 }
 
 func (a *App) playOwned(ctx context.Context, action string, args any) error {
+	// Callers hold mediaGate, so this handle belongs to the only active play.
+	ctx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.mediaCancel = cancel
+	a.mu.Unlock()
+	defer func() {
+		cancel()
+		a.mu.Lock()
+		a.mediaCancel = nil
+		a.mu.Unlock()
+	}()
 	id := bus.NewID()
 	r, err := a.bus.DoID(ctx, id, action, args, cmdTTL, nil)
 	if err != nil {
@@ -116,8 +139,7 @@ func (a *App) servicesLoop(ctx context.Context) {
 			a.servicesTick(now.In(a.location()))
 			connected, online := a.bus.Healthy()
 			if !connected || !online {
-				a.stopInteraction()
-				a.stopRadio()
+				a.stopMedia()
 			}
 		}
 	}

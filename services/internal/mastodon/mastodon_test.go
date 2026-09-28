@@ -370,24 +370,34 @@ func TestConversationLinkRejectsOtherHost(t *testing.T) {
 
 func TestNotificationsRecoverIntermediateDirectMessages(t *testing.T) {
 	now := time.Now().UTC()
+	// The server received these statuses after ID 1, despite their earlier
+	// creation dates on the peer's instance. Acceptance is on the next page.
+	earlier := now.Add(-time.Hour).Format(time.RFC3339)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/conversations":
-			fmt.Fprintf(w, `[{"last_status":{"id":"3","created_at":%q,"visibility":"direct","account":{"id":"peer-id","acct":"peer"},"content":"<p>(NabPairing Ears 4 6 - %s)</p>"}}]`, now.Format(time.RFC3339), protocolURL)
+			fmt.Fprintf(w, `[{"last_status":{"id":"4","created_at":%q,"visibility":"direct","account":{"id":"peer-id","acct":"peer"},"content":"<p>(NabPairing Ears 4 6 - %s)</p>"}}]`, earlier, protocolURL)
 		case "/api/v1/notifications":
-			fmt.Fprintf(w, `[{"type":"mention","created_at":%q,"status":{"id":"2","created_at":%q,"visibility":"direct","account":{"id":"peer-id","acct":"peer"},"content":"<p>(NabPairing Acceptation - %s)</p>"}}]`, now.Format(time.RFC3339), now.Format(time.RFC3339), protocolURL)
+			if r.URL.Query().Get("max_id") == "90" {
+				fmt.Fprintf(w, `[{"type":"mention","created_at":%q,"status":{"id":"2","created_at":%q,"visibility":"direct","account":{"id":"peer-id","acct":"peer"},"content":"<p>(NabPairing Acceptation - %s)</p>"}}]`, earlier, earlier, protocolURL)
+			} else {
+				w.Header().Set("Link", `<http://`+r.Host+`/api/v1/notifications?max_id=90>; rel="next"`)
+				fmt.Fprintf(w, `[{"type":"mention","created_at":%q,"status":{"id":"3","created_at":%q,"visibility":"direct","account":{"id":"peer-id","acct":"peer"},"content":"<p>(NabPairing Ears 2 4 - %s)</p>"}}]`, earlier, earlier, protocolURL)
+			}
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
 	c, _ := NewClient(srv.URL, srv.Client())
-	s := State{AccessToken: "token", AccountID: "self", Username: "rabbit", SpouseHandle: "peer@127.0.0.1", PairingState: "proposed", LastStatusID: "1", LastStatusDate: now.Add(-time.Minute)}
-	var ears [2]int
-	if err := c.catchUp(context.Background(), "token", func() State { return s }, func(f func(*State) error) error { return f(&s) }, func(l, r int) { ears = [2]int{l, r} }, nil); err != nil {
-		t.Fatal(err)
+	s := State{AccessToken: "token", AccountID: "self", Username: "rabbit", SpouseHandle: "peer@127.0.0.1", PairingState: "proposed", LastStatusID: "1", LastStatusDate: now}
+	var ears [][2]int
+	for range 2 { // Reconnection must not replay any of these statuses.
+		if err := c.catchUp(context.Background(), "token", func() State { return s }, func(f func(*State) error) error { return f(&s) }, func(l, r int) { ears = append(ears, [2]int{l, r}) }, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if s.PairingState != "married" || s.LastStatusID != "3" || ears != [2]int{4, 6} {
+	if s.PairingState != "married" || s.LastStatusID != "4" || len(ears) != 2 || ears[0] != [2]int{2, 4} || ears[1] != [2]int{4, 6} {
 		t.Fatalf("recovery: state=%+v ears=%v", s, ears)
 	}
 }

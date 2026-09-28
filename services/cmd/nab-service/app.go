@@ -44,6 +44,7 @@ type App struct {
 	mediaGate     chan struct{}
 	interaction   *interaction
 	radioCancel   context.CancelFunc
+	mediaCancel   context.CancelFunc
 	serviceErrors map[string]string
 	aq            *airquality.Client
 	triggers      *triggers.Client
@@ -133,8 +134,7 @@ func kick(ch chan struct{}) {
 func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
 	go a.eventLoop(ctx)
-	defer a.stopInteraction()
-	defer a.stopRadio()
+	defer a.stopMedia()
 	if err := a.bus.Start(ctx); err != nil {
 		return err
 	}
@@ -253,8 +253,7 @@ func (a *App) applyVolume(ctx context.Context) {
 
 // resync sends what the core keeps in memory after it (re)starts.
 func (a *App) resync() {
-	a.stopInteraction()
-	a.stopRadio()
+	a.stopMedia()
 	st := a.store.Get()
 	a.send("ears", map[string]any{"left": st.Ears[0], "right": st.Ears[1]})
 	a.mu.Lock()

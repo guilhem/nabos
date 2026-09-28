@@ -223,7 +223,7 @@ func pause(ctx context.Context, d time.Duration) bool {
 
 func (c *Client) catchUp(ctx context.Context, token string, load Load, update Update, onEars func(int, int), onSound func(string)) error {
 	var statuses []Status
-	cutoff := load().LastStatusDate
+	cursor, _ := statusNumber(load().LastStatusID)
 	path := "/api/v1/conversations?limit=40"
 	// ponytail: cap at 4000 conversations; use a durable page cursor if this ceiling is reached.
 	for page := 0; page < 100; page++ {
@@ -254,20 +254,24 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 	path = "/api/v1/notifications?limit=40&types%5B%5D=mention"
 	for page := 0; page < 100; page++ {
 		var notifications []struct {
-			Type      string    `json:"type"`
-			CreatedAt time.Time `json:"created_at"`
-			Status    *Status   `json:"status"`
+			Type   string  `json:"type"`
+			Status *Status `json:"status"`
 		}
 		next, err := c.page(ctx, token, path, &notifications)
 		if err != nil {
 			return err
 		}
-		older := false
+		older := len(notifications) > 0
 		for _, n := range notifications {
-			if n.CreatedAt.Before(cutoff) {
-				older = true
+			if n.Status == nil {
+				older = false
+				continue
 			}
-			if n.Type == "mention" && n.Status != nil && !n.Status.CreatedAt.Before(cutoff) {
+			id, err := statusNumber(n.Status.ID)
+			if err != nil || id > cursor {
+				older = false
+			}
+			if n.Type == "mention" {
 				statuses = append(statuses, *n.Status)
 			}
 		}
@@ -341,7 +345,9 @@ func (c *Client) process(ctx context.Context, token string, st Status, load Load
 		if old, e := statusNumber(s.LastStatusID); s.LastStatusID != "" && e == nil && id <= old {
 			return nil
 		}
-		if !st.CreatedAt.Before(s.LastStatusDate) && st.Visibility == "direct" && st.Account.ID != "" && st.Account.ID != s.AccountID {
+		// Federated delivery and remote clocks can put newer IDs before the
+		// last processed creation date. Only the local ID orders delivery.
+		if st.Visibility == "direct" && st.Account.ID != "" && st.Account.ID != s.AccountID {
 			sender, e := c.handle(st.Account.Acct)
 			if e == nil && !strings.EqualFold(sender, s.Username+"@"+c.Instance()) {
 				if kind, left, right, ok := ParseMessage(st.Content); ok {

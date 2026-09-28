@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -100,7 +101,7 @@ func pynabWait(t *testing.T, what string, timeout time.Duration, ready func() bo
 	t.Fatalf("timeout waiting for %s", what)
 }
 
-func (h *pynabMQTT) start(t *testing.T, name string, args []string, extra ...string) {
+func (h *pynabMQTT) start(t *testing.T, name string, args []string, extra ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(append([]string{}, h.env...), extra...)
@@ -115,6 +116,7 @@ func (h *pynabMQTT) start(t *testing.T, name string, args []string, extra ...str
 	}
 	log.Close()
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	return cmd
 }
 
 func (h *pynabMQTT) publish(topic string, payload map[string]any) {
@@ -279,9 +281,9 @@ func TestPynabMQTTIntegration(t *testing.T) {
 		}
 	}()
 	time.Sleep(200 * time.Millisecond) // let the subscriber attach before starting the core
-	h.start(t, "core", append(core, "--simulate"),
-		"NABOS_MQTT_PORT="+strconv.Itoa(port), "NABOS_SOUNDS_DIRS="+filepath.Join(assets, "sounds"),
-		"NABOS_CHOREOGRAPHIES_DIRS="+filepath.Join(assets, "choreographies"), "NABOS_SIM_AUDIO_MS=2500")
+	coreEnv := []string{"NABOS_MQTT_PORT=" + strconv.Itoa(port), "NABOS_SOUNDS_DIRS=" + filepath.Join(assets, "sounds"),
+		"NABOS_CHOREOGRAPHIES_DIRS=" + filepath.Join(assets, "choreographies"), "NABOS_SIM_AUDIO_MS=2500"}
+	coreProcess := h.start(t, "core", append(core, "--simulate"), coreEnv...)
 	a, err := NewApp(Env{MQTTHost: "127.0.0.1", MQTTPort: port, DataDir: t.TempDir(), SoundsDirs: []string{filepath.Join(assets, "sounds")}, TimesyncFile: "none"})
 	if err != nil {
 		t.Fatal(err)
@@ -305,6 +307,7 @@ func TestPynabMQTTIntegration(t *testing.T) {
 		return connected && online && ok && state.State == "idle"
 	})
 	a.publishSettings(ctx)
+	go a.servicesLoop(ctx)
 	a.auth.MarkPresence()
 	if _, err := a.auth.Setup("carotte-42"); err != nil {
 		t.Fatal(err)
@@ -448,4 +451,43 @@ func TestPynabMQTTIntegration(t *testing.T) {
 		default:
 		}
 	})
+	for _, reason := range []string{"resync", "core offline"} {
+		t.Run("ordinary media releases on "+reason, func(t *testing.T) {
+			h.t = t
+			begin := len(h.snapshot())
+			done := make(chan error, 1)
+			go func() {
+				done <- a.media(ctx, "play", map[string]any{"sequence": []any{map[string]any{"audio": []string{
+					"system/abort.wav", "system/abort.wav", "system/abort.wav",
+				}}}}, 10*time.Minute)
+			}()
+			_, playing := h.play(begin, "system/abort.wav")
+			h.playing(a, playing["id"].(string))
+			if reason == "resync" {
+				a.resync()
+			} else if err := coreProcess.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("lost playback: %v", err)
+				}
+			case <-time.After(6 * time.Second):
+				t.Fatal("lost core left ordinary media holding the gate")
+			}
+			if reason == "core offline" {
+				begin = len(h.snapshot())
+				h.start(t, "core-restarted", append(core, "--simulate"), coreEnv...)
+				h.command(begin, 5*time.Second, func(c map[string]any) bool { return c["action"] == "ears" })
+			}
+			pynabWait(t, "core ready after cancellation", 5*time.Second, func() bool {
+				state, online := a.bus.State()
+				return online && state.State == "idle"
+			})
+			if err := a.media(ctx, "play", sequence("system/abort.wav", ""), 5*time.Second); err != nil {
+				t.Fatalf("next playback remained blocked: %v", err)
+			}
+		})
+	}
 }
