@@ -478,6 +478,17 @@ func TestEndToEnd(t *testing.T) {
 		h.command("c3", "cancel", nil, in(time.Minute), false)
 		expect(h.result("c3", 10*time.Second)["error"], "not_playing")
 	})
+	h.check("only a targeted cancel stops noncancelable playback", func() {
+		owned := map[string]any{"sequence": long["sequence"], "cancelable": false}
+		at := time.Now()
+		h.command("owned", "play", owned, in(time.Minute), false)
+		h.stateSince(at, "playing", 5*time.Second)
+		h.command("untargeted", "cancel", nil, in(time.Minute), false)
+		expect(h.result("untargeted", 5*time.Second)["error"], "not_cancelable")
+		h.command("targeted", "cancel", map[string]any{"target": "owned"}, in(time.Minute), false)
+		expect(h.status("targeted"), "ok")
+		expect(h.status("owned"), "canceled")
+	})
 	h.check("command expires while queued", func() {
 		h.command("blocker", "play", long, in(time.Minute), false)
 		h.command("short", "play", abort, in(time.Second), false)
@@ -526,12 +537,16 @@ func TestEndToEnd(t *testing.T) {
 		if code != 303 || !strings.Contains(header.Get("Location"), "ok=") {
 			h.fatalf("%d %v", code, header)
 		}
-		for _, m := range h.objects(prefix+"/core/result", t) {
-			if id, _ := m["id"].(string); strings.HasPrefix(id, "svc-") && m["status"] == "ok" {
-				return
+		// The HTTP response and this independent MQTT subscriber can arrive in
+		// either order; wait for the observer as with other core results.
+		h.waitFor(5*time.Second, "UI command result on MQTT", func() bool {
+			for _, m := range h.objects(prefix+"/core/result", t) {
+				if id, _ := m["id"].(string); strings.HasPrefix(id, "svc-") && m["status"] == "ok" {
+					return true
+				}
 			}
-		}
-		h.fatalf("no service command executed by the core")
+			return false
+		})
 	})
 	h.check("settings saved atomically and published", func() {
 		form := url.Values{"locale": {"en_US"}, "timezone": {"Europe/Paris"}, "volume": {"50"}, "wakeup": {"00:00"},

@@ -83,6 +83,10 @@ func (c *Client) session(ctx context.Context) error {
 
 // Send a peripheral command such as start_listening or stop_pipeline.
 func (c *Client) Send(ctx context.Context, command string) error {
+	// Button events are serialized by the service; an unresponsive LVA must
+	// not block that loop indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()

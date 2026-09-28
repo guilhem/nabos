@@ -14,11 +14,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/guilhem/nabos/services/internal/airquality"
 	"github.com/guilhem/nabos/services/internal/bus"
 	"github.com/guilhem/nabos/services/internal/clock"
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/ha"
 	"github.com/guilhem/nabos/services/internal/system"
+	"github.com/guilhem/nabos/services/internal/triggers"
 	"github.com/guilhem/nabos/services/internal/update"
 	"github.com/guilhem/nabos/services/internal/voice"
 	"github.com/guilhem/nabos/services/internal/weather"
@@ -28,15 +30,32 @@ import (
 const cmdTTL = time.Minute
 
 type App struct {
-	env     Env
-	store   *config.Store
-	bus     *bus.Bus
-	auth    *web.Auth
-	wx      *weather.Client
-	upd     *update.Updater
-	ha      *ha.Bridge
-	voice   *voice.Client
-	started time.Time
+	env           Env
+	store         *config.Store
+	bus           *bus.Bus
+	auth          *web.Auth
+	wx            *weather.Client
+	upd           *update.Updater
+	ha            *ha.Bridge
+	voice         *voice.Client
+	started       time.Time
+	ctx           context.Context
+	events        chan appEvent
+	mediaGate     chan struct{}
+	interaction   *interaction
+	radioCancel   context.CancelFunc
+	mediaCancel   context.CancelFunc
+	serviceErrors map[string]string
+	aq            *airquality.Client
+	triggers      *triggers.Client
+	airKick       chan struct{}
+	aqMu          sync.Mutex
+	airResult     *airquality.Result
+	airFetched    time.Time
+	airQuery      airquality.Query
+	mastodonMu    sync.Mutex
+	mastodonKick  chan struct{}
+	oauth         *oauthLogin
 
 	clockKick, weatherKick chan struct{}
 
@@ -70,22 +89,36 @@ func NewApp(env Env) (*App, error) {
 	// hashed for this application instead of exposing the system machine-id.
 	node := fmt.Sprintf("nabos_%x", sha256.Sum256([]byte("nabos-ha:"+strings.TrimSpace(string(identity)))))
 	a := &App{
-		env:         env,
-		store:       store,
-		auth:        web.NewAuth(store),
-		wx:          weather.NewClient(env.WeatherURL, env.GeocodingURL),
-		upd:         update.New(env.UpdateRepo, env.UpdateAsset, env.Version, filepath.Join(env.DataDir, "updates")),
-		started:     time.Now(),
-		clockKick:   make(chan struct{}, 1),
-		weatherKick: make(chan struct{}, 1),
-		clk:         clock.State{LastChime: -1},
-		network:     "ok",
+		env:           env,
+		store:         store,
+		auth:          web.NewAuth(store),
+		wx:            weather.NewClient(env.WeatherURL, env.GeocodingURL),
+		upd:           update.New(env.UpdateRepo, env.UpdateAsset, env.Version, filepath.Join(env.DataDir, "updates")),
+		started:       time.Now(),
+		clockKick:     make(chan struct{}, 1),
+		weatherKick:   make(chan struct{}, 1),
+		clk:           clock.State{LastChime: -1},
+		network:       "ok",
+		ctx:           context.Background(),
+		events:        make(chan appEvent, 128),
+		mediaGate:     make(chan struct{}, 1),
+		serviceErrors: map[string]string{},
+		aq:            airquality.NewClient(),
+		triggers:      triggers.NewClient(),
+		airKick:       make(chan struct{}, 1),
+		mastodonKick:  make(chan struct{}, 1),
 	}
 	a.upd.APIBase, a.upd.DownloadBase = env.GitHubAPI, env.GitHubDownload
 	a.ha = &ha.Bridge{Node: node, Model: "Nabaztag", Version: env.Version, OnCommand: a.haCommand}
 	a.bus = bus.New(env.MQTTHost, env.MQTTPort, "nab-service", bus.Handlers{
-		OnState:      a.onState,
-		OnEvent:      func(kind string, p map[string]any) { go a.onEvent(kind, p) },
+		OnState: a.onState,
+		OnEvent: func(kind string, p map[string]any) {
+			select {
+			case a.events <- appEvent{kind: kind, data: p, received: time.Now()}:
+			default:
+				slog.Warn("event queue full", "event", kind)
+			}
+		},
 		OnCoreOnline: func() { go a.resync() },
 	})
 	return a, nil
@@ -99,6 +132,9 @@ func kick(ch chan struct{}) {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	a.ctx = ctx
+	go a.eventLoop(ctx)
+	defer a.stopMedia()
 	if err := a.bus.Start(ctx); err != nil {
 		return err
 	}
@@ -117,6 +153,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.weatherLoop(ctx)
 	go a.networkLoop(ctx)
 	go a.updateLoop(ctx)
+	go a.servicesLoop(ctx)
 	slog.Info("nab-service started", "version", a.env.Version, "http", a.env.HTTPAddr)
 	select {
 	case <-ctx.Done():
@@ -132,6 +169,10 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) send(action string, args any) {
+	if action == "play" || action == "message" {
+		go func() { a.serviceError(action, a.media(a.ctx, action, args, 10*time.Minute)) }()
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if _, err := a.bus.Send(ctx, action, args, cmdTTL); err != nil {
@@ -141,6 +182,9 @@ func (a *App) send(action string, args any) {
 
 // do sends a command and waits for its result (UI actions).
 func (a *App) do(ctx context.Context, action string, args any, wait time.Duration) error {
+	if action == "play" || action == "message" {
+		return a.media(ctx, action, args, wait)
+	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	r, err := a.bus.Do(ctx, action, args, wait)
@@ -209,12 +253,14 @@ func (a *App) applyVolume(ctx context.Context) {
 
 // resync sends what the core keeps in memory after it (re)starts.
 func (a *App) resync() {
+	a.stopMedia()
 	st := a.store.Get()
 	a.send("ears", map[string]any{"left": st.Ears[0], "right": st.Ears[1]})
 	a.mu.Lock()
 	a.indicator = ""
 	a.mu.Unlock()
 	a.pushInfos()
+	kick(a.airKick)
 	kick(a.clockKick)
 }
 
@@ -240,13 +286,23 @@ func (a *App) setOverride(sleep bool) {
 	kick(a.clockKick)
 }
 
-func (a *App) onEvent(kind string, p map[string]any) {
+func (a *App) onEvent(e appEvent) {
+	kind, p := e.kind, e.data
+	if kind == "button" {
+		a.ha.Button(str(p, "event"))
+		a.auth.MarkPresence()
+		if str(p, "event") == "double_click_and_hold" {
+			a.stopInteraction()
+			a.serviceError("admin", a.auth.Reset())
+			return
+		}
+	}
+	if a.interactionEvent(e) {
+		return
+	}
 	switch kind {
 	case "button":
 		ev := str(p, "event")
-		a.ha.Button(ev)
-		// A press on the head proves physical access (first password).
-		a.auth.MarkPresence()
 		switch ev {
 		case "click":
 			if a.voiceCommandForClick() {
@@ -266,10 +322,8 @@ func (a *App) onEvent(kind string, p map[string]any) {
 				slog.Error("power off", "err", err)
 			}
 		case "click_and_hold":
-			// Forgotten password: click then hold, then open /setup within 5 minutes.
-			slog.Warn("admin password reset from the button")
-			if err := a.auth.Reset(); err != nil {
-				slog.Error("password reset", "err", err)
+			if a.store.Get().Services.Eightball {
+				a.serviceError("eightball", a.startInteraction("eightball", ""))
 			}
 		}
 	case "ears":
@@ -284,6 +338,7 @@ func (a *App) onEvent(kind string, p map[string]any) {
 			}
 			return nil
 		})
+		a.mastodonEars(p)
 	case "rfid":
 		a.mu.Lock()
 		a.lastTag = p
@@ -301,7 +356,9 @@ func (a *App) onEvent(kind string, p map[string]any) {
 			if len(data) > 0 && data[0] == 2 {
 				day = 1
 			}
-			a.announceWeather(day)
+			go a.announceWeather(day)
+		default:
+			go a.serviceTag(p)
 		}
 	}
 }
@@ -316,6 +373,16 @@ func (a *App) haCommand(c ha.Command) {
 		}
 	case "weather":
 		a.announceWeather(0)
+	case "weather_tomorrow":
+		a.announceWeather(1)
+	case "taichi", "surprise", "eightball", "airquality", "carrot", "birthday", "autopromo":
+		go func() {
+			name, kind := c.Name, ""
+			if name == "carrot" || name == "birthday" || name == "autopromo" {
+				name, kind = "surprise", name
+			}
+			a.serviceError(name, a.performService(a.ctx, name, "default", kind))
+		}()
 	case "volume":
 		var v int
 		fmt.Sscan(c.Value, &v)
@@ -387,10 +454,35 @@ func (a *App) clockTick(now time.Time) {
 	}
 	sounds := st.Clock.SleepSounds && time.Since(a.started) > time.Minute
 	if act.Sleep {
-		if sounds {
-			a.send("play", map[string]any{"sequence": []any{map[string]any{"audio": []string{"sleep/*.mp3"}}}})
-		}
-		a.send("sleep", nil)
+		a.stopRadio()
+		go func() {
+			ctx, cancel := context.WithCancel(a.ctx)
+			defer cancel()
+			if a.acquireMedia(ctx) != nil {
+				return
+			}
+			defer func() { <-a.mediaGate }()
+			// The schedule may have changed while an interactive book finished.
+			current := a.store.Get().Clock
+			should := clock.ShouldSleep(current, time.Now().In(a.location()))
+			if current.Override != nil {
+				should = *current.Override
+			}
+			if !should {
+				a.mu.Lock()
+				awake := false
+				a.clk.Asleep = &awake
+				a.mu.Unlock()
+				kick(a.clockKick)
+				return
+			}
+			if sounds {
+				c, stop := context.WithTimeout(ctx, time.Minute)
+				a.playOwned(c, "play", sequence("sleep/*.mp3", ""))
+				stop()
+			}
+			a.send("sleep", nil)
+		}()
 	}
 	if act.Wakeup {
 		a.send("wakeup", nil)

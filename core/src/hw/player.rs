@@ -3,11 +3,29 @@
 //! previous one.
 
 use super::Cancel;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
+
+/// What mpg123/aplay reads: a resolved local file, or a loopback stream URL
+/// already validated by the protocol (never an arbitrary remote URL).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Source {
+    File(PathBuf),
+    Stream(String),
+}
+
+impl Source {
+    fn arg(&self) -> &OsStr {
+        match self {
+            Source::File(p) => p.as_os_str(),
+            Source::Stream(u) => OsStr::new(u),
+        }
+    }
+}
 
 pub struct Player {
     device: String,
@@ -26,7 +44,7 @@ impl Player {
         }
     }
 
-    pub fn start(self: &Arc<Self>, path: PathBuf) {
+    pub fn start(self: &Arc<Self>, source: Source) {
         let (kill, killed) = oneshot::channel();
         let gen = {
             let mut s = self.state.lock().unwrap();
@@ -39,13 +57,14 @@ impl Player {
         };
         let me = self.clone();
         tokio::spawn(async move {
-            me.play(path, killed).await;
+            me.play(source, killed).await;
             me.done.send_modify(|d| *d = (*d).max(gen));
         });
     }
 
-    async fn play(&self, path: PathBuf, killed: oneshot::Receiver<()>) {
-        debug!("play {}", path.display());
+    async fn play(&self, source: Source, killed: oneshot::Receiver<()>) {
+        let name = source.arg().to_string_lossy();
+        debug!("play {name}");
         if let Some(ms) = self.sim_ms {
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
@@ -53,9 +72,8 @@ impl Player {
             }
             return;
         }
-        let wav = path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+        let wav = matches!(&source, Source::File(p)
+            if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")));
         let mut cmd = if wav {
             let mut c = tokio::process::Command::new("aplay");
             c.args(["-q", "-D", &self.device]);
@@ -65,7 +83,7 @@ impl Player {
             c.args(["-q", "-o", "alsa", "-a", &self.device]);
             c
         };
-        cmd.arg(&path)
+        cmd.arg(source.arg())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .kill_on_drop(true);
@@ -74,7 +92,7 @@ impl Player {
                 status = child.wait() => {
                     if let Ok(s) = status {
                         if !s.success() {
-                            warn!("{} exited with {s}", path.display());
+                            warn!("{name} exited with {s}");
                         }
                     }
                 }
@@ -82,7 +100,7 @@ impl Player {
                     let _ = child.kill().await;
                 }
             },
-            Err(e) => error!("cannot start audio player for {}: {e}", path.display()),
+            Err(e) => error!("cannot start audio player for {name}: {e}"),
         }
     }
 
@@ -112,8 +130,8 @@ impl Player {
         let _ = rx.wait_for(|d| *d >= gen).await;
     }
 
-    /// Play files in order; false when cancelled (sound stopped).
-    pub async fn play_list(self: &Arc<Self>, files: &[PathBuf], cancel: &Cancel) -> bool {
+    /// Play sources in order; false when cancelled (sound stopped).
+    pub async fn play_list(self: &Arc<Self>, files: &[Source], cancel: &Cancel) -> bool {
         self.stop().await;
         for f in files {
             if cancel.is_cancelled() {

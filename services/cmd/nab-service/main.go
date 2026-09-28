@@ -1,4 +1,4 @@
-// nab-service: web interface, settings, clock, weather, Home Assistant,
+// nab-service: web interface, settings, PyNab services, Home Assistant,
 // voice assistant and updates for NabOS (docs/protocol-v1.md).
 package main
 

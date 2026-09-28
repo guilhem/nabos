@@ -13,6 +13,11 @@ Cette release est créée en **brouillon**. La réussite de la CI valide la fabr
 - [ ] Watchdog : première alimentation par Linux moins de 16 secondes après U-Boot, y compris à froid sur Zero ; blocage avant systemd et racine absente provoquent un redémarrage (délai de reprise de 300 secondes), puis un rollback.
 - [ ] Réseau, identité, authentification, réglages et calibration conservés après mise à jour et rollback.
 - [ ] Horloge, sommeil, lecture et RFID utilisables sans Internet ni Home Assistant.
+- [ ] Tai-chi et surprises : programmation, langues, déclenchement manuel, sommeil et redémarrage ; tags pynab existants et nouvellement écrits.
+- [ ] Boule magique au clic puis maintien ; récupération administrateur uniquement après deux clics puis maintien de 10 secondes, sans extinction accidentelle.
+- [ ] Livres : toutes les voix, navigation par oreille, interruption et exclusivité avec les annonces ; radio MP3 continue, arrêt au bouton et coupure réseau sans croissance mémoire.
+- [ ] Webhooks, IFTTT et WAQI avec les comptes réels ; associations UID et secrets conservés, désactivation et erreurs visibles.
+- [ ] Mastodon : OAuth, proposition/acceptation/refus/séparation et oreilles entre nabos et pynab ; coupure réseau, reconnexion et absence de doublons.
 - [ ] Sur Zero 2 : LVA activé au bouton, API périphériques accessible uniquement en boucle locale ; désactivation possible ; consommation mémoire et stabilité prolongée mesurées.
 - [ ] Chaque artefact est inférieur à 2 Gio ; pic disque de chaque job relevé dans `disk-usage-*.txt`.
 

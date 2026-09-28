@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/config"
+	"github.com/guilhem/nabos/services/internal/pynab"
 	"github.com/guilhem/nabos/services/internal/system"
 	"github.com/guilhem/nabos/services/internal/update"
 	"github.com/guilhem/nabos/services/internal/web"
@@ -116,6 +117,7 @@ func (a *App) routes() http.Handler {
 			"Clock": clk, "Now": time.Now().In(a.location()).Format("2006-01-02T15:04")})
 	})
 	m.HandleFunc("POST /settings", a.saveSettings)
+	a.serviceRoutes(m)
 	m.HandleFunc("POST /clock", func(w http.ResponseWriter, r *http.Request) {
 		t, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("now"), a.location())
 		if err != nil || t.Year() < 2024 || t.Year() > 2100 {
@@ -152,7 +154,7 @@ func (a *App) routes() http.Handler {
 		a.mu.Lock()
 		tag := a.lastTag
 		a.mu.Unlock()
-		a.render(w, r, "tags", "Étiquettes", map[string]any{"Tag": tag})
+		a.render(w, r, "tags", "Étiquettes", map[string]any{"Tag": tag, "Books": pynab.Books(a.env.SoundsDirs), "Languages": pynab.Languages, "SurpriseKinds": pynab.SurpriseKinds})
 	})
 	m.HandleFunc("POST /tags/write", a.writeTag)
 	m.HandleFunc("GET /sounds", func(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +168,7 @@ func (a *App) routes() http.Handler {
 		}
 		back(w, r, "/sounds", err, "Son supprimé")
 	})
-	return a.auth.Middleware(m, "/setup", "/login", "/healthz")
+	return a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback")
 }
 
 func (a *App) healthz(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +217,12 @@ func (a *App) action(w http.ResponseWriter, r *http.Request) {
 	case "wakeup":
 		a.setOverride(false)
 	case "cancel":
-		err = a.do(ctx, "cancel", nil, 5*time.Second)
+		if a.stopInteraction() {
+			a.stopRadio()
+		} else {
+			a.stopRadio()
+			err = a.do(ctx, "cancel", nil, 5*time.Second)
+		}
 	case "test_ears", "test_leds":
 		err = a.do(ctx, "test", map[string]any{"test": strings.TrimPrefix(r.FormValue("name"), "test_")}, 60*time.Second)
 		msg = "Test réussi"
@@ -323,6 +330,7 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if st.Weather != old.Weather {
 		kick(a.weatherKick)
+		kick(a.airKick)
 	}
 	if st.HomeAssistant != old.HomeAssistant {
 		a.setHAErr(a.ha.Start(st.HomeAssistant))
@@ -337,7 +345,7 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	back(w, r, "/settings", nil, "Réglages enregistrés")
 }
 
-// Tags: one data byte per application.
+// Original one-byte clock and weather tag variants.
 var tagKinds = map[string]struct {
 	App  string
 	Data string
@@ -349,18 +357,62 @@ var tagKinds = map[string]struct {
 }
 
 func (a *App) writeTag(w http.ResponseWriter, r *http.Request) {
-	kind, ok := tagKinds[r.FormValue("kind")]
+	kindName := r.FormValue("kind")
+	kind, ok := tagKinds[kindName]
 	a.mu.Lock()
 	tag := a.lastTag
 	a.mu.Unlock()
-	if !ok || tag == nil {
+	if tag == nil {
 		back(w, r, "/tags", errors.New("posez d'abord une étiquette sur le lapin"), "")
+		return
+	}
+	var association *config.TagAction
+	if !ok {
+		var err error
+		kind.App = kindName
+		switch kindName {
+		case "taichi", "airquality":
+		case "eightball", "surprise":
+			kind.Data, err = pynab.Encode(kindName, r.FormValue("language"), r.FormValue("surprise_kind"))
+		case "book":
+			kind.Data, err = pynab.BookTag(r.FormValue("voice"), r.FormValue("isbn"))
+		case "radio", "ifttt", "webhook":
+			kind.Data = "DATA_IN_LOCAL_DB"
+			association = &config.TagAction{App: kindName, Value: strings.TrimSpace(r.FormValue("value"))}
+			check := a.store.Get()
+			check.Tags[str(tag, "uid")] = *association
+			err = check.Validate()
+		default:
+			err = errors.New("application d'étiquette inconnue")
+		}
+		if err != nil {
+			back(w, r, "/tags", err, "")
+			return
+		}
+	}
+	if r.FormValue("mode") == "associate" {
+		if association == nil || str(tag, "app") != kind.App || str(tag, "support") != "formatted" {
+			back(w, r, "/tags", errors.New("choisissez l'application déjà inscrite sur l'étiquette (radio, IFTTT ou webhook)"), "")
+			return
+		}
+		_, err := a.store.Update(func(s *config.Settings) error { s.Tags[str(tag, "uid")] = *association; return nil })
+		back(w, r, "/tags", err, "Association enregistrée")
 		return
 	}
 	picture, _ := strconv.Atoi(r.FormValue("picture"))
 	err := a.do(r.Context(), "rfid_write", map[string]any{
 		"tech": tag["tech"], "uid": tag["uid"], "picture": max(0, min(picture, 255)), "app": kind.App, "data": kind.Data, "timeout": 20,
 	}, 30*time.Second)
+	if err == nil {
+		_, err = a.store.Update(func(s *config.Settings) error {
+			if association != nil {
+				s.Tags[str(tag, "uid")] = *association
+			} else {
+				delete(s.Tags, str(tag, "uid"))
+			}
+			return nil
+		})
+	}
 	back(w, r, "/tags", err, "Étiquette écrite")
 }
 

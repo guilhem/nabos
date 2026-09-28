@@ -301,7 +301,8 @@ impl Engine {
             }
             Action::Cancel { target } => match &self.job {
                 Some(j) if target.as_ref().is_none_or(|t| *t == j.id) => {
-                    if j.cancelable {
+                    // The owner naming the running id may stop a non-cancelable job.
+                    if j.cancelable || target.is_some() {
                         j.cancel.cancel();
                         self.ok(&id, None);
                     } else {
@@ -398,7 +399,9 @@ impl Engine {
                 }
                 self.bus.event("button", json!({"event": e}));
             }
-            HwEvent::EarMoved => {
+            HwEvent::EarMoved(ear) => {
+                let ear = if ear == 0 { "left" } else { "right" };
+                self.bus.event("ear_moved", json!({"ear": ear}));
                 if let Some(t) = self.ear_task.take() {
                     t.abort();
                 }

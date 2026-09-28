@@ -100,7 +100,7 @@ impl Ear {
                         let mut b = [0u8; 1];
                         loop {
                             match reader.read(&mut b) {
-                                Ok(1) if b[0] == b'm' => send(&events, HwEvent::EarMoved),
+                                Ok(1) if b[0] == b'm' => send(&events, HwEvent::EarMoved(index)),
                                 Ok(1) => report(&sh, (b[0] != 0xFF).then_some(b[0])),
                                 Ok(_) | Err(_) => {
                                     error!("ear {index} has been declared broken");

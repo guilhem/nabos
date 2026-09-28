@@ -25,7 +25,12 @@ func TestCommandsAreValidated(t *testing.T) {
 			t.Fatalf("%s %s accepted", topic, payload)
 		}
 	}
-	if len(b.Discovery("homeassistant")) != 9 {
+	if len(b.Discovery("homeassistant")) != 17 {
 		t.Fatal("discovery entities")
+	}
+	for _, name := range []string{"taichi", "surprise", "eightball", "airquality", "carrot", "birthday", "autopromo", "weather_tomorrow"} {
+		if _, ok := b.ParseCommand("nabos/nabos_test/"+name+"/press", []byte("PRESS")); !ok {
+			t.Fatal("voice action refused", name)
+		}
 	}
 }

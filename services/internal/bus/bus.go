@@ -42,6 +42,9 @@ func (r Result) Err() error {
 	if r.Status == "ok" {
 		return nil
 	}
+	if r.Status == "canceled" {
+		return context.Canceled
+	}
 	if r.Error != nil {
 		return fmt.Errorf("%s: %s", r.Status, *r.Error)
 	}
@@ -222,6 +225,9 @@ func newID() string {
 	return "svc-" + hex.EncodeToString(b[:])
 }
 
+// NewID lets an owner cancel its own in-flight command by its exact identifier.
+func NewID() string { return newID() }
+
 func (b *Bus) send(ctx context.Context, id, action string, args any, ttl time.Duration) error {
 	if args == nil {
 		args = map[string]any{}
@@ -245,7 +251,12 @@ func (b *Bus) Send(ctx context.Context, action string, args any, ttl time.Durati
 
 // Do publishes a command and waits for its result until ctx ends.
 func (b *Bus) Do(ctx context.Context, action string, args any, ttl time.Duration) (Result, error) {
-	id := newID()
+	return b.DoID(ctx, newID(), action, args, ttl, nil)
+}
+
+// published, when non-nil, is closed once the command has been published. An
+// interactive owner waits for this before sending a targeted cancellation.
+func (b *Bus) DoID(ctx context.Context, id, action string, args any, ttl time.Duration, published chan<- struct{}) (Result, error) {
 	ch := make(chan Result, 1)
 	b.mu.Lock()
 	b.waiters[id] = ch
@@ -257,6 +268,9 @@ func (b *Bus) Do(ctx context.Context, action string, args any, ttl time.Duration
 	}()
 	if err := b.send(ctx, id, action, args, ttl); err != nil {
 		return Result{}, err
+	}
+	if published != nil {
+		close(published)
 	}
 	select {
 	case r := <-ch:
