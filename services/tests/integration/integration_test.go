@@ -15,6 +15,7 @@
 //	NAB_CORE_BIN="qemu-arm-static -L /sysroot /sysroot/usr/bin/nab-core"
 //	NAB_SERVICE_BIN="/sysroot/usr/bin/nab-service"
 //	MOSQUITTO=/usr/sbin/mosquitto
+//	NABOS_TEST_ASSETS=/sysroot/usr/share/nabos
 //
 // Without overrides, native debug builds of core/ and services/ are made.
 package integration
@@ -217,9 +218,13 @@ func (h *harness) startSubReader() {
 }
 
 func (h *harness) startCore() {
+	assets := os.Getenv("NABOS_TEST_ASSETS")
+	if assets == "" {
+		assets = filepath.Join(repo, "assets")
+	}
 	h.spawn("core", append(h.core, "--simulate"),
-		"NABOS_MQTT_PORT="+strconv.Itoa(h.mqttPort), "NABOS_SOUNDS_DIRS="+filepath.Join(repo, "assets/sounds"),
-		"NABOS_CHOREOGRAPHIES_DIRS="+filepath.Join(repo, "assets/choreographies"), "NABOS_SIM_AUDIO_MS=200", "NABOS_LOG=debug")
+		"NABOS_MQTT_PORT="+strconv.Itoa(h.mqttPort), "NABOS_SOUNDS_DIRS="+filepath.Join(assets, "sounds"),
+		"NABOS_CHOREOGRAPHIES_DIRS="+filepath.Join(assets, "choreographies"), "NABOS_SIM_AUDIO_MS=200", "NABOS_LOG=debug")
 }
 
 func (h *harness) startService() {

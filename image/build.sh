@@ -56,20 +56,14 @@ cleanup() {
   trap - EXIT INT TERM
   if [[ -n $monitor ]]; then kill "$monitor" 2>/dev/null || true; wait "$monitor" 2>/dev/null || true; fi
   if mountpoint -q "$root"; then sudo umount --recursive "$root" || true; fi
-  if [[ -n $loop ]]; then sudo losetup --detach "$loop" || true; fi
+  if [[ -n $loop ]] && sudo losetup --detach "$loop"; then loop=; fi
+  if [[ -z $loop ]] && ! mountpoint -q "$root"; then rm -f "$work/builder.img"; fi
   echo "Build workspace: $work"
   exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-# Write an executable wrapper running the given command line with its arguments.
-wrapper() {
-  local file=$1
-  shift
-  printf '#!/bin/bash\nexec %s"$@"\n' "$(printf '%q ' "$@")" > "$file"
-  chmod 755 "$file"
-}
 mkdir -p "$payload/inputs" "$payload/src" "$work/images" "$work/boot" "$root"
 # Sampling includes compiler and package-manager peaks, not just final artifact sizes.
 (while :; do date -u +%FT%TZ; df -B1 --output=used,avail "$work"; sleep 10; done) > "$out/disk-usage-$target.txt" &
@@ -118,17 +112,29 @@ loop=$(sudo losetup --find --show --partscan "$work/base.img")
 sudo udevadm settle
 sudo e2fsck -pf "${loop}p2" || [[ $? == 1 ]]
 sudo resize2fs "${loop}p2"
-sudo mount "${loop}p2" "$root"
-sudo mkdir -p "$root/boot/firmware" "$root/nabos-build"
-sudo mount "${loop}p1" "$root/boot/firmware"
-sudo mount --bind "$payload" "$root/nabos-build"
-sudo mount --rbind /dev "$root/dev"
-sudo mount --make-rslave "$root/dev"
-sudo mount -t proc proc "$root/proc"
-sudo mount --rbind /sys "$root/sys"
-sudo mount --make-rslave "$root/sys"
-sudo rm -f "$root/etc/resolv.conf"
-sudo cp -L /etc/resolv.conf "$root/etc/resolv.conf"
+sudo losetup --detach "$loop"
+loop=
+mount_image() {
+  loop=$(sudo losetup --find --show --partscan "$1")
+  sudo udevadm settle
+  sudo mount "${loop}p2" "$root"
+  sudo mkdir -p "$root/boot/firmware" "$root/nabos-build"
+  sudo mount "${loop}p1" "$root/boot/firmware"
+  sudo mount --bind "$payload" "$root/nabos-build"
+  sudo mount --rbind /dev "$root/dev"
+  sudo mount --make-rslave "$root/dev"
+  sudo mount -t proc proc "$root/proc"
+  sudo mount -t tmpfs -o nosuid,nodev tmpfs "$root/run"
+  sudo mount --rbind /sys "$root/sys"
+  sudo mount --make-rslave "$root/sys"
+  sudo rm -f "$root/etc/resolv.conf"
+  sudo cp -L /etc/resolv.conf "$root/etc/resolv.conf"
+}
+unmount_image() {
+  sudo umount --recursive "$root"
+  sudo losetup --detach "$loop"
+  loop=
+}
 if [[ $arch == armhf ]]; then
   sudo update-binfmts --enable qemu-arm
   qemu_cpu=arm1176
@@ -137,40 +143,25 @@ else
   qemu_cpu=cortex-a53
 fi
 in_target() { sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /bin/bash /nabos-build/image/prepare.sh "$1" "$target"; }
-in_target packages
-# Execute boot.scr in U-Boot's actual parser, including both slot choices and
-# failure paths. This sandbox is native to the image assembly runner.
-make -C "$payload/src/uboot" O="$work/uboot-sandbox" sandbox_defconfig
-"$payload/src/uboot/scripts/config" --file "$work/uboot-sandbox/.config" \
-  -d SANDBOX_SDL -d TOOLS_MKEFICAPSULE -d UNIT_TEST -d EFI_CAPSULE_AUTHENTICATE \
-  -d EFI_CAPSULE_ON_DISK -d CMD_UPL -d UPL
-make -C "$payload/src/uboot" O="$work/uboot-sandbox" olddefconfig
-make -C "$payload/src/uboot" O="$work/uboot-sandbox" -j"$(nproc)" CONFIG_PYLIBFDT= u-boot tools
+# Compile target-dependent components on a disposable copy of the pristine base.
+# Added development packages and compiler caches remain in that copy.
+echo "$(date -u +%FT%TZ) Building components in disposable image"
+cp --reflink=auto --sparse=always "$work/base.img" "$work/builder.img"
+mount_image "$work/builder.img"
+in_target build-packages
 in_target drivers
-# Locked source archives are retained; release images do not need build objects.
+in_target wheels
+unmount_image
+rm "$work/builder.img"
 sudo rm -rf "$payload/src/led-build"
 
-export GOMODCACHE="$payload/inputs/go-modcache"
-export GOPROXY=off
+echo "$(date -u +%FT%TZ) Assembling runtime image from archived packages and components"
+mount_image "$work/base.img"
+in_target packages
+sudo cp -a "$payload/runtime/." "$root/"
+sudo rm -rf "$payload/runtime"
 sudo install -m755 "$work/components/rust/nab-core" "$root/usr/bin/nab-core"
 sudo install -m755 "$work/components/go/nab-service" "$root/usr/bin/nab-service"
-# Exercise the target binaries against a real broker before assembling artifacts.
-# ARMv6 uses the actual image's loader/libc and an ARM1176 CPU, including Go's runtime.
-for name in nab-core nab-service; do
-  prefix=()
-  if [[ $arch == armhf ]]; then
-    # QEMU's -L rewrites file lookups too, including /etc/machine-id.
-    # Only the dynamically linked core needs the target sysroot; Go is static.
-    sysroot=/
-    if [[ $name == nab-core ]]; then sysroot=$root; fi
-    prefix=(qemu-arm-static -cpu arm1176 -L "$sysroot")
-  elif [[ $name == nab-core ]]; then
-    prefix=("$root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" --library-path "$root/usr/lib/aarch64-linux-gnu")
-  fi
-  wrapper "$work/$name-test" "${prefix[@]}" "$root/usr/bin/$name"
-done
-(cd "$repo/services" && NABOS_INTEGRATION=1 NAB_CORE_BIN="$work/nab-core-test" NAB_SERVICE_BIN="$work/nab-service-test" \
-  go test -count=1 -timeout 20m -v ./tests/integration)
 # Git checkout ownership/umask must not grant the runner write access to system units.
 tar --create --file=- --directory="$repo/image/rootfs" --owner=0 --group=0 --mode=go-w . |
   sudo tar --extract --file=- --directory="$root"
@@ -199,16 +190,7 @@ fi
 sudo install -m644 "$signing_cert" "$root/etc/rauc/ca.cert.pem"
 sudo sed -i "s/@COMPATIBLE@/$compatible/g" "$root/etc/rauc/system.conf"
 in_target finalize
-(cd "$repo/services" && NABOS_UBOOT_SANDBOX="$work/uboot-sandbox" NABOS_SOURCES="$payload/src" \
-  NABOS_VENDOR_DTBS="$root/boot/dtb" go test -count=1 -v ./tests/image)
-sudo rm -rf "$payload/src/uboot" "$work/uboot-sandbox"
-sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /usr/bin/nab-core --version
-sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /usr/bin/nab-service --version
 kernel=$(cat "$payload/kernel-release")
-for module in "$root/lib/modules/$kernel/updates/nabos/"*.ko; do
-  vermagic=$(sudo env QEMU_CPU="$qemu_cpu" chroot "$root" modinfo -F vermagic "${module#"$root"}")
-  [[ $vermagic == "$kernel "* ]] || { echo "Kernel mismatch: $module: $vermagic" >&2; exit 1; }
-done
 sudo ln -sfn /run/NetworkManager/resolv.conf "$root/etc/resolv.conf"
 
 # The immutable firmware partition contains no application kernel or modules.
@@ -231,7 +213,10 @@ if [[ -n $status ]]; then dirty=true; fi
 printf '{\n  "version": "%s",\n  "target": "%s",\n  "kernel": "%s",\n  "source_revision": "%s",\n  "source_dirty": %s,\n  "development": %s,\n  "hardware_validated": false\n}\n' \
   "$version" "$target" "$kernel" "$revision" "$dirty" "$development" > "$out/build-$target.json"
 sudo sync
-# Discard freed package/compiler blocks before copying the sparse filesystem.
+# Remove the build mount point itself, not just its externally stored contents.
+sudo umount "$root/nabos-build"
+sudo rmdir "$root/nabos-build"
+# Discard freed package blocks before copying the sparse filesystem.
 sudo fstrim "$root"
 sudo umount --recursive "$root"
 sudo e2fsck -p "${loop}p2" || [[ $? == 1 ]]
@@ -248,6 +233,10 @@ mkfs.ext4 -q -F -L nabos-data "$work/images/data.ext4"
 mkenvimage -r -s 0x10000 -o "$work/images/uboot.env" "$repo/image/boot/uboot.env"
 mkdir "$work/empty"
 genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" --inputpath "$work/images" --outputpath "$work/images" --tmppath "$work/genimage-tmp"
+chmod a-w "$work/images/sdcard.img" "$work/images/rootfs.ext4" "$work/images/boot.vfat"
+echo "$(date -u +%FT%TZ) Testing a disposable copy of the assembled SD image"
+bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" "$payload" "$work/components/uboot/u-boot.bin"
+sudo rm -rf "$payload/src/uboot"
 mkdir "$work/bundle"
 ln "$work/images/rootfs.ext4" "$work/bundle/rootfs.ext4"
 printf '[update]\ncompatible=%s\nversion=%s\n\n[bundle]\nformat=verity\n\n[image.rootfs]\nfilename=rootfs.ext4\n' \

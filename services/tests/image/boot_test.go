@@ -73,6 +73,9 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	write(f.t, filepath.Join(tree, "boot/kernel"), strings.Repeat("not a real kernel", 64))
 	dtb := filepath.Join(vendorDTBs, dtbs[target])
 	if _, err := os.Stat(dtb); err != nil {
+		if os.Getenv("NABOS_IMAGE_BOOT") != "" {
+			f.t.Fatal(err)
+		}
 		dtb = filepath.Join(f.tmp, "base.dtb")
 	}
 	copyFile(f.t, dtb, filepath.Join(tree, "boot/dtb", dtbs[target]))
@@ -95,6 +98,9 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 	copyFile(t, filepath.Join(f.tmp, "boot.scr"), filepath.Join(boot, "boot.scr"))
 	copyFile(t, filepath.Join(f.tmp, "uboot.env.bin"), filepath.Join(boot, "uboot.env"))
 	env := strings.NewReplacer("@TARGET@", target, "@DTB@", dtbs[target]).Replace(read(t, filepath.Join(bootDir, "boot.env.in")))
+	if boot := os.Getenv("NABOS_IMAGE_BOOT"); boot != "" && target == os.Getenv("NABOS_IMAGE_TARGET") {
+		env = read(t, filepath.Join(boot, "boot.env"))
+	}
 	write(t, filepath.Join(boot, "boot.env"), env)
 	parts := []string{boot, "", "", ""}
 	if slotA {
@@ -154,6 +160,7 @@ func (f *bootFixture) boot(disk, envChanges string, watchdog bool) ([]string, st
 		args = []string{"-d", filepath.Join(f.tmp, "control.dtb")}
 	}
 	cmd := exec.Command(filepath.Join(sandbox, "u-boot"), append(args, "-c", commands)...)
+	cmd.Dir = f.tmp // saveenv and sandbox state belong to this fixture.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +220,10 @@ func newBootFixture(t *testing.T) *bootFixture {
 	run(t, baseDTS, dtc, "-@", "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "base.dtb"), "-")
 	run(t, controlDTS, dtc, "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "control.dtb"), "-")
 	for name, repo := range map[string]string{"tagtagtag-sound": "sound", "tagtagtag-ears": "ears"} {
+		if overlays := os.Getenv("NABOS_IMAGE_OVERLAYS"); overlays != "" {
+			f.overlays[name] = filepath.Join(overlays, name+".dtbo")
+			continue
+		}
 		var dts string
 		if real := find(filepath.Join(sources, repo), name+"-overlay.dts"); len(real) > 0 {
 			// The pinned driver overlays, preprocessed like image/prepare.sh does.
@@ -226,11 +237,16 @@ func newBootFixture(t *testing.T) *bootFixture {
 		run(t, dts, dtc, "-@", "-I", "dts", "-O", "dtb", "-o", out, "-")
 		f.overlays[name] = out
 	}
-	run(t, "", filepath.Join(sandbox, "tools/mkimage"), "-A", "arm", "-T", "script", "-C", "none",
-		"-d", filepath.Join(bootDir, "boot.cmd"), filepath.Join(f.tmp, "boot.scr"))
-	// Same packing as image/build.sh; comment lines must be dropped by mkenvimage.
-	run(t, "", filepath.Join(sandbox, "tools/mkenvimage"), "-r", "-s", "0x10000",
-		"-o", filepath.Join(f.tmp, "uboot.env.bin"), filepath.Join(bootDir, "uboot.env"))
+	if boot := os.Getenv("NABOS_IMAGE_BOOT"); boot != "" {
+		copyFile(t, filepath.Join(boot, "boot.scr"), filepath.Join(f.tmp, "boot.scr"))
+		copyFile(t, os.Getenv("NABOS_IMAGE_ENV"), filepath.Join(f.tmp, "uboot.env.bin"))
+	} else {
+		run(t, "", filepath.Join(sandbox, "tools/mkimage"), "-A", "arm", "-T", "script", "-C", "none",
+			"-d", filepath.Join(bootDir, "boot.cmd"), filepath.Join(f.tmp, "boot.scr"))
+		// Same packing as image/build.sh; comment lines must be dropped by mkenvimage.
+		run(t, "", filepath.Join(sandbox, "tools/mkenvimage"), "-r", "-s", "0x10000",
+			"-o", filepath.Join(f.tmp, "uboot.env.bin"), filepath.Join(bootDir, "uboot.env"))
+	}
 	return f
 }
 
