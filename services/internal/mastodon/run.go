@@ -223,6 +223,7 @@ func pause(ctx context.Context, d time.Duration) bool {
 
 func (c *Client) catchUp(ctx context.Context, token string, load Load, update Update, onEars func(int, int), onSound func(string)) error {
 	var statuses []Status
+	delivered := make(map[string]time.Time)
 	initial := load()
 	cursor, _ := statusNumber(initial.LastStatusID)
 	notBefore := initial.HistoryBefore
@@ -281,6 +282,9 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 			}
 			if n.Type == "mention" && n.Status != nil {
 				statuses = append(statuses, *n.Status)
+				if n.CreatedAt.After(delivered[n.Status.ID]) {
+					delivered[n.Status.ID] = n.CreatedAt
+				}
 			}
 		}
 		if next == "" || older {
@@ -300,7 +304,13 @@ func (c *Client) catchUp(ctx context.Context, token string, load Load, update Up
 		return a < b
 	})
 	for _, st := range statuses {
-		if err := c.process(ctx, token, st, notBefore, update, onEars, onSound); err != nil {
+		// Conversation and notification entries can share an ID. Apply the
+		// local delivery time to both copies before either advances the cursor.
+		received := delivered[st.ID]
+		if received.IsZero() {
+			received = st.CreatedAt
+		}
+		if err := c.process(ctx, token, st, received.Before(notBefore), update, onEars, onSound); err != nil {
 			return err
 		}
 	}
@@ -348,7 +358,7 @@ func (c *Client) page(ctx context.Context, token, path string, result any) (stri
 	return u.RequestURI(), nil
 }
 
-func (c *Client) process(ctx context.Context, token string, st Status, notBefore time.Time, update Update, onEars func(int, int), onSound func(string)) error {
+func (c *Client) process(ctx context.Context, token string, st Status, historical bool, update Update, onEars func(int, int), onSound func(string)) error {
 	id, err := statusNumber(st.ID)
 	if err != nil || st.CreatedAt.IsZero() {
 		return nil
@@ -361,9 +371,7 @@ func (c *Client) process(ctx context.Context, token string, st Status, notBefore
 		if old, e := statusNumber(s.LastStatusID); s.LastStatusID != "" && e == nil && id <= old {
 			return nil
 		}
-		// Only the initial OAuth snapshot has a creation-time boundary.
-		// Subsequent delivery is ordered by local ID, despite remote clocks.
-		if !st.CreatedAt.Before(notBefore) && st.Visibility == "direct" && st.Account.ID != "" && st.Account.ID != s.AccountID {
+		if !historical && st.Visibility == "direct" && st.Account.ID != "" && st.Account.ID != s.AccountID {
 			sender, e := c.handle(st.Account.Acct)
 			if e == nil && !strings.EqualFold(sender, s.Username+"@"+c.Instance()) {
 				if kind, left, right, ok := ParseMessage(st.Content); ok {
@@ -467,7 +475,7 @@ func (c *Client) stream(ctx context.Context, token string, load Load, update Upd
 		default:
 			return nil
 		}
-		return c.process(streamCtx, token, st, time.Time{}, update, onEars, onSound)
+		return c.process(streamCtx, token, st, false, update, onEars, onSound)
 	}
 	for scanner.Scan() {
 		line := scanner.Text()

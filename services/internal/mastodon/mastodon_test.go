@@ -202,7 +202,7 @@ func TestCatchUpDedupMalformedAndTokenErrors(t *testing.T) {
 		t.Error("duplicate proposal")
 	}
 	malformed := Status{ID: "garbage", Visibility: "direct", CreatedAt: now, Account: Account{ID: "2", Acct: "peer"}, Content: "<p>(NabPairing Divorce - " + protocolURL + ")</p>"}
-	if err := c.process(context.Background(), "good", malformed, time.Time{}, update, nil, play); err != nil || s.PairingState != "waiting_approval" {
+	if err := c.process(context.Background(), "good", malformed, false, update, nil, play); err != nil || s.PairingState != "waiting_approval" {
 		t.Fatalf("malformed status changed state: %+v %v", s, err)
 	}
 	if _, err := c.VerifyAccount(context.Background(), "bad"); err == nil || strings.Contains(err.Error(), "bad") {
@@ -462,12 +462,46 @@ func TestFreshAccountSkipsHistoryThenAcceptsDelayedDelivery(t *testing.T) {
 		t.Fatalf("history replayed: pages=%d state=%+v sounds=%v", pages, s, sounds)
 	}
 	for range 2 {
-		if err := c.process(context.Background(), "token", status("3", "Proposal"), time.Time{}, update, nil, play); err != nil {
+		if err := c.process(context.Background(), "token", status("3", "Proposal"), false, update, nil, play); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if s.LastStatusID != "3" || s.PairingState != "waiting_approval" || len(sounds) != 1 {
 		t.Fatalf("new delayed delivery: state=%+v sounds=%v", s, sounds)
+	}
+}
+
+func TestInitialCatchUpUsesNotificationDeliveryTime(t *testing.T) {
+	now := time.Now().UTC()
+	proposal := Status{ID: "3", CreatedAt: now.Add(-time.Hour), Visibility: "direct",
+		Account: Account{ID: "peer-id", Acct: "peer"}, Content: "<p>(NabPairing Proposal - " + protocolURL + ")</p>"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/conversations":
+			// This duplicate is collected first, without a delivery timestamp.
+			json.NewEncoder(w).Encode([]any{map[string]any{"last_status": proposal}})
+		case "/api/v1/notifications":
+			json.NewEncoder(w).Encode([]any{map[string]any{
+				"type": "mention", "created_at": now.Add(time.Minute), "status": proposal,
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c, _ := NewClient(srv.URL, srv.Client())
+	var s State
+	if err := s.SetAccount("token", Account{ID: "self", Username: "rabbit"}); err != nil {
+		t.Fatal(err)
+	}
+	sounds := 0
+	for range 2 {
+		if err := c.catchUp(context.Background(), "token", func() State { return s }, func(f func(*State) error) error { return f(&s) }, nil, func(string) { sounds++ }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.LastStatusID != "3" || s.PairingState != "waiting_approval" || !s.HistoryBefore.IsZero() || sounds != 1 {
+		t.Fatalf("delivery after OAuth lost or duplicated: state=%+v sounds=%d", s, sounds)
 	}
 }
 
