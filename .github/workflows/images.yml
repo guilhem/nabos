@@ -31,14 +31,10 @@ concurrency:
 jobs:
   test:
     uses: ./.github/workflows/tests.yml
-  go:
-    uses: ./.github/workflows/go.yml
-  rust:
-    uses: ./.github/workflows/rust.yml
-  uboot:
-    uses: ./.github/workflows/uboot.yml
+  components:
+    uses: ./.github/workflows/components.yml
   build:
-    needs: [test, go, rust, uboot]
+    needs: [test, components]
     strategy:
       fail-fast: false
       matrix:
