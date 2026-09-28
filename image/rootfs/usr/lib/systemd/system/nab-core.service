@@ -1,0 +1,25 @@
+[Unit]
+Description=Nabaztag core (LEDs, ears, button, RFID, audio)
+Wants=mosquitto.service user@1000.service
+After=mosquitto.service user@1000.service nabos-rfid.service tagtagtag-mixerd.service
+
+[Service]
+Type=exec
+User=nabos
+Group=nabos
+# rpi_ws281x drives PWM+DMA through /dev/mem (kmem, see 60-nabos.rules) and
+# /dev/vcio (video): root-equivalent access, confined to this unit.
+SupplementaryGroups=gpio video kmem audio
+AmbientCapabilities=CAP_SYS_RAWIO
+CapabilityBoundingSet=CAP_SYS_RAWIO
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/nab-core
+Restart=always
+RestartSec=2
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/data/nabos
+
+[Install]
+WantedBy=multi-user.target

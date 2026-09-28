@@ -1,0 +1,16 @@
+# Raspberry Pi firmware only starts U-Boot. The kernel, DTB and overlays are
+# loaded by boot.scr from /boot of the selected RAUC slot, so dtparam/dtoverlay
+# lines here would only reach U-Boot, never Linux.
+[all]
+kernel=u-boot.bin
+# Smallest GPU split: needs start_cd.elf/fixup_cd.dat on this partition.
+gpu_mem=16
+# Fixes the mini UART clock U-Boot uses for its console (GPIO 14/15 are unused).
+enable_uart=1
+# Expose the watchdog to U-Boot; the slot's vendor DTB also enables it in Linux.
+dtparam=watchdog=on
+disable_splash=1
+boot_delay=0
+
+[pi02]
+arm_64bit=1

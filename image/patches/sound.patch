@@ -1,0 +1,72 @@
+--- a/Makefile
++++ b/Makefile
+@@ -7,17 +7,6 @@
+ obj-m += snd-soc-max9759.o
+ snd-soc-volume-gpio-objs := volume-gpio.o
+ obj-m += snd-soc-volume-gpio.o
+-dtbo-y += tagtagtag-sound.dtbo
+-
+-targets += $(dtbo-y)
+-
+-# Gracefully supporting the new always-y without cutting off older target with kernel 4.x
+-ifeq ($(firstword $(subst ., ,$(KERNELRELEASE))),4)
+-	always := $(dtbo-y)
+-else
+-	always-y := $(dtbo-y)
+-endif
+-
+ ifeq ($(wildcard /boot/firmware/config.txt),)
+     BOOT_CONFIG := /boot/config.txt
+ else
+@@ -25,21 +14,15 @@
+ endif
+ 
+ all: tagtagtag-mixerd
+-	make -C /usr/src/linux-headers-$(KERNELRELEASE) M=$(shell pwd) modules
++	$(MAKE) -C /lib/modules/$(KERNELRELEASE)/build M=$(shell pwd) modules
+ 
+-# dtbo rule is no longer available
+-ifeq ($(firstword $(subst ., ,$(KERNELRELEASE))),6)
+ all: tagtagtag-sound.dtbo
+ 
+-tagtagtag-sound.dtbo: tagtagtag-sound-overlay-patched.dts
+-	dtc -I dts -O dtb -o $@ $<
+-
+-tagtagtag-sound-overlay-patched.dts: tagtagtag-sound-overlay.dts
+-	sed -e "s|^#define EXTCON_JACK_LINE_OUT 23|/* #define EXTCON_JACK_LINE_OUT 23 */|" $< > $@
+-endif
++tagtagtag-sound.dtbo: tagtagtag-sound-overlay.dts
++	dtc -@ -I dts -O dtb -o $@ $<
+ 
+ clean:
+-	make -C /usr/src/linux-headers-$(KERNELRELEASE) M=$(shell pwd) clean
++	$(MAKE) -C /lib/modules/$(KERNELRELEASE)/build M=$(shell pwd) clean
+ 	rm -f tagtagtag-mixerd tagtagtag-mixerd-test
+ 
+ install: snd-soc-wm8960.ko snd-soc-max9759.ko snd-soc-volume-gpio.ko tagtagtag-sound.dtbo tagtagtag-mixerd
+--- a/tagtagtag-sound-overlay.dts
++++ b/tagtagtag-sound-overlay.dts
+@@ -1,8 +1,5 @@
+ /dts-v1/;
+ /plugin/;
+-
+-/* dt-bindings/extcon/connectors.h */
+-#define EXTCON_JACK_LINE_OUT 23
+ 
+ / {
+     compatible = "brcm,bcm2708";
+--- a/wm8960.c
++++ b/wm8960.c
+@@ -530,10 +530,10 @@
+ 
+ 	/* set master/slave audio interface */
+ 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+-	case SND_SOC_DAIFMT_CBM_CFM:
++	case SND_SOC_DAIFMT_CBP_CFP:
+ 		iface |= 0x0040;
+ 		break;
+-	case SND_SOC_DAIFMT_CBS_CFS:
++	case SND_SOC_DAIFMT_CBC_CFC:
+ 		break;
+ 	default:
+ 		return -EINVAL;

@@ -1,0 +1,25 @@
+// nab-service runs as nabos without a login session: allow reboot/power off and
+// manual clock setting and runtime jobs for voice/NTP only.
+polkit.addRule(function (action, subject) {
+	if (subject.user !== "nabos") {
+		return polkit.Result.NOT_HANDLED;
+	}
+	switch (action.id) {
+	case "org.freedesktop.login1.reboot":
+	case "org.freedesktop.login1.reboot-multiple-sessions":
+	case "org.freedesktop.login1.power-off":
+	case "org.freedesktop.login1.power-off-multiple-sessions":
+	case "org.freedesktop.timedate1.set-time":
+		return polkit.Result.YES;
+	case "org.freedesktop.systemd1.manage-units":
+		if (action.lookup("unit") === "linux-voice-assistant.service" &&
+			["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0) {
+			return polkit.Result.YES;
+		}
+		if (action.lookup("unit") === "systemd-timesyncd.service" &&
+			["start", "stop"].indexOf(action.lookup("verb")) >= 0) {
+			return polkit.Result.YES;
+		}
+	}
+	return polkit.Result.NOT_HANDLED;
+});

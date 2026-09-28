@@ -1,0 +1,6 @@
+# The root is mounted read-only by the kernel (root= from boot.scr) and /data by
+# /usr/lib/nabos/boot-init; the boot partition is never mounted. Logs and
+# temporary files are volatile.
+tmpfs /tmp tmpfs nosuid,nodev,mode=1777,size=64M 0 0
+tmpfs /var/tmp tmpfs nosuid,nodev,mode=1777,size=16M 0 0
+tmpfs /var/log tmpfs nosuid,nodev,noexec,mode=0755,size=16M 0 0

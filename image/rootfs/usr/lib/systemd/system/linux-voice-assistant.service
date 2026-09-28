@@ -1,0 +1,27 @@
+[Unit]
+Description=Linux Voice Assistant (Home Assistant voice satellite)
+# nab-service creates/removes the flag and starts/stops this unit (polkit rule).
+ConditionPathExists=/data/nabos/voice-enabled
+ConditionPathExists=/opt/linux-voice-assistant/.venv/bin/python
+Wants=user@1000.service network-online.target
+After=user@1000.service network-online.target
+
+[Service]
+Type=exec
+User=nabos
+Group=nabos
+# Same PipeWire session as the core.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Run from the source tree like upstream's script/run so sounds/ and wakewords/ resolve.
+WorkingDirectory=/opt/linux-voice-assistant
+ExecStart=/opt/linux-voice-assistant/.venv/bin/python -m linux_voice_assistant --name Nabaztag \
+	--port 6053 --peripheral-host 127.0.0.1 --peripheral-port 6055 \
+	--preferences-file /var/lib/nabos/lva/preferences.json --download-dir /var/lib/nabos/lva/wakewords
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nabos
+
+[Install]
+WantedBy=multi-user.target

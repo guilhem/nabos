@@ -1,0 +1,22 @@
+[Unit]
+Description=Nabaztag service (HTTP :8080, settings, updates)
+Wants=mosquitto.service user@1000.service
+After=mosquitto.service user@1000.service
+
+[Service]
+Type=exec
+User=nabos
+Group=nabos
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# NABOS_VERSION, NABOS_UPDATE_REPO, NABOS_UPDATE_ASSET and, on ARMv6, an empty NABOS_LVA_UNIT.
+EnvironmentFile=/etc/nabos/release.env
+ExecStart=/usr/bin/nab-service
+Restart=always
+RestartSec=2
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/data/nabos
+
+[Install]
+WantedBy=multi-user.target

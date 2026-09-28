@@ -1,0 +1,157 @@
+{{define "top"}}<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+{{with .Data}}{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}{{end}}
+<title>{{.Title}}</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#f6f3fa;color:#222}
+header{background:#7a2a8c;color:#fff;padding:.6em 1em;display:flex;flex-wrap:wrap;gap:.8em;align-items:center}
+header a{color:#fff;text-decoration:none}header b{margin-right:auto}
+main{max-width:44em;margin:auto;padding:1em}
+section{background:#fff;border-radius:.6em;padding:1em;margin-bottom:1em;box-shadow:0 1px 3px #0002}
+h1{font-size:1.4em}h2{margin-top:0;font-size:1.1em}label{display:block;margin:.5em 0}
+input,select,button{font-size:1em;padding:.4em;max-width:100%}button{background:#7a2a8c;color:#fff;border:0;border-radius:.4em;padding:.5em .9em;margin:.2em 0}
+.actions form{display:inline}.ok{background:#dff5e1;padding:.6em;border-radius:.4em}.err{background:#fde2e2;padding:.6em;border-radius:.4em}
+table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pre{overflow:auto;font-size:.8em}
+</style></head><body>
+<header><b>🐰 NabOS</b>{{if .Auth}}<a href="/">Accueil</a><a href="/settings">Réglages</a><a href="/tags">Étiquettes</a><a href="/sounds">Sons</a><a href="/updates">Mises à jour</a>
+<form method="post" action="/logout"><button>Déconnexion</button></form>{{end}}</header>
+<main><h1>{{.Title}}</h1>{{if .Flash}}<p class="ok">{{.Flash}}</p>{{end}}{{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+{{end}}
+
+{{define "bottom"}}</main></body></html>{{end}}
+
+{{define "setup"}}{{template "top" .}}
+<section><h2>Premier démarrage</h2>
+<p>Choisissez le mot de passe d'administration du lapin.</p>
+<p><b>Appuyez une fois sur le bouton de la tête du lapin</b>, puis validez dans les 5 minutes. Cela prouve que vous avez le lapin sous la main.</p>
+<form method="post" action="/setup">
+<label>Mot de passe (8 à 128 caractères)<br><input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
+<label>Confirmation<br><input type="password" name="confirm" minlength="8" maxlength="128" required autocomplete="new-password"></label>
+<button>Enregistrer</button></form>
+<p>Mot de passe oublié plus tard ? Un clic suivi d'un appui long sur le bouton l'efface ; revenez ensuite sur cette page.</p></section>
+{{template "bottom" .}}{{end}}
+
+{{define "login"}}{{template "top" .}}
+<section><h2>Connexion</h2><form method="post" action="/login">
+<label>Mot de passe<br><input type="password" name="password" maxlength="128" required autofocus autocomplete="current-password"></label>
+<button>Entrer</button></form></section>
+{{template "bottom" .}}{{end}}
+
+{{define "home"}}{{template "top" .}}
+{{if .Data.Recovered}}<p class="err">Le fichier de réglages était illisible : réglages par défaut restaurés (copie : {{.Data.Recovered}}).</p>{{end}}
+<section><h2>État</h2><table>
+<tr><td>Lapin</td><td>{{if .Data.Online}}{{with .Data.Core}}{{if eq .State "idle"}}réveillé{{else if eq .State "asleep"}}endormi{{else}}occupé{{end}}{{end}}{{else}}cœur arrêté{{end}}</td></tr>
+<tr><td>Réseau</td><td>{{if eq .Data.Network "ok"}}Internet{{else if eq .Data.Network "lan"}}réseau local sans Internet{{else}}hors ligne{{end}}</td></tr>
+<tr><td>Heure</td><td>{{.Data.Now}} — {{template "clock" .Data.Clock}}</td></tr>
+<tr><td>Météo</td><td>{{if .S.Weather.Location}}{{.S.Weather.Location}}{{if .Data.WeatherError}} — indisponible{{end}}{{else}}lieu non configuré{{end}}</td></tr>
+<tr><td>Home Assistant</td><td>{{if .S.HomeAssistant.Enabled}}{{if .Data.HA}}connecté{{else}}non connecté {{.Data.HAError}}{{end}}{{else}}désactivé{{end}}</td></tr>
+<tr><td>Assistant vocal</td><td>{{if .Data.Voice}}activé{{else}}désactivé{{end}}</td></tr>
+<tr><td>Version</td><td>{{.Data.Version}}</td></tr></table></section>
+<section class="actions"><h2>Actions</h2>
+<form method="post" action="/action"><input type="hidden" name="name" value="time"><button>Donner l'heure</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="weather_today"><button>Météo du jour</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="weather_tomorrow"><button>Météo de demain</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="sleep"><button>Dormir</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="wakeup"><button>Se réveiller</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="cancel"><button>Interrompre</button></form>
+</section>
+<section class="actions"><h2>Diagnostic</h2>
+<form method="post" action="/action"><input type="hidden" name="name" value="test_ears"><button>Tester les oreilles</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="test_leds"><button>Tester les LED</button></form>
+<details><summary>Matériel</summary><pre>{{json .Data.Core.Hardware}}</pre></details>
+<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><button>Redémarrer</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="poweroff"><button>Éteindre</button></form>
+</section>
+{{template "bottom" .}}{{end}}
+
+{{define "settings"}}{{template "top" .}}
+<section><h2>Heure</h2><p>{{template "clock" .Data.Clock}}</p>
+{{if ne .Data.Clock "ntp"}}<form method="post" action="/clock"><label>Date et heure <input type="datetime-local" name="now" value="{{.Data.Now}}" required></label>
+<button>Régler l'heure</button></form><p>Le lapin n'a pas d'horloge sauvegardée par pile : sans Internet, l'heure réglée à la main vaut jusqu'au prochain redémarrage.</p>{{end}}</section>
+<form method="post" action="/settings">
+<section><h2>Général</h2>
+<label>Langue <select name="locale">{{range .Data.Locales}}<option{{if eq . $.S.Locale}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+<label>Fuseau horaire <input name="timezone" value="{{.S.Timezone}}" required></label>
+<label>Volume <input type="range" name="volume" min="0" max="100" step="5" value="{{.S.Volume}}"></label>
+<label><input type="checkbox" name="auto_check"{{if .S.AutoCheck}} checked{{end}}> Chercher les mises à jour chaque jour</label>
+{{if .Data.Voice}}<label><input type="checkbox" name="voice"{{if .Data.VoiceOn}} checked{{end}}> Assistant vocal (Linux Voice Assistant, via Home Assistant)</label>{{end}}
+</section>
+<section><h2>Horloge et sommeil</h2>
+<label><input type="checkbox" name="chime"{{if .S.Clock.Chime}} checked{{end}}> Annoncer les heures</label>
+<label><input type="checkbox" name="sleep_sounds"{{if .S.Clock.SleepSounds}} checked{{end}}> Sons au coucher et au réveil</label>
+<label>Réveil <input type="time" name="wakeup" value="{{hm .S.Clock.Wakeup}}" required></label>
+<label>Coucher <input type="time" name="sleep" value="{{hm .S.Clock.Sleep}}" required></label>
+<label><input type="checkbox" name="per_day"{{if .S.Clock.PerDay}} checked{{end}}> Horaires différents chaque jour</label>
+<table>{{range $i, $d := days}}{{$day := index $.S.Clock.Days $i}}<tr><td>{{$d}}</td>
+<td><input type="time" name="wakeup_{{$i}}" aria-label="Réveil {{$d}}" value="{{hm $day.Wakeup}}" required></td><td><input type="time" name="sleep_{{$i}}" aria-label="Coucher {{$d}}" value="{{hm $day.Sleep}}" required></td></tr>{{end}}</table>
+</section>
+<section><h2>Météo</h2>
+<label>Lieu <input name="location" value="{{.S.Weather.Location}}" placeholder="Paris"></label>
+<label>Unité <select name="unit"><option value="celsius"{{if eq .S.Weather.Unit "celsius"}} selected{{end}}>°C</option><option value="fahrenheit"{{if eq .S.Weather.Unit "fahrenheit"}} selected{{end}}>°F</option></select></label>
+<label>Animation <select name="animation">
+<option value="weather_and_rain"{{if eq .S.Weather.Animation "weather_and_rain"}} selected{{end}}>météo et pluie</option>
+<option value="weather_only"{{if eq .S.Weather.Animation "weather_only"}} selected{{end}}>météo</option>
+<option value="rain_only"{{if eq .S.Weather.Animation "rain_only"}} selected{{end}}>pluie dans l'heure</option>
+<option value="nothing"{{if eq .S.Weather.Animation "nothing"}} selected{{end}}>aucune</option></select></label>
+<label>Annonce <select name="frequency">
+<option value="0"{{if eq .S.Weather.Frequency 0}} selected{{end}}>jamais</option>
+<option value="1"{{if eq .S.Weather.Frequency 1}} selected{{end}}>environ toutes les heures</option>
+<option value="2"{{if eq .S.Weather.Frequency 2}} selected{{end}}>toutes les 2 à 3 heures</option>
+<option value="3"{{if eq .S.Weather.Frequency 3}} selected{{end}}>au réveil et au coucher</option></select></label>
+</section>
+<section><h2>Home Assistant</h2>
+<label><input type="checkbox" name="ha_enabled"{{if .S.HomeAssistant.Enabled}} checked{{end}}> Publier le lapin (découverte MQTT)</label>
+<label>Broker MQTT <input name="ha_host" value="{{.S.HomeAssistant.Host}}" placeholder="homeassistant.local"></label>
+<label>Port <input type="number" name="ha_port" min="1" max="65535" value="{{.S.HomeAssistant.Port}}"></label>
+<label>Utilisateur <input name="ha_username" value="{{.S.HomeAssistant.Username}}" autocomplete="off"></label>
+<label>Mot de passe <input type="password" name="ha_password" placeholder="inchangé" autocomplete="off"></label>
+<label>Préfixe de découverte <input name="ha_prefix" value="{{.S.HomeAssistant.Prefix}}"></label>
+</section>
+<button>Enregistrer</button></form>
+<section><h2>Mot de passe</h2><form method="post" action="/password">
+<label>Actuel <input type="password" name="old" required maxlength="128" autocomplete="current-password"></label>
+<label>Nouveau <input type="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>
+<button>Changer</button></form></section>
+{{template "bottom" .}}{{end}}
+
+{{define "updates"}}{{template "top" .}}
+<section><h2>Système</h2>{{with .Data.Status}}<table>
+<tr><td>Version installée</td><td>{{.Current}}</td></tr>
+<tr><td>Dernière version</td><td>{{if .Latest}}{{.Latest}}{{else}}inconnue{{end}}{{if .Available}} — disponible{{end}}</td></tr>
+<tr><td>État</td><td>{{.State}}{{if or (eq .State "downloading") (eq .State "installing")}} {{.Progress}} %{{end}}</td></tr>
+{{if .Error}}<tr><td>Erreur</td><td>{{.Error}}</td></tr>{{end}}
+{{if not .Checked.IsZero}}<tr><td>Vérifié</td><td>{{.Checked.Format "02/01 15:04"}}</td></tr>{{end}}</table>{{end}}
+{{if .Data.Slot}}<p>Partition active : {{.Data.Slot}} ({{.Data.Compatible}})</p>{{end}}
+{{if .Data.Configured}}
+<form method="post" action="/updates/check"><button>Vérifier</button></form>
+{{if .Data.Status.Available}}<form method="post" action="/updates/install"><button>Installer {{.Data.Status.Latest}}</button></form>{{end}}
+{{if eq .Data.Status.State "reboot"}}<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><input type="hidden" name="back" value="/updates"><button>Redémarrer sur la nouvelle version</button></form>{{end}}
+{{else}}<p>Les mises à jour ne sont pas configurées sur cette image.</p>{{end}}
+<p>La nouvelle version s'installe sur la partition inactive. Si elle ne démarre pas correctement, le lapin revient tout seul à la version précédente.</p></section>
+{{template "bottom" .}}{{end}}
+
+{{define "tags"}}{{template "top" .}}
+<section><h2>Dernière étiquette</h2>{{with .Data.Tag}}<table>
+<tr><td>Identifiant</td><td>{{.uid}} ({{.tech}})</td></tr><tr><td>Événement</td><td>{{.event}}</td></tr>
+<tr><td>Contenu</td><td>{{.support}}{{if .app}} — {{.app}}{{end}}</td></tr></table>{{else}}<p>Posez une étiquette sur le nez du lapin puis rechargez la page.</p>{{end}}</section>
+<section><h2>Programmer l'étiquette</h2><form method="post" action="/tags/write">
+<label>Action <select name="kind"><option value="clock_sleep">Dormir</option><option value="clock_wakeup">Se réveiller</option>
+<option value="weather_today">Météo du jour</option><option value="weather_tomorrow">Météo de demain</option></select></label>
+<label>Image (0-255) <input type="number" name="picture" min="0" max="255" value="0"></label>
+<button>Écrire (laisser l'étiquette posée)</button></form></section>
+{{template "bottom" .}}{{end}}
+
+{{define "sounds"}}{{template "top" .}}
+<section><h2>Mes sons</h2>{{range .Data.Sounds}}
+<div class="actions">{{.}}
+<form method="post" action="/action"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds"><input type="hidden" name="resource" value="user/{{.}}"><button aria-label="Lire {{.}}">▶</button></form>
+<form method="post" action="/sounds/delete"><input type="hidden" name="name" value="{{.}}"><button>Supprimer</button></form></div>
+{{else}}<p>Aucun son ajouté.</p>{{end}}</section>
+<section><h2>Ajouter un son</h2><form method="post" action="/sounds/upload" enctype="multipart/form-data">
+<label>Fichier audio <input type="file" name="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required></label><button>Envoyer</button></form>
+<p>MP3 ou WAV, 10 Mo maximum.</p></section>
+<section><h2>Jouer un son du lapin</h2><form method="post" action="/action"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds">
+<label>Ressource audio <input name="resource" value="system/abort.wav" required></label><button aria-label="Lire la ressource audio">▶</button></form></section>
+{{template "bottom" .}}{{end}}
+
+{{define "clock"}}{{if eq . "ntp"}}synchronisée par Internet{{else if eq . "manual"}}réglée à la main{{else if eq . "restored"}}approximative (dernière heure connue, sans Internet) : sommeil et réveil actifs, heure non annoncée{{else}}inconnue : programmation suspendue{{end}}{{end}}

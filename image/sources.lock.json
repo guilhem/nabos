@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "tools": {
+    "go": "1.27.1",
+    "rust": "1.98.1",
+    "uboot": "2026.07",
+    "lva": "1.1.15"
+  },
+  "targets": {
+    "zero-armv6": {
+      "arch": "armhf",
+      "rust_target": "arm-unknown-linux-gnueabihf",
+      "goarch": "arm",
+      "goarm": "6",
+      "kernel_flavour": "rpi-v6",
+      "kernel_image": "kernel.img",
+      "dtb": "bcm2708-rpi-zero-w.dtb",
+      "uboot_defconfig": "rpi_0_w_defconfig",
+      "compatible": "nabos-zero-armv6",
+      "image_url": "https://downloads.raspberrypi.com/raspios_lite_armhf/images/raspios_lite_armhf-2026-09-15/2026-09-15-raspios-trixie-armhf-lite.img.xz",
+      "image_sha256": "c766b3fb279b95c12cb4dd22d06f8eab31972c372675d05bd0ca95b060523a7f",
+      "extract_sha256": "f6154846c674d27f61f2d91704783f105f2a8d1e40944126ca6d7f60d10644f1"
+    },
+    "zero2-arm64": {
+      "arch": "arm64",
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "goarch": "arm64",
+      "goarm": "",
+      "kernel_flavour": "rpi-v8",
+      "kernel_image": "kernel8.img",
+      "dtb": "bcm2710-rpi-zero-2-w.dtb",
+      "uboot_defconfig": "rpi_arm64_defconfig",
+      "compatible": "nabos-zero2-arm64",
+      "image_url": "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2026-09-15/2026-09-15-raspios-trixie-arm64-lite.img.xz",
+      "image_sha256": "cdf4f3bfac35ae947b46e4e767f935453810549779ac3290e05a6754aee627e5",
+      "extract_sha256": "49fafba626ec00e0f9800349b9edae6caf8cfc223f673b875b72ac2797ed9576"
+    }
+  },
+  "sources": {
+    "ears": {
+      "repository": "pguyot/tagtagtag-ears",
+      "commit": "5ad1f1398ec03b28f0abf4df1f6ba60a5c0cec35",
+      "url": "https://codeload.github.com/pguyot/tagtagtag-ears/tar.gz/5ad1f1398ec03b28f0abf4df1f6ba60a5c0cec35",
+      "sha256": "db46eff125483604dae0320aa322c7cda3e5abbd33ce9b7310b98f4f06107921"
+    },
+    "sound": {
+      "repository": "pguyot/wm8960",
+      "commit": "b552bdcedb74d162daf2318fc77116b2f209a84e",
+      "url": "https://codeload.github.com/pguyot/wm8960/tar.gz/b552bdcedb74d162daf2318fc77116b2f209a84e",
+      "sha256": "27d724979cad644c74d1c6787c39c3de6a9c577a54fbd2a2e29e94813c03255c"
+    },
+    "cr14": {
+      "repository": "pguyot/cr14",
+      "commit": "f188d5894b5f5f0922fd4b20a14d892f267a8f7c",
+      "url": "https://codeload.github.com/pguyot/cr14/tar.gz/f188d5894b5f5f0922fd4b20a14d892f267a8f7c",
+      "sha256": "8dfa460cc277c5a1294d4d7d0882b831092d5106f50a299e28d01b26e7434a0b"
+    },
+    "nfc": {
+      "repository": "pguyot/st25r391x",
+      "commit": "ac5c3229d46f813f3495213f022f4922f465950d",
+      "url": "https://codeload.github.com/pguyot/st25r391x/tar.gz/ac5c3229d46f813f3495213f022f4922f465950d",
+      "sha256": "0600a7e521fc53c59869371c0529710011602dec1dff9e64ec8ee648b2e6a832"
+    },
+    "led": {
+      "repository": "jgarff/rpi_ws281x",
+      "commit": "22f2e35012704845d82e06d2fa2e10fbc810ecaa",
+      "url": "https://codeload.github.com/jgarff/rpi_ws281x/tar.gz/22f2e35012704845d82e06d2fa2e10fbc810ecaa",
+      "sha256": "d3f6ce3d443bcce7be7faa96bf6d5f8c5873e0071c6cab6ed45e2c55c75afba8"
+    },
+    "uboot": {
+      "repository": "u-boot/u-boot",
+      "commit": "ece349ade2973e220f524ce59e59711cc919263f",
+      "url": "https://codeload.github.com/u-boot/u-boot/tar.gz/ece349ade2973e220f524ce59e59711cc919263f",
+      "sha256": "c51a3c160ee8a7f4304e52498ecfe327789c9464a3681b5c5bd3c72b1f18a079"
+    },
+    "lva": {
+      "repository": "OHF-Voice/linux-voice-assistant",
+      "commit": "43a183a2322cde4c9e2558f333124941fdeaa439",
+      "url": "https://codeload.github.com/OHF-Voice/linux-voice-assistant/tar.gz/43a183a2322cde4c9e2558f333124941fdeaa439",
+      "sha256": "7de42c2522dc22cbca18798b90aea5fc78ff5d0e7a5da1b6f59dbdada178c997"
+    }
+  }
+}

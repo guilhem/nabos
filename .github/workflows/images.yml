@@ -1,0 +1,124 @@
+name: Images
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'core/**'
+      - 'services/**'
+      - 'image/**'
+      - 'tools/**'
+      - 'assets/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.github/workflows/images.yml'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'services/**'
+      - 'image/**'
+      - 'tools/**'
+      - 'assets/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.github/workflows/images.yml'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    uses: ./.github/workflows/tests.yml
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: zero-armv6
+            runner: ubuntu-24.04
+            rust-target: arm-unknown-linux-gnueabihf
+          - target: zero2-arm64
+            runner: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: services/go.sum
+      - name: Build dependencies
+        run: |
+          bash image/host-deps.sh
+          rustup toolchain install 1.98.1 --profile minimal --target '${{ matrix.rust-target }}'
+          rustup default 1.98.1
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-${{ runner.arch }}-${{ hashFiles('core/Cargo.lock') }}
+      - name: Prepare signing material
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
+          SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
+        run: |
+          umask 077
+          test -n "$SIGNING_KEY"
+          test -n "$SIGNING_CERT"
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/rauc-key.pem"
+          printf '%s\n' "$SIGNING_CERT" > "$RUNNER_TEMP/rauc-cert.pem"
+      - name: Build SD image and RAUC bundle
+        env:
+          TARGET: ${{ matrix.target }}
+          RAUC_KEY: ${{ runner.temp }}/rauc-key.pem
+          RAUC_CERT: ${{ runner.temp }}/rauc-cert.pem
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            bash image/build.sh "$TARGET" "$GITHUB_REF_NAME"
+          else
+            bash image/build.sh "$TARGET" "dev-${GITHUB_SHA:0:12}" --development
+          fi
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rauc-key.pem" "$RUNNER_TEMP/rauc-cert.pem"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nabos-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: diagnostics-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/*.txt
+          retention-days: 7
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: nabos-*
+          path: dist
+          merge-multiple: true
+      - name: Verify artifacts and prepare release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS-zero-armv6 SHA256SUMS-zero2-arm64
+          cat SHA256SUMS-zero-armv6 SHA256SUMS-zero2-arm64 > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --draft --title "$GITHUB_REF_NAME" --notes-file ../docs/release-checklist.md ./*

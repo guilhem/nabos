@@ -1,0 +1,83 @@
+#!/bin/sh
+# Marks the booted RAUC slot good once the local stack works (never needs Internet).
+# Unhealthy after the timeout: reboot so U-Boot spends another attempt and falls
+# back to the other slot when this one runs out. When no installed slot has
+# attempts left, stay up (reachable for repair or update) and keep checking.
+set -u
+TIMEOUT=${NABOS_HEALTH_TIMEOUT:-300}
+INTERVAL=${NABOS_HEALTH_INTERVAL:-5}
+CMDLINE=${NABOS_CMDLINE:-/proc/cmdline}
+# DATA and PERSIST: what boot-init mounted before systemd.
+NABOS_BOOT_INIT_LIB=1 . "${NABOS_BOOT_INIT:-/usr/lib/nabos/boot-init}"
+
+slot=
+for arg in $(cat "$CMDLINE"); do
+	case $arg in rauc.slot=*) slot=${arg#rauc.slot=} ;; esac
+done
+case $slot in
+A) other=B other_part=/dev/mmcblk0p3 ;;
+B) other=A other_part=/dev/mmcblk0p2 ;;
+*) echo "not booted from a RAUC slot, nothing to confirm"; exit 0 ;;
+esac
+
+# True when PipeWire exposes the TagTagTag WM8960 card itself: a real ALSA sink
+# for "sinks", a non-monitor capture source for "sources". The core opens ALSA
+# lazily, so this is what proves the audio hardware; a null sink never matches.
+audio_card() {
+	runuser -u nabos -- env XDG_RUNTIME_DIR=/run/user/1000 LC_ALL=C pactl list "$1" 2> /dev/null | awk '
+		/^(Sink|Source) #/ { if (card && !monitor) found = 1; card = 0; monitor = 0 }
+		/alsa\.card_name = "tagtagtag-sound"/ { card = 1 }
+		/^[[:space:]]*Monitor of Sink: / && $NF != "n/a" { monitor = 1 }
+		END { if (card && !monitor) found = 1; exit !found }'
+}
+
+# Never confirm a slot running on ephemeral state: /data must be the real data
+# partition and every persistent path (and the machine id) bound from it.
+persistent() {
+	[ "$(findmnt -n -o SOURCE,FSTYPE --mountpoint /data)" = "$DATA ext4" ] && [ ! -e /data/.volatile ] ||
+		{ reason="/data is not the persistent data partition"; return 1; }
+	for path in /etc/machine-id $PERSIST; do
+		store=/system$path
+		[ "$path" = /etc/machine-id ] && store=/system/machine-id
+		[ "$(findmnt -n -o SOURCE --mountpoint "$path")" = "$DATA[$store]" ] ||
+			{ reason="$path is not bound from /data$store"; return 1; }
+	done
+}
+
+healthy() {
+	persistent || return 1
+	for unit in mosquitto.service nab-core.service nab-service.service; do
+		systemctl is-active --quiet "$unit" || { reason="$unit is not active"; return 1; }
+	done
+	curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8080/healthz ||
+		{ reason="nab-service /healthz is not ready"; return 1; }
+	audio_card sinks || { reason="no tagtagtag-sound playback sink in PipeWire"; return 1; }
+	audio_card sources || { reason="no tagtagtag-sound capture source in PipeWire"; return 1; }
+}
+
+left() { fw_printenv -n "BOOT_$1_LEFT" 2> /dev/null || echo 0; }
+
+waited=0
+stay=
+until healthy; do
+	if [ "$waited" -ge "$TIMEOUT" ] && [ -z "$stay" ]; then
+		echo "slot $slot unhealthy after ${TIMEOUT}s: $reason"
+		own=$(left "$slot")
+		# An empty slot (initial B) is no fallback even if it has attempts.
+		if [ "$(blkid -p -s TYPE -o value "$other_part" 2> /dev/null)" = ext4 ]; then
+			fallback=$(left "$other")
+		else
+			fallback=0
+		fi
+		if [ "${own:-0}" -gt 0 ] || [ "${fallback:-0}" -gt 0 ]; then
+			echo "rebooting: slot $slot has $own attempts left, slot $other $fallback"
+			exec systemctl reboot
+		fi
+		echo "no slot has attempts left: staying up unconfirmed"
+		stay=1
+	fi
+	sleep "$INTERVAL"
+	waited=$((waited + INTERVAL))
+done
+echo "slot $slot healthy, marking it good"
+exec rauc status mark-good

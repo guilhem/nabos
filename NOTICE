@@ -1,0 +1,19 @@
+NabOS is distributed under the GNU General Public License, version 3 only.
+The full license is in LICENSE.
+
+Reused implementation and media
+
+The hardware, choreography, clock and weather implementations adapt work by
+the PyNab contributors: https://github.com/nabaztag2018/pynab.
+The device feedback, clock, weather, sleep/wakeup sounds and choreography files
+also come from that project. Their contents and embedded metadata are unchanged;
+resource directories were renamed and file aliases were materialized.
+Attribution to the original contributors is retained here, independently of
+NabOS's repository, build, runtime and update infrastructure.
+
+External components
+
+Drivers, rpi_ws281x, U-Boot, Linux Voice Assistant and their dependencies keep
+their respective licenses. Their pinned sources are listed in
+image/sources.lock.json; build input archives include the upstream sources.
+Raspberry Pi OS supplies the Raspberry Pi firmware under its own terms.

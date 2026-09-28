@@ -1,0 +1,103 @@
+#!/bin/sh
+# PID 1 before systemd (init= is set by boot.scr); the root filesystem is read-only.
+# Checks and mounts /data, grows it once to the end of the card, binds persistent
+# state over the read-only root, then execs systemd. Failures are logged and the
+# boot always goes on to systemd.
+
+DISK=${NABOS_DISK:-/dev/mmcblk0}
+SYSFS=${NABOS_SYSFS:-/sys}
+DATA=${DISK}p4
+# Directories on the read-only root whose content lives in /data/system.
+PERSIST="/etc/NetworkManager/system-connections /var/lib/NetworkManager /var/lib/comitup /var/lib/systemd/timesync /var/lib/tagtagtag-sound /var/lib/nabos"
+GROWN=/data/system/.data-grown
+KMSG=${NABOS_KMSG:-/dev/kmsg}
+
+log() { echo "nabos-boot-init: $*" >> "$KMSG" 2>/dev/null || echo "nabos-boot-init: $*" >&2; }
+
+# Unused sectors after the data partition (partition 4 is always the last one).
+free_after_data() {
+	name=${DISK##*/}
+	total=$(cat "$SYSFS/class/block/$name/size") &&
+		start=$(cat "$SYSFS/class/block/${name}p4/start") &&
+		size=$(cat "$SYSFS/class/block/${name}p4/size") &&
+		echo $((total - start - size))
+}
+
+# Extends partition 4 to the end of the card. Only partition 4 is rewritten.
+grow_partition() {
+	free=$(free_after_data) || return 1
+	[ "$free" -gt 32768 ] || return 0 # less than 16 MiB left: already grown
+	log "extending the data partition by $free sectors"
+	echo ',+' | sfdisk --no-reread --no-tell-kernel -q -N 4 "$DISK"
+}
+
+# The marker is only written once the filesystem really fills the partition, so
+# an interrupted or failed growth is retried on the next boot.
+grow_data() {
+	if grow_partition && partx -u --nr 4 "$DISK" && resize2fs "$DATA" && : > "$GROWN"; then
+		log "data filesystem uses the whole card"
+	else
+		log "data growth failed, retrying on next boot"
+	fi
+}
+
+mount_data() {
+	e2fsck -p "$DATA"
+	rc=$?
+	if [ "$rc" -ge 4 ]; then
+		log "e2fsck -p returned $rc, repairing"
+		e2fsck -fy "$DATA"
+		rc=$?
+	fi
+	[ "$rc" -lt 4 ] || return 1
+	mount -t ext4 -o noatime "$DATA" /data
+}
+
+machine_id() {
+	id=/data/system/machine-id
+	grep -Eqx '[0-9a-f]{32}' "$id" 2>/dev/null ||
+		{ tr -d '-' < /proc/sys/kernel/random/uuid > "$id.new" && mv "$id.new" "$id"; } ||
+		{ log "cannot store the machine id"; return 1; }
+	mount --bind "$id" /etc/machine-id
+}
+
+# First boot copies the image defaults, later boots keep the device's own state.
+persist() {
+	for path in $PERSIST; do
+		store=/data/system$path
+		if [ ! -d "$store" ]; then
+			rm -rf "$store.seed"
+			if ! { mkdir -p "${store%/*}" && cp -a "$path" "$store.seed" && mv "$store.seed" "$store"; }; then
+				log "cannot seed $path"
+				continue
+			fi
+		fi
+		mount --bind "$store" "$path" || log "cannot bind $path"
+	done
+}
+
+[ -z "${NABOS_BOOT_INIT_LIB:-}" ] || return 0 # sourced by tests and image-setup
+[ "$$" = 1 ] || { echo "boot-init must run as PID 1" >&2; exit 1; }
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+tries=0
+while [ ! -b "$DATA" ] && [ "$tries" -lt 50 ]; do
+	sleep 0.1
+	tries=$((tries + 1))
+done
+
+if mount_data; then
+	mkdir -p /data/system
+	[ -e "$GROWN" ] || grow_data
+else
+	log "data partition unusable, /data is volatile for this boot"
+	mount -t tmpfs -o mode=0755,size=64M tmpfs /data && : > /data/.volatile
+	mkdir -p /data/system
+fi
+machine_id
+persist
+exec /sbin/init "$@"

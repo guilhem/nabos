@@ -1,0 +1,43 @@
+name: Tests
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: services/go.sum
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto mosquitto-clients shellcheck device-tree-compiler
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
+      - name: Rust
+        run: |
+          cargo fmt --manifest-path core/Cargo.toml --check
+          cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path core/Cargo.toml
+      - name: Go
+        working-directory: services
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+      - name: Image and protocol checks
+        run: |
+          bash -n image/build.sh image/prepare.sh image/host-deps.sh
+          python3 -m unittest discover -s image -p 'test_*.py' -v
+          python3 tools/integration.py

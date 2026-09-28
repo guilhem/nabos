@@ -1,0 +1,10 @@
+/build/
+/dist/
+/core/target/
+/services/nab-service
+__pycache__/
+*.py[cod]
+.env
+.venv/
+*.log
+.DS_Store
