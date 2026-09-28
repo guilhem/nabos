@@ -10,7 +10,7 @@ case "$target" in
   *) exit 2 ;;
 esac
 export DEBIAN_FRONTEND=noninteractive
-runtime=(ca-certificates curl dbus dbus-user-session polkitd systemd-timesyncd openssl
+runtime=(ca-certificates curl dbus dbus-user-session polkitd systemd-timesyncd openssl openssh-server sudo
   pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils alsa-utils
   libasound2t64 libmpg123-0t64 mpg123 mosquitto mosquitto-clients
   network-manager comitup avahi-daemon rauc rauc-service u-boot-tools libubootenv-tool i2c-tools raspi-utils-dt
@@ -93,7 +93,7 @@ build-packages|packages)
       if getent group pi >/dev/null; then groupdel pi; fi
       rm -f /etc/sudoers.d/010_pi-nopasswd
     fi
-    useradd --uid 1000 --user-group --create-home --home-dir /var/lib/nabos --shell /usr/sbin/nologin nabos
+    useradd --uid 1000 --user-group --create-home --home-dir /var/lib/nabos --shell /bin/bash nabos
   fi
   usermod -aG audio,video nabos
   passwd --lock nabos
@@ -205,14 +205,14 @@ finalize)
     fi
   fi
   # The modern image does not start the stock onboarding, resize or APT jobs.
-  for service in ssh sshd apt-daily.timer apt-daily-upgrade.timer unattended-upgrades regenerate_ssh_host_keys userconfig resize2fs_once cloud-init cloud-init-local cloud-config cloud-final; do
+  for service in ssh.socket apt-daily.timer apt-daily-upgrade.timer unattended-upgrades regenerate_ssh_host_keys sshd-keygen userconfig resize2fs_once cloud-init cloud-init-local cloud-config cloud-final; do
     systemctl mask "$service"
   done
   apt-get clean
   rm -rf /var/lib/apt/lists/* /tmp/*
   find /var/log -type f -exec truncate -s0 '{}' +
   # SSH keys, machine identity and random seeds belong to the device, not the image.
-  rm -f /etc/ssh/ssh_host_* /var/lib/systemd/random-seed
+  rm -f /etc/ssh/ssh_host_* /etc/ssh/sshd_config.d/rename_user.conf /var/lib/systemd/random-seed
   dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /usr/share/nabos/packages.tsv
   /usr/lib/nabos/image-setup
   rm -f /usr/lib/nabos/image-setup /usr/sbin/policy-rc.d /etc/apt/apt.conf.d/99nabos-build

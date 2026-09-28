@@ -10,7 +10,7 @@ header nav{display:flex;flex-wrap:wrap;gap:.8em}
 main{max-width:44em;margin:auto;padding:1em}
 section{background:#fff;border-radius:.6em;padding:1em;margin-bottom:1em;box-shadow:0 1px 3px #0002}
 h1{font-size:1.4em}h2{margin-top:0;font-size:1.1em}label{display:block;margin:.5em 0}
-input,select,button{font-size:1em;padding:.4em;max-width:100%}button{background:#7a2a8c;color:#fff;border:0;border-radius:.4em;padding:.5em .9em;margin:.2em 0}
+input,select,textarea,button{font-size:1em;padding:.4em;max-width:100%}textarea{width:100%;box-sizing:border-box}button{background:#7a2a8c;color:#fff;border:0;border-radius:.4em;padding:.5em .9em;margin:.2em 0}
 .actions form{display:inline}.ok{background:#dff5e1;padding:.6em;border-radius:.4em}.err{background:#fde2e2;padding:.6em;border-radius:.4em}
 table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pre{overflow:auto;font-size:.8em}
 </style></head><body>
@@ -109,6 +109,14 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label>Préfixe de découverte <input name="ha_prefix" value="{{.S.HomeAssistant.Prefix}}"></label>
 </section>
 <button>Enregistrer</button></form>
+<section><h2>Accès SSH</h2>
+<p>Connexion avec <code>ssh nabos@nabaztag.local</code>, par clé uniquement. Le compte <code>nabos</code> dispose de <code>sudo</code> sans mot de passe pour administrer le système.</p>
+{{if .Data.SSHError}}<p class="err">Impossible de lire les clés SSH : {{.Data.SSHError}}</p>{{else}}
+<form method="post" action="/settings/ssh">
+<label for="ssh-keys">Clés publiques SSH — une par ligne</label>
+<textarea id="ssh-keys" name="authorized_keys" rows="5" maxlength="65536" spellcheck="false" aria-describedby="ssh-help">{{.Data.SSHKeys}}</textarea>
+<p id="ssh-help">Collez le contenu de votre fichier <code>.pub</code>, jamais votre clé privée. Videz le champ pour désactiver les nouvelles connexions SSH. Les sessions déjà ouvertes restent actives.</p>
+<button>Enregistrer les clés SSH</button></form>{{end}}</section>
 <section><h2>Mot de passe</h2><form method="post" action="/password">
 <label>Actuel <input type="password" name="old" required maxlength="128" autocomplete="current-password"></label>
 <label>Nouveau <input type="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>

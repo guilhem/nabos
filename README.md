@@ -17,7 +17,19 @@ La qualification du démarrage, des pilotes et du rollback sur les deux matérie
 3. Démarrer le lapin et configurer le Wi-Fi depuis le point d'accès Comitup.
 4. Ouvrir `http://nabaztag.local:8080` et terminer la configuration de l'administration avec le bouton du lapin.
 
-L'installation se fait par flash d'une carte SD. SSH est désactivé par défaut ; l'administration locale utilise HTTP sur le réseau de confiance.
+L'installation se fait par flash d'une carte SD. L'administration locale utilise HTTP sur le réseau de confiance.
+
+### Connexion SSH
+
+SSH est désactivé par défaut. Dans **Réglages → Accès SSH**, coller une ou plusieurs **clés publiques**, une par ligne, puis cliquer sur **Enregistrer les clés SSH**. Sur Linux, le contenu à copier s'affiche avec `cat ~/.ssh/id_ed25519.pub` ; si aucune clé n'existe encore, en créer une avec `ssh-keygen -t ed25519`.
+
+```sh
+ssh nabos@nabaztag.local
+```
+
+OpenSSH utilise le fichier standard `authorized_keys`. La connexion fonctionne uniquement par clé, sous le compte `nabos`, avec **sudo sans mot de passe** pour administrer le système ; ni le mot de passe de l'interface ni une connexion SSH directe en root ne sont acceptés. Les clés autorisées et l'identité SSH du lapin sont conservées après redémarrage et mise à jour. Vider le champ puis enregistrer désactive les nouvelles connexions ; les sessions déjà ouvertes restent actives.
+
+Cette fonction nécessite une image qui l'intègre, ou sa mise à jour RAUC. Les anciennes images qui masquent SSH doivent être mises à jour auparavant. Les options SSH de Raspberry Pi Imager et les fichiers `ssh`/`userconf.txt` ne sont pas utilisés par NabOS.
 
 Les mises à jour sont proposées dans l'interface après une recherche quotidienne sur GitHub Releases. L'installation est déclenchée par l'utilisateur. RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis valide le nouveau système après contrôle des services locaux. Les données et réglages sont conservés. Firmware Raspberry Pi et U-Boot restent ceux du flash initial.
 

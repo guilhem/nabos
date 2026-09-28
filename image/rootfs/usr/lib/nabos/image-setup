@@ -24,6 +24,7 @@ mkdir -p /data $PERSIST
 chmod 0700 /etc/NetworkManager/system-connections
 chown nabos:nabos /var/lib/nabos
 chmod 0700 /var/lib/nabos
+chmod 0440 /etc/sudoers.d/010_nabos-nopasswd
 
 # pi-gen soft-blocks Wi-Fi on some boards until a country is set; comitup owns Wi-Fi.
 rm -f /var/lib/systemd/rfkill/*
@@ -35,7 +36,7 @@ systemctl set-default multi-user.target
 systemctl --global enable pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
 systemctl enable nab-core.service nab-service.service nabos-rfid.service nabos-health.service \
 	linux-voice-assistant.service tagtagtag-mixerd.service mosquitto.service \
-	NetworkManager.service comitup.service avahi-daemon.service systemd-timesyncd.service
+	NetworkManager.service comitup.service avahi-daemon.service systemd-timesyncd.service ssh.service
 # Writers to the read-only root, jobs with nothing to do here, and services that
 # would fight NetworkManager/comitup or tagtagtag-mixerd (owner of the mixer state).
 systemctl mask systemd-rfkill.service systemd-rfkill.socket alsa-restore.service alsa-state.service \

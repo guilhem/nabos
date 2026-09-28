@@ -1,0 +1,2 @@
+# SSH authenticates nabos by public key; no local password is provisioned.
+nabos ALL=(ALL:ALL) NOPASSWD: ALL
