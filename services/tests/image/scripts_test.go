@@ -16,6 +16,38 @@ import (
 	"time"
 )
 
+func TestKernelSupportsZstdBundles(t *testing.T) {
+	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
+	_, check, ok := strings.Cut(prepare, "    for option in ")
+	if !ok {
+		t.Fatal("kernel option checks missing")
+	}
+	check, _, ok = strings.Cut(check, "\n    done")
+	if !ok {
+		t.Fatal("kernel option loop missing")
+	}
+	check = strings.ReplaceAll("for option in "+check+"\ndone", "/lib/modules/$kernel/build/.config", "$NABOS_TEST_CONFIG")
+	for _, c := range []struct {
+		name, config string
+		valid        bool
+	}{
+		{"built-in", "CONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", true},
+		{"module", "CONFIG_SQUASHFS=m\nCONFIG_SQUASHFS_ZSTD=y\n", true},
+		{"no-squashfs", "# CONFIG_SQUASHFS is not set\nCONFIG_SQUASHFS_ZSTD=y\n", false},
+		{"no-zstd", "CONFIG_SQUASHFS=m\n# CONFIG_SQUASHFS_ZSTD is not set\n", false},
+		{"missing-zstd", "CONFIG_SQUASHFS=m\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			config := filepath.Join(t.TempDir(), "kernel.config")
+			write(t, config, "CONFIG_BCM2835_WDT=y\nCONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y\n"+c.config)
+			r := execute(t, "", []string{"NABOS_TEST_CONFIG=" + config}, "bash", "-eu", "-c", check)
+			if (r.code == 0) != c.valid {
+				t.Fatalf("kernel support: exit %d: %s", r.code, r.stderr)
+			}
+		})
+	}
+}
+
 func TestReleaseUpload(t *testing.T) {
 	workflow := read(t, filepath.Join(repo, ".github/workflows/images.yml"))
 	// Exercise the final upload step with real checksums and a fake GitHub CLI.
