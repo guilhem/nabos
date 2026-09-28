@@ -273,9 +273,10 @@ type ghRelease struct {
 	Prerelease bool      `json:"prerelease"`
 	Published  time.Time `json:"published_at"`
 	Assets     []struct {
-		Name string `json:"name"`
-		Size int64  `json:"size"`
-		URL  string `json:"browser_download_url"`
+		Name  string `json:"name"`
+		Size  int64  `json:"size"`
+		URL   string `json:"browser_download_url"`
+		State string `json:"state"`
 	} `json:"assets"`
 }
 
@@ -297,6 +298,8 @@ func (u *Updater) release(r ghRelease) (Release, bool) {
 			limit = maxSumsSize
 		}
 		switch {
+		case a.State != "uploaded":
+			problems = append(problems, a.Name+" is not fully uploaded")
 		case a.URL != fmt.Sprintf("%s/%s/releases/download/%s/%s", u.DownloadBase, u.Repo, r.Tag, a.Name):
 			problems = append(problems, "unexpected "+a.Name+" URL")
 		case a.Size <= 0 || a.Size > limit:

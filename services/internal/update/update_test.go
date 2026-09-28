@@ -103,8 +103,8 @@ func (f *fakeGitHub) add(tag string, prerelease bool) map[string]any {
 	base := f.srv.URL + "/guilhem/nabos/releases/download/" + tag + "/"
 	rel := map[string]any{"tag_name": tag, "prerelease": prerelease, "published_at": "2026-09-01T10:00:00Z", "body": "notes " + tag,
 		"assets": []map[string]any{
-			{"name": f.asset, "size": len(bundle), "browser_download_url": base + f.asset},
-			{"name": SumsAsset, "size": 100, "browser_download_url": base + SumsAsset},
+			{"name": f.asset, "state": "uploaded", "size": len(bundle), "browser_download_url": base + f.asset},
+			{"name": SumsAsset, "state": "uploaded", "size": 100, "browser_download_url": base + SumsAsset},
 			{"name": "nabos-zero-armv6.raucb", "size": 1, "browser_download_url": "https://elsewhere.example.org/other-board"},
 		}}
 	f.releases = append(f.releases, rel)
@@ -277,6 +277,8 @@ func TestRefusesUntrustedReleases(t *testing.T) {
 		"unpublished":      {tag: "v1.2.1"},
 		"draft":            {mutate: func(f *fakeGitHub) { f.releases[0]["draft"] = true }},
 		"preview":          {mutate: func(f *fakeGitHub) { f.releases[0]["prerelease"] = true }},
+		"uploading bundle": {mutate: func(f *fakeGitHub) { asset(f.releases[0], 0)["state"] = "starter" }},
+		"uploading sums":   {mutate: func(f *fakeGitHub) { asset(f.releases[0], 1)["state"] = "starter" }},
 		"foreign url":      {mutate: func(f *fakeGitHub) { asset(f.releases[0], 0)["browser_download_url"] = "https://evil.example.org/b" }},
 		"oversized sums":   {mutate: func(f *fakeGitHub) { asset(f.releases[0], 1)["size"] = 1 << 20 }},
 		"bad checksum":     {mutate: func(f *fakeGitHub) { f.sums["v1.2.0"] = strings.Repeat("0", 64) + "  " + f.asset + "\n" }},

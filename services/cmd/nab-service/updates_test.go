@@ -257,6 +257,18 @@ func TestAutomaticUpdateWithMQTT(t *testing.T) {
 	assertDeferred()
 	publish(bus.TopicState, `{"v":1,"state":"asleep","playing":null}`)
 	pynabWait(t, "sleeping core", 5*time.Second, func() bool { s, _ := a.bus.State(); return s.State == "asleep" })
+	probe := a.upd.Probe
+	a.upd.Probe = func() (update.BootState, error) {
+		boot, err := probe()
+		boot.Health = ""
+		return boot, err
+	}
+	a.updateTick(now)
+	pynabWait(t, "unconfirmed boot deferred", 5*time.Second, func() bool { a.mu.Lock(); defer a.mu.Unlock(); return !a.updateBusy })
+	if a.upd.Status().LastWindow != "" {
+		t.Fatal("consumed the window before boot admission succeeded")
+	}
+	a.upd.Probe = probe
 	var reboots atomic.Int32
 	a.rebootSystem = func() error { reboots.Add(1); return nil }
 	a.updateTick(now)

@@ -92,14 +92,8 @@ func (a *App) startUpdate(tag, channel string, automatic, retry bool, window str
 		}
 		a.mu.Unlock()
 	}
-	if automatic {
-		claimed, err := a.upd.ClaimWindow(window)
-		if err != nil || !claimed {
-			finish(err)
-			return err
-		}
-	}
 	go func() {
+		claimed := false
 		err := a.upd.InstallRelease(a.ctx, tag, update.InstallOptions{
 			Channel: channel, Automatic: automatic, Retry: retry,
 			BeforeInstall: func() error {
@@ -107,7 +101,23 @@ func (a *App) startUpdate(tag, channel string, automatic, retry bool, window str
 					return errors.New("le canal a changé : relancez l’installation")
 				}
 				if automatic {
-					return a.withIdleUpdate(func() error { return a.updatePolicy(time.Now(), channel) })
+					return a.withIdleUpdate(func() error {
+						if err := a.updatePolicy(time.Now(), channel); err != nil {
+							return err
+						}
+						// RAUC/boot admission already passed. Claim once, before
+						// downloading, not while waiting for a healthy boot.
+						if !claimed {
+							var err error
+							if claimed, err = a.upd.ClaimWindow(window); err != nil {
+								return err
+							}
+							if !claimed {
+								return errors.New("une tentative a déjà eu lieu dans ce créneau")
+							}
+						}
+						return nil
+					})
 				}
 				return nil
 			},
