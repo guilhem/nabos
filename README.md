@@ -6,6 +6,8 @@ Logiciel libre pour les Nabaztag équipés d'une carte **TagTagTag 2019/2021** o
 
 NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et un bus MQTT 5 local. Le cœur matériel est en Rust ; l'interface, la configuration et les services sont en Go. Les réglages sont enregistrés atomiquement dans un fichier JSON versionné : aucun serveur de base de données n'est nécessaire.
 
+Les outils de fabrication et les tests propres à NabOS sont aussi en Go. Les projets externes Comitup et Linux Voice Assistant sont conservés avec leurs dépendances Python.
+
 La qualification du démarrage, des pilotes et du rollback sur les deux matériels est requise avant publication. Les constructions de développement et les tests de simulation ne constituent pas cette qualification.
 
 ## Installation
@@ -41,8 +43,7 @@ La [documentation de fabrication](docs/build.md) décrit les commandes locales, 
 ```sh
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go test -race ./...)
-python3 -m unittest discover -s image -p 'test_*.py' -v
-python3 tools/integration.py
+(cd services && NABOS_INTEGRATION=1 go test -count=1 ./tests/integration)
 ```
 
 Le dernier contrôle requiert Mosquitto et ses clients. Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).

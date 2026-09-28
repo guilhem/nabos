@@ -62,11 +62,29 @@ Le système racine est monté en lecture seule ; identité, connexion réseau, r
 
 ## Validation locale
 
+Les outils propres au dépôt sont regroupés dans `services/cmd/nab-image`.
+`image/build.sh` compile cet utilitaire Go sur l'hôte pour lire les verrous,
+télécharger et vérifier les entrées, puis extraire les archives. Les composants
+externes et leurs dépendances Python restent inchangés.
+
 ```sh
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go test -race ./...)
-python3 -m unittest discover -s image -p 'test_*.py' -v
-python3 tools/integration.py
+(cd services && NABOS_INTEGRATION=1 go test -count=1 ./tests/integration)
 ```
 
 Le test d'intégration requiert Mosquitto et ses clients. Les tests de simulation ne remplacent pas les essais des pilotes, de l'audio, de l'alimentation et du rollback sur de vrais appareils.
+
+Pour vérifier les sources verrouillées et les pilotes séparément :
+
+```sh
+(cd services && go build -o ../build/nab-image ./cmd/nab-image)
+build/nab-image fetch image/sources.lock.json zero-armv6 build/inputs --sources-only
+build/nab-image drivers image/sources.lock.json --archives build/inputs
+# Ajouter --kernel CHEMIN_DES_ENTETES pour vérifier aussi les modules.
+```
+
+Les tests d'image sont inclus dans `go test ./...`. Pour exécuter aussi le script
+de démarrage dans le sandbox U-Boot, fournir `NABOS_UBOOT_SANDBOX`,
+`NABOS_SOURCES` et `NABOS_VENDOR_DTBS` ; la fabrication des images le fait
+automatiquement.

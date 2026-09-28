@@ -23,7 +23,7 @@ jobs:
           cache-dependency-path: services/go.sum
       - uses: github/codeql-action/init@7999b86c43a865dc79d8923397f35af22de63401 # v4
         with:
-          languages: go,python
+          languages: go
       - run: go build ./...
         working-directory: services
       - uses: github/codeql-action/analyze@7999b86c43a865dc79d8923397f35af22de63401 # v4
