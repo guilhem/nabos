@@ -222,7 +222,8 @@ forgotten password. Sessions are in memory (32 at most, 7 days).
 
 ## End-to-end test
 
-`python3 tools/integration.py` starts Mosquitto, `nab-core --simulate` and
+`(cd services && NABOS_INTEGRATION=1 go test -count=1 ./tests/integration)`
+starts Mosquitto, `nab-core --simulate` and
 `nab-service`, and checks execution, deduplication, expiration, cancel, retained
 refusal, validation, broker and core restarts and the web flow. By default it builds
 native binaries; `NAB_CORE_BIN`, `NAB_SERVICE_BIN` (commands, e.g.

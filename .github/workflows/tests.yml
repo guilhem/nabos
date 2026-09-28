@@ -36,8 +36,8 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test -race ./...
-      - name: Image and protocol checks
+      - name: Shell and protocol checks
+        working-directory: services
         run: |
-          bash -n image/build.sh image/prepare.sh image/host-deps.sh
-          python3 -m unittest discover -s image -p 'test_*.py' -v
-          python3 tools/integration.py
+          bash -n ../image/build.sh ../image/prepare.sh ../image/host-deps.sh
+          NABOS_INTEGRATION=1 go test -count=1 -v ./tests/integration

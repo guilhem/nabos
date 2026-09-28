@@ -24,29 +24,28 @@ while (( $# )); do
 done
 [[ $target == zero-armv6 || $target == zero2-arm64 ]] || exit 2
 [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,63}$ ]] || { echo 'Invalid version' >&2; exit 2; }
+# python3 is required by the upstream U-Boot build; NabOS host helpers use Go.
 for tool in sudo python3 curl xz tar sfdisk losetup e2fsck resize2fs genimage mkfs.vfat mkfs.ext4 mcopy mkimage mkenvimage rauc openssl clang ld.lld cargo go patch; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
 sudo -n true
-python3 - "$repo/image/sources.lock.json" <<'PY'
-import json,subprocess,sys
-versions=json.load(open(sys.argv[1]))['tools']
-for tool,command in [('rust',['rustc','--version']),('go',['go','version'])]:
-    actual=subprocess.check_output(command,text=True).split()
-    found=actual[1] if tool=='rust' else actual[2].removeprefix('go')
-    if found != versions[tool]:
-        raise SystemExit(f'{tool}: expected {versions[tool]}, got {found}')
-PY
-mapfile -t values < <(python3 - "$repo/image/sources.lock.json" "$target" <<'PY'
-import json,sys
-lock=json.load(open(sys.argv[1])); t=lock['targets'][sys.argv[2]]
-for key in ('arch','rust_target','goarch','goarm','compatible','extract_sha256','kernel_image','dtb'):
-    print(t[key])
-PY
-)
+lock=$repo/image/sources.lock.json
+# Host-side helper (locked inputs, safe extraction); standard library only.
+mkdir -p "$repo/build/iot"
+nab_image=$repo/build/iot/nab-image
+(cd "$repo/services" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -o "$nab_image" ./cmd/nab-image)
+mapfile -t expected < <("$nab_image" get "$lock" tools.rust tools.go)
+found=("$(rustc --version | cut -d' ' -f2)" "$(go env GOVERSION)")
+found[1]=${found[1]#go}
+[[ ${#expected[@]} == 2 && ${expected[*]} == "${found[*]}" ]] ||
+  { echo "Toolchain mismatch: expected rust/go ${expected[*]}, got ${found[*]}" >&2; exit 1; }
+keys=()
+for key in arch rust_target goarch goarm compatible extract_sha256 kernel_image dtb; do keys+=("targets.$target.$key"); done
+mapfile -t values < <("$nab_image" get "$lock" "${keys[@]}")
+(( ${#values[@]} == ${#keys[@]} )) || { echo "Incomplete target lock: $target" >&2; exit 1; }
 arch=${values[0]}; rust_target=${values[1]}; goarch=${values[2]}; goarm=${values[3]}
 compatible=${values[4]}; image_hash=${values[5]}; kernel_image=${values[6]}; dtb=${values[7]}
-mkdir -p "$repo/build/iot" "$repo/dist/$target"
+mkdir -p "$repo/dist/$target"
 work=$(mktemp -d "$repo/build/iot/$target.XXXXXX")
 out=$repo/dist/$target
 root=$work/root
@@ -65,47 +64,37 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Write an executable wrapper running the given command line with its arguments.
+wrapper() {
+  local file=$1
+  shift
+  printf '#!/bin/bash\nexec %s"$@"\n' "$(printf '%q ' "$@")" > "$file"
+  chmod 755 "$file"
+}
 mkdir -p "$payload/inputs" "$payload/src" "$work/images" "$work/boot" "$root"
 # Sampling includes compiler and package-manager peaks, not just final artifact sizes.
 (while :; do date -u +%FT%TZ; df -B1 --output=used,avail "$work"; sleep 10; done) > "$out/disk-usage-$target.txt" &
 monitor=$!
 if [[ -n $replay ]]; then
-  python3 - "$replay" "$payload/inputs" <<'PY'
-import sys,tarfile
-with tarfile.open(sys.argv[1], 'r:xz') as archive:
-    archive.extractall(sys.argv[2], filter='data')
-PY
-  cmp "$repo/image/sources.lock.json" "$payload/inputs/sources.lock.json"
+  "$nab_image" extract "$replay" "$payload/inputs"
+  cmp "$lock" "$payload/inputs/sources.lock.json"
   cmp "$repo/core/Cargo.lock" "$payload/inputs/Cargo.lock"
   cmp "$repo/services/go.sum" "$payload/inputs/go.sum"
   cmp "$repo/image/lva-requirements.lock" "$payload/inputs/lva-requirements.lock"
 fi
-python3 "$repo/image/fetch.py" "$target" "$payload/inputs"
-cp "$repo/image/sources.lock.json" "$payload/inputs/sources.lock.json"
+"$nab_image" fetch "$lock" "$target" "$payload/inputs"
+cp "$lock" "$payload/inputs/sources.lock.json"
 cp "$repo/core/Cargo.lock" "$repo/services/go.sum" "$payload/inputs/"
 cp "$repo/image/lva-requirements.lock" "$payload/inputs/"
-python3 - "$repo/image" "$payload" <<'PY'
-import sys,json
-from pathlib import Path
-sys.path.insert(0,sys.argv[1]); from fetch import unpack
-payload=Path(sys.argv[2]); lock=json.loads((payload/'inputs/sources.lock.json').read_text())
-for name in lock['sources']:
-    archive=payload/'inputs'/f'{name}.tar.gz'
-    if archive.exists():
-        stage=payload/'src'/f'.{name}'
-        unpack(archive,stage).rename(payload/'src'/name)
-        stage.rmdir()
-PY
+"$nab_image" unpack "$payload/inputs/sources.lock.json" "$payload/inputs" "$payload/src"
 cp -a "$repo/image" "$payload/image"
 xz --decompress --stdout "$payload/inputs/raspios.img.xz" > "$work/base.img"
 printf '%s  %s\n' "$image_hash" "$work/base.img" | sha256sum --check
 rm "$payload/inputs/raspios.img.xz"
-root_start=$(python3 - "$work/base.img" <<'PY'
-import struct,sys
-with open(sys.argv[1],'rb') as image:
-    image.seek(446+16+8); print(struct.unpack('<I',image.read(4))[0])
-PY
-)
+# First sector of MBR partition 2: little-endian 32 bits at 446 + 16 + 8.
+root_start=$(od -An -tu4 --endian=little -j470 -N4 "$work/base.img")
+root_start=${root_start//[[:space:]]/}
+[[ $root_start =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid base image partition table' >&2; exit 1; }
 truncate -s "$((root_start * 512 + 6 * 1024 * 1024 * 1024))" "$work/base.img"
 printf 'start=%s,size=%s\n' "$root_start" "$((6 * 1024 * 1024 * 1024 / 512))" | sfdisk --no-reread -N2 "$work/base.img"
 loop=$(sudo losetup --find --show --partscan "$work/base.img")
@@ -146,15 +135,12 @@ sudo rm -rf "$payload/src/led-build"
 
 # Cross-link against the image's libc and libgcc, never Ubuntu's ARMv7 runtime.
 linker=$work/target-cc
-python3 - "$linker" "$root" "$arch" <<'PY'
-import pathlib,shlex,sys
-path,root,arch=sys.argv[1:]
-triple='arm-linux-gnueabihf' if arch=='armhf' else 'aarch64-linux-gnu'
-cpu=['-mcpu=arm1176jzf-s','-mfpu=vfp','-mfloat-abi=hard'] if arch=='armhf' else ['-mcpu=cortex-a53']
-command=['clang','--target='+triple,'--sysroot='+root,'--gcc-toolchain='+root+'/usr','-fuse-ld=lld']+cpu
-pathlib.Path(path).write_text('#!/bin/sh\nexec '+shlex.join(command)+' "$@"\n')
-pathlib.Path(path).chmod(0o755)
-PY
+if [[ $arch == armhf ]]; then
+  triple=arm-linux-gnueabihf; cpu=(-mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=hard)
+else
+  triple=aarch64-linux-gnu; cpu=(-mcpu=cortex-a53)
+fi
+wrapper "$linker" clang "--target=$triple" "--sysroot=$root" "--gcc-toolchain=$root/usr" -fuse-ld=lld "${cpu[@]}"
 linker_key=CARGO_TARGET_$(tr '[:lower:]-' '[:upper:]_' <<< "$rust_target")_LINKER
 if [[ ! -d $payload/inputs/cargo-vendor ]]; then
   cargo vendor --locked --manifest-path "$repo/core/Cargo.toml" "$payload/inputs/cargo-vendor" > /dev/null
@@ -171,24 +157,21 @@ sudo install -m755 "$work/rust-target/$rust_target/release/nab-core" "$root/usr/
 sudo install -m755 "$work/nab-service" "$root/usr/bin/nab-service"
 # Exercise the target binaries against a real broker before assembling artifacts.
 # ARMv6 uses the actual image's loader/libc and an ARM1176 CPU, including Go's runtime.
-python3 - "$work" "$root" "$arch" <<'PY'
-import pathlib,shlex,sys
-work,root,arch=sys.argv[1:]
-for name in ['nab-core','nab-service']:
-    prefix=[]
-    if arch=='armhf':
-        # QEMU's -L rewrites file lookups too, including /etc/machine-id.
-        # Only the dynamically linked core needs the target sysroot; Go is static.
-        prefix=['qemu-arm-static','-cpu','arm1176','-L',root if name=='nab-core' else '/']
-    elif name=='nab-core':
-        prefix=[root+'/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1',
-                '--library-path',root+'/usr/lib/aarch64-linux-gnu']
-    wrapper=pathlib.Path(work)/(name+'-test')
-    wrapper.write_text('#!/bin/sh\nexec '+shlex.join(prefix+[root+'/usr/bin/'+name])+' "$@"\n')
-    wrapper.chmod(0o755)
-PY
-NAB_CORE_BIN="$work/nab-core-test" NAB_SERVICE_BIN="$work/nab-service-test" \
-  python3 "$repo/tools/integration.py"
+for name in nab-core nab-service; do
+  prefix=()
+  if [[ $arch == armhf ]]; then
+    # QEMU's -L rewrites file lookups too, including /etc/machine-id.
+    # Only the dynamically linked core needs the target sysroot; Go is static.
+    sysroot=/
+    if [[ $name == nab-core ]]; then sysroot=$root; fi
+    prefix=(qemu-arm-static -cpu arm1176 -L "$sysroot")
+  elif [[ $name == nab-core ]]; then
+    prefix=("$root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" --library-path "$root/usr/lib/aarch64-linux-gnu")
+  fi
+  wrapper "$work/$name-test" "${prefix[@]}" "$root/usr/bin/$name"
+done
+(cd "$repo/services" && NABOS_INTEGRATION=1 NAB_CORE_BIN="$work/nab-core-test" NAB_SERVICE_BIN="$work/nab-service-test" \
+  go test -count=1 -timeout 20m -v ./tests/integration)
 rm -rf "$work/rust-target"
 # Git checkout ownership/umask must not grant the runner write access to system units.
 tar --create --file=- --directory="$repo/image/rootfs" --owner=0 --group=0 --mode=go-w . |
@@ -218,8 +201,8 @@ fi
 sudo install -m644 "$signing_cert" "$root/etc/rauc/ca.cert.pem"
 sudo sed -i "s/@COMPATIBLE@/$compatible/g" "$root/etc/rauc/system.conf"
 in_target finalize
-NABOS_UBOOT_SANDBOX="$work/uboot-sandbox" NABOS_SOURCES="$payload/src" \
-  NABOS_VENDOR_DTBS="$root/boot/dtb" python3 -m unittest discover -s "$repo/image" -p 'test_*.py' -v
+(cd "$repo/services" && NABOS_UBOOT_SANDBOX="$work/uboot-sandbox" NABOS_SOURCES="$payload/src" \
+  NABOS_VENDOR_DTBS="$root/boot/dtb" go test -count=1 -v ./tests/image)
 sudo rm -rf "$payload/src/uboot" "$work/uboot-sandbox"
 sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /usr/bin/nab-core --version
 sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /usr/bin/nab-service --version
@@ -242,13 +225,14 @@ sed -e "s/@TARGET@/$target/g" -e "s/@KERNEL_IMAGE@/$kernel_image/g" -e "s/@DTB@/
   "$repo/image/boot/boot.env.in" > "$work/boot/boot.env"
 mkimage -A arm -T script -C none -n 'NabOS RAUC A/B' -d "$repo/image/boot/boot.cmd" "$work/boot/boot.scr"
 cp "$root/usr/share/nabos/packages.tsv" "$out/packages-$target.tsv"
-python3 - "$version" "$target" "$payload/kernel-release" "$development" "$out/build-$target.json" <<'PY'
-import json,pathlib,subprocess,sys
-version,target,kernel,dev,out=sys.argv[1:]
-revision=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-dirty=bool(subprocess.check_output(['git','status','--porcelain'],text=True))
-pathlib.Path(out).write_text(json.dumps({'version':version,'target':target,'kernel':pathlib.Path(kernel).read_text().strip(),'source_revision':revision,'source_dirty':dirty,'development':dev=='true','hardware_validated':False},indent=2)+'\n')
-PY
+revision=$(git rev-parse HEAD)
+status=$(git status --porcelain)
+dirty=false
+if [[ -n $status ]]; then dirty=true; fi
+# Every value is validated or generated above; none needs JSON escaping.
+[[ $kernel =~ ^[a-zA-Z0-9.+_-]+$ ]] || { echo "Unexpected kernel release: $kernel" >&2; exit 1; }
+printf '{\n  "version": "%s",\n  "target": "%s",\n  "kernel": "%s",\n  "source_revision": "%s",\n  "source_dirty": %s,\n  "development": %s,\n  "hardware_validated": false\n}\n' \
+  "$version" "$target" "$kernel" "$revision" "$dirty" "$development" > "$out/build-$target.json"
 sudo sync
 # Discard freed package/compiler blocks before copying the sparse filesystem.
 sudo fstrim "$root"
@@ -278,12 +262,7 @@ cp "$repo/image/sources.lock.json" "$out/sources-$target.lock.json"
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > "$out/host-packages-$target.tsv"
 sudo tar -C "$payload/inputs" -cJf "$out/build-inputs-$target.tar.xz" .
 sudo chown "$(id -u):$(id -g)" "$out/build-inputs-$target.tar.xz"
-python3 - "$out" <<'PY'
-from pathlib import Path
-import sys
-for path in Path(sys.argv[1]).iterdir():
-    if path.is_file() and path.stat().st_size >= 2**31:
-        raise SystemExit(f'{path.name} exceeds the GitHub Release 2 GiB asset limit')
-PY
+large=$(find "$out" -maxdepth 1 -type f -size +2147483647c -printf '%f\n')
+[[ -z $large ]] || { echo "Exceeds the GitHub Release 2 GiB asset limit: $large" >&2; exit 1; }
 (cd "$out" && sha256sum ./*.img.xz ./*.raucb ./*.tar.xz ./*.json ./*.tsv > "SHA256SUMS-$target")
 echo "Built $version for $target in $out"

@@ -4,15 +4,14 @@ Le système courant est décrit dans le [README](README.md), son transport dans 
 
 ## Boucle locale
 
-Utiliser Go 1.27.1, Rust 1.98.1, Python 3.12+ et Mosquitto avec ses clients. Le cœur possède un mode `--simulate` pour vérifier le protocole sur un ordinateur sans matériel Nabaztag.
+Utiliser Go 1.27.1, Rust 1.98.1 et Mosquitto avec ses clients. Le cœur possède un mode `--simulate` pour vérifier le protocole sur un ordinateur sans matériel Nabaztag. Python reste nécessaire aux composants externes et à la fabrication d'U-Boot ; les outils et tests propres au dépôt sont en Go.
 
 ```sh
 cargo fmt --manifest-path core/Cargo.toml --check
 cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go vet ./... && go test -race ./...)
-python3 -m unittest discover -s image -p 'test_*.py' -v
-python3 tools/integration.py
+(cd services && NABOS_INTEGRATION=1 go test -count=1 ./tests/integration)
 ```
 
 Les réglages doivent rester lisibles par la version précédente après rollback. Les commandes MQTT sont identifiées, expirables et non retenues. Ne pas déplacer la temporisation des mouvements hors du cœur local.
