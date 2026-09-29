@@ -198,7 +198,7 @@ esac`,
 			if scenario.target == "zero2-arm64" && !strings.Contains(read(t, filepath.Join(tmp, "lva-check")), "from linux_voice_assistant import util") {
 				t.Error("ARM64 did not run the copied-root LVA check")
 			}
-			if !strings.Contains(read(t, filepath.Join(tmp, "readonly-check")), "import RPi.GPIO") {
+			if !strings.Contains(read(t, filepath.Join(tmp, "readonly-check")), "import lgpio") {
 				t.Error("image did not run the GPIO import with a read-only root")
 			}
 		})

@@ -102,7 +102,8 @@ service = unit['Service']
 runtime = Path('/run') / service['RuntimeDirectory']
 runtime.mkdir()
 os.chdir(service['WorkingDirectory'])
-import RPi.GPIO  # imports lgpio, which creates a notification FIFO in cwd
+# Import the failing dependency directly: RPi.GPIO also requires a real Pi DTB.
+import lgpio  # creates a notification FIFO in cwd, without opening a GPIO chip
 
 # Matching the package rules at build time must avoid all writes to /etc at boot.
 result = subprocess.run(['systemd-tmpfiles', '--create', '--prefix=/etc/mtab',
