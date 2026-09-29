@@ -61,7 +61,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-for tool in sudo losetup udevadm mount mountpoint umount modinfo make go setsid; do
+for tool in sudo losetup udevadm mount mountpoint umount modinfo make go setsid fdtget; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
 sudo -n true
@@ -210,6 +210,18 @@ for module in "${modules[@]}"; do
   vermagic=$(modinfo -F vermagic "$module")
   [[ $vermagic == "$kernel "* ]] || { echo "Kernel mismatch: $module: $vermagic" >&2; exit 1; }
 done
+# Linux gets the hardware profile (image/nabos-overlay.dts); the firmware and
+# U-Boot keep the kernel package's pristine DTB, with its UART and watchdog.
+dtb=$(sed -n 's/^nabos_dtb=//p' "$boot/boot.env")
+pristine=$(find "$root/usr/lib/linux-image-$kernel" -name "$dtb" -print -quit)
+cmp "$boot/$dtb" "$pristine"
+[[ $(fdtget -d okay "$boot/$dtb" /soc/watchdog@7e100000 status) == okay ]] ||
+  { echo "Watchdog disabled in $dtb" >&2; exit 1; }
+for node in /soc/serial@7e201000 /soc/fb /soc/mailbox@7e00b840 /soc/usb@7e980000 /cam1_regulator /cam_dummy_reg; do
+  [[ $(fdtget "$root/boot/dtb/$dtb" "$node" status) == disabled ]] || { echo "Profile not applied: $node" >&2; exit 1; }
+done
+# Sound, ears and RFID overlays resolve their targets through these symbols.
+fdtget "$root/boot/dtb/$dtb" /__symbols__ i2s /__symbols__ i2c1 /__symbols__ gpio /__symbols__ sound >/dev/null
 
 # Use the shipped loader/libc for the core; the Go service is static.
 for name in nab-core nab-service; do

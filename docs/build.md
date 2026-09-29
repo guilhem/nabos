@@ -98,7 +98,7 @@ Le code et les fichiers de verrouillage doivent correspondre à cette release. U
 | Partition 3 | Système B, 6 Gio, vide avant la première mise à jour |
 | Partition 4 | Données ext4, étendue une seule fois au premier démarrage |
 
-U-Boot lit noyau et Device Tree dans le slot choisi. Overlays et modules restent dans ce même système. L'état RAUC est conservé dans `/data`. Un nouveau slot n'est confirmé qu'après le contrôle local des services essentiels. Un échec de démarrage consomme une tentative puis ramène au dernier slot valide. La partition de firmware partagée reste fixe dans cette version.
+U-Boot lit noyau et Device Tree dans le slot choisi. Overlays et modules restent dans ce même système. À la fabrication, ce Device Tree reçoit le profil `image/nabos-overlay.dts`, qui désactive Bluetooth (UART0), VCHIQ, framebuffer, USB et régulateurs caméra ; la partition firmware garde le DTB d'origine pour U-Boot. L'état RAUC est conservé dans `/data`. Un nouveau slot n'est confirmé qu'après le contrôle local des services essentiels. Un échec de démarrage consomme une tentative puis ramène au dernier slot valide. La partition de firmware partagée reste fixe dans cette version.
 
 Le système racine est monté en lecture seule ; identité, connexion réseau, réglages et calibration sont persistants. Journaux et fichiers temporaires sont volatils. Aucun serveur SQL n'est installé : la configuration applicative est un fichier JSON versionné écrit atomiquement. Les évolutions de schéma doivent rester lisibles par la version précédente pour permettre le rollback.
 

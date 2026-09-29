@@ -5,10 +5,16 @@
 kernel=u-boot.bin
 # Smallest GPU split: needs start_cd.elf/fixup_cd.dat on this partition.
 gpu_mem=16
+# Headless: without a firmware framebuffer U-Boot's video probe fails, so its
+# simple-framebuffer node stays disabled in Linux's DTB.
+max_framebuffers=0
+# No HAT EEPROM probe on GPIO 0/1: Linux overlays are applied explicitly by
+# boot.scr and nabos-rfid, never from a HAT.
+force_eeprom_read=0
 # Fixes the mini UART clock U-Boot uses for its console (GPIO 14/15 are unused).
 enable_uart=1
-# Expose the watchdog to U-Boot; the slot's vendor DTB also enables it in Linux.
-dtparam=watchdog=on
+# The watchdog U-Boot arms is enabled by default in the vendor DTB (checked by
+# image/test.sh), so no dtparam is needed.
 disable_splash=1
 boot_delay=0
 

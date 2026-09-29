@@ -5,8 +5,8 @@ set -euo pipefail
 phase=${1:?build-packages, packages, drivers, wheels or finalize}
 target=${2:?zero-armv6 or zero2-arm64}
 case "$target" in
-  zero-armv6) flavour=rpi-v6 ;;
-  zero2-arm64) flavour=rpi-v8 ;;
+  zero-armv6) flavour=rpi-v6 dtb=bcm2708-rpi-zero-w.dtb ;;
+  zero2-arm64) flavour=rpi-v8 dtb=bcm2710-rpi-zero-2-w.dtb ;;
   *) exit 2 ;;
 esac
 export DEBIAN_FRONTEND=noninteractive
@@ -195,6 +195,9 @@ finalize)
   if [[ -L /boot/overlays ]]; then rm /boot/overlays; fi
   cp -a /boot/firmware/overlays /boot/
   cp /boot/firmware/*.dtb /boot/dtb/
+  # Linux hardware profile, only in the DTB U-Boot loads from this slot.
+  dtc -@ -I dts -O dtb -o /tmp/nabos.dtbo /nabos-build/image/nabos-overlay.dts
+  fdtoverlay -i "/boot/dtb/$dtb" -o "/boot/dtb/$dtb" /tmp/nabos.dtbo
   if [[ $target == zero-armv6 ]]; then
     cp /boot/firmware/kernel.img /boot/kernel
   else
