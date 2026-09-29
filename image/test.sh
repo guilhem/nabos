@@ -113,6 +113,10 @@ result = subprocess.run(['systemd-tmpfiles', '--create', '--prefix=/etc/mtab',
                          '--prefix=/etc/polkit-1/rules.d'], capture_output=True, text=True)
 assert result.returncode == 0 and 'Read-only file system' not in result.stderr, result.stderr
 assert Path('/etc/cloud/cloud-init.disabled').is_file()
+network = configparser.ConfigParser(interpolation=None)
+network.read_string(subprocess.check_output(['NetworkManager', '--print-config'], text=True))
+assert network['main']['rc-manager'] == 'unmanaged'
+assert os.readlink('/etc/resolv.conf') == '/run/NetworkManager/resolv.conf'
 for name in ('systemd-growfs-root.service', 'cloud-init-main.service', 'cloud-init-network.service',
              'bluetooth.service'):
     assert os.readlink('/etc/systemd/system/' + name) == '/dev/null', name
