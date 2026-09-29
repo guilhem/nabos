@@ -37,6 +37,7 @@ func TestImageIsolation(t *testing.T) {
 			}
 			for _, dir := range []string{filepath.Join(checkout, "image"), filepath.Join(checkout, "services"),
 				filepath.Join(checkout, "build/iot"), filepath.Join(payload, "inputs/go-modcache"),
+				filepath.Join(fixture, "data"),
 				filepath.Join(payload, "src/uboot/scripts"), filepath.Join(fixture, "usr/bin"),
 				filepath.Join(fixture, "usr/lib/aarch64-linux-gnu"), filepath.Join(fixture, "usr/share/nabos/sounds"),
 				filepath.Join(fixture, "usr/share/nabos/choreographies"), filepath.Join(fixture, "lib/modules", kernel, "updates/nabos"), boot} {
@@ -87,6 +88,13 @@ else
   echo /dev/loop-nabos-test
 fi`,
 				"mount": `set -eu
+if [ "$1" = --rbind ]; then
+  [ "$2 $3" = "/dev $(dirname "$(cat "$STATE/copy")")/root/dev" ]
+  exit 0
+elif [ "$1" = --make-rslave ]; then
+  [ "$2" = "$(dirname "$(cat "$STATE/copy")")/root/dev" ]
+  exit 0
+fi
 if [ "$1" = -t ]; then
   case "$2" in
     tmpfs)
@@ -95,6 +103,10 @@ if [ "$1" = -t ]; then
     proc) [ "$3 $4" = "proc $(dirname "$(cat "$STATE/copy")")/root/proc" ] ;;
     *) exit 1 ;;
   esac
+  exit 0
+fi
+if [ "$1 $2 $3" = '-o rw /dev/loop-nabos-testp4' ]; then
+  [ "$4" = "$(dirname "$(cat "$STATE/copy")")/root/data" ]
   exit 0
 fi
 [ "$1 $2" = '-o ro' ]
@@ -173,6 +185,7 @@ esac`,
 				"chroot " + work + "/root /usr/sbin/sshd -G", "chroot " + work + "/root getent passwd nabos",
 				"chroot " + work + "/root /usr/sbin/visudo --check",
 				"chroot " + work + "/root /usr/bin/python3 -B -",
+				"mount --rbind /dev " + work + "/root/dev", "mount --make-rslave " + work + "/root/dev",
 				"umount --recursive " + work + "/boot", "umount --recursive " + work + "/root", "losetup --detach /dev/loop-nabos-test",
 			} {
 				if !strings.Contains(calls, call) {

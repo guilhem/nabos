@@ -85,10 +85,13 @@ loop=$(sudo losetup --find --show --partscan "$work/sdcard.img")
 sudo udevadm settle
 sudo mount -o ro "${loop}p2" "$root"
 sudo mount -o ro "${loop}p1" "$boot"
+sudo mount -o rw "${loop}p4" "$root/data"
 # Exercise the shipped GPIO import with the root still read-only. systemd creates
 # RuntimeDirectory before applying WorkingDirectory; reproduce those two steps.
 sudo mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "$root/run"
 sudo mount -t proc proc "$root/proc"
+sudo mount --rbind /dev "$root/dev"
+sudo mount --make-rslave "$root/dev"
 sudo env QEMU_CPU=arm1176 chroot "$root" /usr/bin/python3 -B - <<'PY'
 import configparser
 import os
@@ -114,23 +117,39 @@ for name in ('systemd-growfs-root.service', 'cloud-init-main.service', 'cloud-in
              'bluetooth.service'):
     assert os.readlink('/etc/systemd/system/' + name) == '/dev/null', name
 
-# Run the actual package generator: its output must never ask for a file-backed
-# swap or for removal of an inherited /var/swap on the read-only root.
+# Run the actual package generator: all backing-file writes must use /data.
+assert os.readlink('/etc/systemd/system-generators/zram-generator') == '/dev/null'
+assert os.access('/usr/lib/systemd/system-generators/zram-generator', os.X_OK)
+assert 'zram' in Path('/usr/lib/modules-load.d/20-zram-generator.conf').read_text().splitlines()
 generator = Path('/run/systemd/generator')
 outputs = [generator, Path(str(generator) + '.early'), Path(str(generator) + '.late')]
 for directory in outputs:
     directory.mkdir(parents=True)
-subprocess.run(['/usr/lib/systemd/system-generators/rpi-swap-generator', *outputs], check=True)
+subprocess.run(['/usr/lib/systemd/system-generators/rpi-swap-generator', *outputs],
+               stdin=subprocess.DEVNULL, check=True)
 assert (generator / 'swap.target.wants/dev-zram0.swap').is_symlink()
-assert 'fs-type=swap' in Path('/run/systemd/zram-generator.conf.d/20-rpi-swap-zram0-ctrl.conf').read_text()
+zram = Path('/run/systemd/zram-generator.conf.d/20-rpi-swap-zram0-ctrl.conf').read_text()
+assert 'fs-type=swap' in zram and 'writeback-device=/dev/disk/by-backingfile/data-swap' in zram, zram
+for unit in ('rpi-resize-swap-file.service', 'rpi-setup-loop@data-swap.service'):
+    dropins = '\n'.join(p.read_text() for p in (generator / (unit + '.d')).glob('*.conf'))
+    assert 'RequiresMountsFor=/data/swap' in dropins, dropins
 for path in Path('/run/systemd').rglob('*'):
     text = str(path)
     if path.is_symlink():
         text += os.readlink(path)
     elif path.is_file():
         text += path.read_text()
-    assert not any(word in text for word in ('backingfile', 'rpi-setup-loop', 'rpi-resize-swap',
-                                            'rpi-remove-swap', 'writeback', '/var/swap')), path
+    assert '/var/swap' not in text and 'var-swap' not in text, path
+
+# Create and reuse the real file on the disposable data partition, without
+# activating swap or attaching any loop device to the host kernel.
+swap = Path('/data/swap')
+assert not swap.exists()
+for attempt in range(2):
+    subprocess.run(['/usr/lib/rpi-swap/bin/rpi-resize-swap-file'], stdin=subprocess.DEVNULL, check=True)
+    assert swap.stat().st_size > 0 and swap.stat().st_mode & 0o777 == 0o600
+    assert subprocess.check_output(['blkid', '-p', '-s', 'TYPE', '-o', 'value', swap], text=True).strip() == 'swap'
+assert not Path('/var/swap').exists()
 PY
 cmp "$expected_uboot" "$boot/u-boot.bin"
 [[ -x $root/usr/bin/dtoverlay ]] || { echo 'Missing runtime dtoverlay command' >&2; exit 1; }

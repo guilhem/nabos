@@ -26,9 +26,13 @@ systemd-tmpfiles --create --prefix=/etc/mtab --prefix=/etc/polkit-1/rules.d
 mkdir -p /etc/cloud
 touch /etc/cloud/cloud-init.disabled
 
-# In zram-only mode, rpi-swap otherwise schedules removal of an inherited file
-# at boot, when the root is already read-only.
+# Remove the inherited swap file while the root is writable; rpi-swap now keeps
+# its backing file on /data, mounted and grown by boot-init before systemd.
 rm -f /var/swap
+# rpi-swap owns these generated units. The generic generator can overwrite its
+# loop dependency; keep its binary available for systemd-zram-setup@.service.
+mkdir -p /etc/systemd/system-generators
+ln -sfn /dev/null /etc/systemd/system-generators/zram-generator
 
 # Mount points for the state boot-init binds from /data (list shared with it).
 NABOS_BOOT_INIT_LIB=1 . /usr/lib/nabos/boot-init

@@ -97,6 +97,12 @@ else
 	log "data partition unusable, /data is volatile for this boot"
 	mount -t tmpfs -o mode=0755,size=64M tmpfs /data && : > /data/.volatile
 	mkdir -p /data/system
+	# A file-backed swap on this small tmpfs would consume the RAM we need for
+	# recovery. Override only this boot's swap policy, using the same bind pattern.
+	if ! { printf '[Main]\nMechanism=zram\n' > /data/.swap.conf &&
+		mount --bind /data/.swap.conf /etc/rpi/swap.conf.d/50-nabos.conf; }; then
+		log "cannot select RAM-only swap for volatile /data"
+	fi
 fi
 machine_id
 persist
