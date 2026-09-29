@@ -2,6 +2,7 @@ package system
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,29 @@ import (
 
 	"github.com/godbus/dbus/v5"
 )
+
+func TestSetVolumeWaitsForPipeWireSink(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	const wpctl = `#!/bin/sh
+[ "$1 $2 $3" = "set-volume @DEFAULT_AUDIO_SINK@ 0.42" ] || exit 2
+if [ ! -e "$NABOS_TEST_WPCTL_READY" ]; then
+  : > "$NABOS_TEST_WPCTL_READY"
+  exit 1
+fi
+`
+	if err := os.WriteFile(filepath.Join(dir, "wpctl"), []byte(wpctl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("NABOS_TEST_WPCTL_READY", ready)
+	if err := SetVolume(context.Background(), 42); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ready); err != nil {
+		t.Fatal("first attempt did not fail", err)
+	}
+}
 
 type testClock struct {
 	ntp   string

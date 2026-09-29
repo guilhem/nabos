@@ -226,7 +226,11 @@ loopback URL. It never downloads a complete stream to disk.
   `org.freedesktop.systemd1.Manager.StartUnit/StopUnit` on `$NABOS_LVA_UNIT` only,
   `org.freedesktop.timedate1` `SetTime` and `SetNTP` (actions `set-time`, `set-ntp`).
 - Volume: `wpctl set-volume @DEFAULT_AUDIO_SINK@` (`wireplumber`), with
-  `XDG_RUNTIME_DIR=/run/user/1000`.
+  `XDG_RUNTIME_DIR=/run/user/1000`. Only the TagTagTag card is exposed. Its
+  unchanged mixer daemon owns hardware gain and the wheel; Web/HA volume is
+  software attenuation, so it cannot override a muted wheel. Each nab-service
+  start resets this attenuation to 100%, and WirePlumber does not restore old
+  route volumes. Turning the wheel does not reset a later Web/HA attenuation.
 - Time zone: `/etc/localtime` is used; the service embeds tzdata for the configured zone.
 - Clock (no RTC on the Pi): *exact* when NTP synchronised or set by hand in the UI
   during this boot (`<data>/clock-manual` holds the boot id); *approximate* when

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,8 +12,51 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/clock"
+	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/system"
 )
+
+func TestStartupDoesNotReplaySoftwareMute(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("settings_write_blocked=%v", blocked), func(t *testing.T) {
+			a := testApp(t)
+			if _, err := a.store.Update(func(s *config.Settings) error { s.Volume = 0; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if blocked {
+				path := filepath.Join(a.env.DataDir, "config.json")
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dir := t.TempDir()
+			log := filepath.Join(dir, "volume")
+			t.Setenv("NABOS_TEST_VOLUME", log)
+			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+			if err := os.WriteFile(filepath.Join(dir, "wpctl"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$NABOS_TEST_VOLUME\"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// Startup applies the audio settings before opening the HTTP listener.
+			a.env.HTTPAddr = "invalid::address"
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if err := a.Run(ctx); err == nil || !strings.Contains(err.Error(), "invalid::address") {
+				t.Fatalf("startup must reach HTTP even if settings cannot be saved: %v", err)
+			}
+			want := 100
+			if blocked {
+				want = 0
+			}
+			got, err := os.ReadFile(log)
+			if err != nil || string(got) != "set-volume @DEFAULT_AUDIO_SINK@ 1.00\n" || a.store.Get().Volume != want {
+				t.Fatalf("stored mute replayed: command=%q, volume=%d, error=%v", got, a.store.Get().Volume, err)
+			}
+		})
+	}
+}
 
 func testApp(t *testing.T) *App {
 	dir := t.TempDir()

@@ -147,7 +147,15 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	a.publishSettings(ctx)
-	a.applyVolume(ctx)
+	// The wheel owns the hardware level. Start without software attenuation.
+	if a.store.Get().Volume != 100 {
+		if _, err := a.store.Update(func(s *config.Settings) error { s.Volume = 100; return nil }); err != nil {
+			slog.Warn("startup volume not saved", "err", err)
+		}
+	}
+	if err := system.SetVolume(ctx, 100); err != nil {
+		slog.Warn("startup volume not applied", "err", err)
+	}
 	if err := a.ha.Start(a.store.Get().HomeAssistant); err != nil {
 		a.setHAErr(err)
 	}

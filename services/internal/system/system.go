@@ -81,11 +81,17 @@ func BootID() string {
 func SetVolume(ctx context.Context, percent int) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", fmt.Sprintf("%.2f", float64(percent)/100)).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("wpctl: %v: %s", err, out)
+	for {
+		out, err := exec.CommandContext(ctx, "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", fmt.Sprintf("%.2f", float64(percent)/100)).CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wpctl: %w: %s", err, out)
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
-	return nil
 }
 
 // Network returns "ok" (Internet reachable), "lan" (address but no Internet)
