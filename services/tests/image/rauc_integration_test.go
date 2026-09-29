@@ -191,6 +191,7 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	raOrder(t, read(t, serviceLog), "rootfs.0", "bootloader.0")
 	raLayout(t, disk, initialMBR, boot0, root1, root0, dataOff, rootSize, bootSize, raFileHash(t, rootB), raFileHash(t, rootA), dataHash, raFileHash(t, bootB), raFileHash(t, bootC))
 	assertEnv("A B", "A")
+	t.Log("RAUC A -> B -> A: both MBR switches, root images, boot copies and /data verified")
 
 	// These fail during bundle verification, before any slot or environment write.
 	before := raFileHash(t, disk)
@@ -204,13 +205,14 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	}
 	oversized := filepath.Join(dir, "oversized.vfat")
 	raFile(t, oversized, 257*MiB)
-	r := execute(t, "", []string{busEnv, pathEnv}, "rauc", "--conf="+conf, "--override-boot-slot=B", "write-slot", "bootloader.0", oversized)
+	r := execute(t, "", []string{busEnv, pathEnv}, "rauc", "--conf="+conf, "write-slot", "bootloader.0", oversized)
 	if r.code == 0 || !strings.Contains(r.stdout+r.stderr+read(t, serviceLog), "does not fit") {
 		t.Fatalf("oversized boot image was not rejected by boot-mbr-switch: %d %s%s", r.code, r.stdout, r.stderr)
 	}
 	if after := raFileHash(t, disk); after != before {
 		t.Fatal("oversized boot image changed the disk")
 	}
+	t.Log("Wrong target, untrusted signature and oversized boot rejected without changing the disk")
 	stopB()
 	stopA = startService("A")
 	write(t, failSync, "fail")
@@ -221,6 +223,7 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	if !strings.Contains(r.stdout+r.stderr+read(t, serviceLog), "Post-install handler error:") {
 		t.Fatalf("sync failure did not propagate through RAUC post-install: %s%s\n%s", r.stdout, r.stderr, read(t, serviceLog))
 	}
+	t.Log("Post-install sync failure propagated by RAUC")
 	stopA()
 }
 
