@@ -3,6 +3,7 @@ Image NabOS pour un premier flash et des mises à jour signées. Raspberry Pi OS
 Créer la release avec son changelog et le statut choisi ; la CI y ajoute les artefacts selon la [procédure de release](build.md#créer-une-release). La réussite de la CI valide la fabrication ; elle ne valide pas le matériel. Garder le statut **prérelease** ou **brouillon** jusqu'à avoir enregistré les résultats ci-dessous pour les **deux** cibles, avec version, révision de carte, carte SD et journaux.
 
 - [ ] Premier démarrage, Wi-Fi depuis un téléphone, administration authentifiée, SSH fermé.
+- [ ] Racine en lecture seule : premier démarrage avec `/data` vierge puis redémarrage avec état conservé ; point d'accès Comitup puis connexion Wi-Fi/DNS fonctionnels. Vérifier que `swapon --show` ne présente que `/dev/zram0`, que Bluetooth et Cloud-init restent désactivés. Relever `systemctl --failed` et les erreurs d'écriture du journal avant extinction (journaux volatils).
 - [ ] Clés SSH depuis les réglages : ajout, remplacement, refus d'une clé inconnue/des mots de passe/de root, retrait de toutes les clés ; `sudo -n id -u` renvoie `0` sous `nabos`. Clés autorisées et empreinte hôte conservées après redémarrage et bascule A/B.
 - [ ] Démarrage autonome de PipeWire et des applications, sans connexion utilisateur.
 - [ ] Oreilles, calibration, cinq LED, bouton, capture et lecture simultanées ; lecteurs CR14 et NFC ST25 testés séparément sur leurs cartes.

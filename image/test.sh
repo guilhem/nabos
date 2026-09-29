@@ -85,6 +85,52 @@ loop=$(sudo losetup --find --show --partscan "$work/sdcard.img")
 sudo udevadm settle
 sudo mount -o ro "${loop}p2" "$root"
 sudo mount -o ro "${loop}p1" "$boot"
+# Exercise the shipped GPIO import with the root still read-only. systemd creates
+# RuntimeDirectory before applying WorkingDirectory; reproduce those two steps.
+sudo mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "$root/run"
+sudo mount -t proc proc "$root/proc"
+sudo env QEMU_CPU=arm1176 chroot "$root" /usr/bin/python3 -B - <<'PY'
+import configparser
+import os
+import subprocess
+from pathlib import Path
+
+os.environ['LC_ALL'] = 'C'
+unit = configparser.ConfigParser()
+unit.read('/etc/systemd/system/comitup.service.d/nabos.conf')
+service = unit['Service']
+runtime = Path('/run') / service['RuntimeDirectory']
+runtime.mkdir()
+os.chdir(service['WorkingDirectory'])
+import RPi.GPIO  # imports lgpio, which creates a notification FIFO in cwd
+
+# Matching the package rules at build time must avoid all writes to /etc at boot.
+result = subprocess.run(['systemd-tmpfiles', '--create', '--prefix=/etc/mtab',
+                         '--prefix=/etc/polkit-1/rules.d'], capture_output=True, text=True)
+assert result.returncode == 0 and 'Read-only file system' not in result.stderr, result.stderr
+assert Path('/etc/cloud/cloud-init.disabled').is_file()
+for name in ('systemd-growfs-root.service', 'cloud-init-main.service', 'cloud-init-network.service',
+             'bluetooth.service'):
+    assert os.readlink('/etc/systemd/system/' + name) == '/dev/null', name
+
+# Run the actual package generator: its output must never ask for a file-backed
+# swap or for removal of an inherited /var/swap on the read-only root.
+generator = Path('/run/systemd/generator')
+outputs = [generator, Path(str(generator) + '.early'), Path(str(generator) + '.late')]
+for directory in outputs:
+    directory.mkdir(parents=True)
+subprocess.run(['/usr/lib/systemd/system-generators/rpi-swap-generator', *outputs], check=True)
+assert (generator / 'swap.target.wants/dev-zram0.swap').is_symlink()
+assert 'fs-type=swap' in Path('/run/systemd/zram-generator.conf.d/20-rpi-swap-zram0-ctrl.conf').read_text()
+for path in Path('/run/systemd').rglob('*'):
+    text = str(path)
+    if path.is_symlink():
+        text += os.readlink(path)
+    elif path.is_file():
+        text += path.read_text()
+    assert not any(word in text for word in ('backingfile', 'rpi-setup-loop', 'rpi-resize-swap',
+                                            'rpi-remove-swap', 'writeback', '/var/swap')), path
+PY
 cmp "$expected_uboot" "$boot/u-boot.bin"
 [[ -x $root/usr/bin/dtoverlay ]] || { echo 'Missing runtime dtoverlay command' >&2; exit 1; }
 # Parse the shipped OpenSSH configuration (including inherited snippets) without
