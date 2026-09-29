@@ -125,8 +125,9 @@ seed = ('NABOS_BOOT_INIT_LIB=1 . /usr/lib/nabos/boot-init; '
         'PERSIST=/var/lib/NetworkManager; persist; mountpoint -q /var/lib/NetworkManager')
 state = Path('/var/lib/NetworkManager/NetworkManager.state')
 saved = Path('/data/system/var/lib/NetworkManager/NetworkManager.state')
+default_state = state.read_text()
 subprocess.run(['sh', '-c', seed], check=True)
-assert saved.read_text() == state.read_text()
+assert saved.read_text() == default_state
 saved.write_text('[main]\nWirelessEnabled=false\n')
 subprocess.run(['umount', '/var/lib/NetworkManager'], check=True)
 subprocess.run(['sh', '-c', seed], check=True)
