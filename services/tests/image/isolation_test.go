@@ -37,6 +37,7 @@ func TestImageIsolation(t *testing.T) {
 			}
 			for _, dir := range []string{filepath.Join(checkout, "image"), filepath.Join(checkout, "services"),
 				filepath.Join(checkout, "build/iot"), filepath.Join(payload, "inputs/go-modcache"),
+				filepath.Join(fixture, "data"),
 				filepath.Join(payload, "src/uboot/scripts"), filepath.Join(fixture, "usr/bin"),
 				filepath.Join(fixture, "usr/lib/aarch64-linux-gnu"), filepath.Join(fixture, "usr/share/nabos/sounds"),
 				filepath.Join(fixture, "usr/share/nabos/choreographies"), filepath.Join(fixture, "lib/modules", kernel, "updates/nabos"), boot} {
@@ -87,6 +88,27 @@ else
   echo /dev/loop-nabos-test
 fi`,
 				"mount": `set -eu
+if [ "$1" = --rbind ]; then
+  [ "$2 $3" = "/dev $(dirname "$(cat "$STATE/copy")")/root/dev" ]
+  exit 0
+elif [ "$1" = --make-rslave ]; then
+  [ "$2" = "$(dirname "$(cat "$STATE/copy")")/root/dev" ]
+  exit 0
+fi
+if [ "$1" = -t ]; then
+  case "$2" in
+    tmpfs)
+      [ "$3 $4 $5" = '-o nosuid,nodev,mode=0755 tmpfs' ]
+      [ "$6" = "$(dirname "$(cat "$STATE/copy")")/root/run" ] ;;
+    proc) [ "$3 $4" = "proc $(dirname "$(cat "$STATE/copy")")/root/proc" ] ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2 $3" = '-o rw /dev/loop-nabos-testp4' ]; then
+  [ "$4" = "$(dirname "$(cat "$STATE/copy")")/root/data" ]
+  exit 0
+fi
 [ "$1 $2" = '-o ro' ]
 case "$3" in
   /dev/loop-nabos-testp1) cp -a "$BOOT_FIXTURE/." "$4/" ;;
@@ -99,6 +121,7 @@ touch "$4.mounted"`,
 				"chroot": `set -eu
 [ "$1" = "$(dirname "$(cat "$STATE/copy")")/root" ]
 case "$2" in
+  /usr/bin/python3) [ "$3 $4" = '-B -' ]; cat > "$STATE/readonly-check" ;;
   /usr/sbin/sshd)
     [ "$3" = -G ]
     printf '%s\n' 'allowusers nabos' 'permitrootlogin no' 'authenticationmethods publickey' \
@@ -161,6 +184,8 @@ esac`,
 				"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -v ./tests/integration",
 				"chroot " + work + "/root /usr/sbin/sshd -G", "chroot " + work + "/root getent passwd nabos",
 				"chroot " + work + "/root /usr/sbin/visudo --check",
+				"chroot " + work + "/root /usr/bin/python3 -B -",
+				"mount --rbind /dev " + work + "/root/dev", "mount --make-rslave " + work + "/root/dev",
 				"umount --recursive " + work + "/boot", "umount --recursive " + work + "/root", "losetup --detach /dev/loop-nabos-test",
 			} {
 				if !strings.Contains(calls, call) {
@@ -185,6 +210,9 @@ esac`,
 			}
 			if scenario.target == "zero2-arm64" && !strings.Contains(read(t, filepath.Join(tmp, "lva-check")), "from linux_voice_assistant import util") {
 				t.Error("ARM64 did not run the copied-root LVA check")
+			}
+			if !strings.Contains(read(t, filepath.Join(tmp, "readonly-check")), "import lgpio") {
+				t.Error("image did not run the GPIO import with a read-only root")
 			}
 		})
 	}

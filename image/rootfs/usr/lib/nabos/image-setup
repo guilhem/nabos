@@ -18,6 +18,22 @@ done)
 mkdir -p /var/lib/dbus
 ln -sfn /etc/machine-id /var/lib/dbus/machine-id
 
+# Apply the package rules while /etc is writable. In particular, the overlay
+# replaces polkit's rules directory mode and the base may lack the mtab symlink.
+systemd-tmpfiles --create --prefix=/etc/mtab --prefix=/etc/polkit-1/rules.d
+
+# Disable cloud-init's generator as well as its units (names change across releases).
+mkdir -p /etc/cloud
+touch /etc/cloud/cloud-init.disabled
+
+# Remove the inherited swap file while the root is writable; rpi-swap now keeps
+# its backing file on /data, mounted and grown by boot-init before systemd.
+rm -f /var/swap
+# rpi-swap owns these generated units. The generic generator can overwrite its
+# loop dependency; keep its binary available for systemd-zram-setup@.service.
+mkdir -p /etc/systemd/system-generators
+ln -sfn /dev/null /etc/systemd/system-generators/zram-generator
+
 # Mount points for the state boot-init binds from /data (list shared with it).
 NABOS_BOOT_INIT_LIB=1 . /usr/lib/nabos/boot-init
 mkdir -p /data $PERSIST
@@ -34,6 +50,8 @@ echo Europe/Paris > /etc/timezone
 
 systemctl set-default multi-user.target
 systemctl --global enable pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+# No Bluetooth feature is used; remove the D-Bus activation alias before masking.
+systemctl disable bluetooth.service
 systemctl enable nab-core.service nab-service.service nabos-rfid.service nabos-health.service \
 	linux-voice-assistant.service tagtagtag-mixerd.service mosquitto.service \
 	NetworkManager.service comitup.service avahi-daemon.service systemd-timesyncd.service ssh.service
@@ -42,4 +60,5 @@ systemctl enable nab-core.service nab-service.service nabos-rfid.service nabos-h
 systemctl mask systemd-rfkill.service systemd-rfkill.socket alsa-restore.service alsa-state.service \
 	fake-hwclock.service logrotate.timer man-db.timer e2scrub_all.timer e2scrub_reap.service \
 	dpkg-db-backup.timer dphys-swapfile.service sshswitch.service rpi-eeprom-update.service \
-	dnsmasq.service dhcpcd.service systemd-networkd.service
+	dnsmasq.service dhcpcd.service systemd-networkd.service systemd-growfs-root.service \
+	cloud-init-main.service cloud-init-network.service bluetooth.service
