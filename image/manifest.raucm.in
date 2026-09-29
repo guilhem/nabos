@@ -1,0 +1,13 @@
+[update]
+compatible=@COMPATIBLE@
+version=@VERSION@
+
+[bundle]
+format=verity
+
+# Install Linux before changing the shared firmware.
+[image.rootfs]
+filename=rootfs.ext4
+
+[image.bootloader]
+filename=boot.vfat

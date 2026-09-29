@@ -16,7 +16,9 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mosquitto mosquitto-clients shellcheck device-tree-compiler
+          sudo apt-get install -y mosquitto mosquitto-clients shellcheck device-tree-compiler \
+            genimage=17-2 rauc=1.11.3-2 dosfstools mtools u-boot-tools libubootenv-tool \
+            squashfs-tools openssl jq dbus fdisk
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
         with:
           toolchain: '1.98.1'
@@ -33,6 +35,12 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test -race ./...
+      - name: RAUC on a disposable loop device
+        working-directory: services/tests/image
+        run: |
+          go test -race -c -o "$RUNNER_TEMP/nabos-image-tests" .
+          sudo env NABOS_RAUC_INTEGRATION=1 unshare --mount --propagation private \
+            "$RUNNER_TEMP/nabos-image-tests" -test.run '^TestRaucBootMBRIntegration$' -test.v -test.timeout 10m
       - name: Shell and protocol checks
         working-directory: services
         run: |

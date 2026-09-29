@@ -2,6 +2,7 @@ package image
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -46,6 +47,12 @@ const controlDTS = `/dts-v1/;
 };
 `
 
+const (
+	bootOffset   = 4 * MiB
+	bootHalfSize = 64 * MiB // Smallest FAT32 image mkfs.vfat accepts without a cluster warning.
+	rootPartSize = 8 * MiB
+)
+
 // bootFixture runs boot.cmd under the pinned U-Boot's own hush parser, with
 // a stored environment made only of uboot.env (env import -d wipes
 // everything else, like a real stored environment does).
@@ -88,8 +95,8 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	return tree
 }
 
-// disk builds an MBR disk shaped like genimage.cfg (smaller): p1 boot,
-// p2 A, p3 B, p4 data.
+// disk reserves two boot halves before fixed p2 A, p3 B and p4 data.
+// Only the first boot half appears in the MBR until the test changes p1.
 func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) string {
 	t := f.t
 	boot := filepath.Join(f.tmp, "p1")
@@ -102,17 +109,17 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 		env = read(t, filepath.Join(boot, "boot.env"))
 	}
 	write(t, filepath.Join(boot, "boot.env"), env)
-	parts := []string{boot, "", "", ""}
+	parts := []string{"", "", ""}
 	if slotA {
-		parts[1] = f.slotTree("a", target, brokenOverlay)
+		parts[0] = f.slotTree("a", target, brokenOverlay)
 	}
 	if slotB {
-		parts[2] = f.slotTree("b", target, false)
+		parts[1] = f.slotTree("b", target, false)
 	}
-	const size = 8 * MiB
+	const firstRoot = bootOffset + 2*bootHalfSize
 	disk := filepath.Join(f.tmp, "disk.img")
 	os.Remove(disk)
-	if err := os.WriteFile(disk, nil, 0o644); err != nil || os.Truncate(disk, 4*MiB+4*size) != nil {
+	if err := os.WriteFile(disk, nil, 0o644); err != nil || os.Truncate(disk, firstRoot+3*rootPartSize) != nil {
 		t.Fatal("cannot create disk image")
 	}
 	table := "label: dos\n"
@@ -121,7 +128,13 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 		if i == 0 {
 			kind = "c"
 		}
-		table += fmt.Sprintf("start=%d,size=%d,type=%s\n", (4*MiB+i*size)/512, size/512, kind)
+		start := firstRoot + (i-1)*rootPartSize
+		partSize := rootPartSize
+		if i == 0 {
+			start = bootOffset
+			partSize = bootHalfSize
+		}
+		table += fmt.Sprintf("start=%d,size=%d,type=%s\n", start/512, partSize/512, kind)
 	}
 	run(t, table, "sfdisk", "-q", disk)
 	out, err := os.OpenFile(disk, os.O_WRONLY, 0)
@@ -129,18 +142,48 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 		t.Fatal(err)
 	}
 	defer out.Close()
+	envImage, err := os.ReadFile(filepath.Join(f.tmp, "uboot.env.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []int64{MiB, 2 * MiB} {
+		if _, err := out.WriteAt(envImage, offset); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bootImage := filepath.Join(f.tmp, "boot.fat")
+	os.Remove(bootImage)
+	if err := os.WriteFile(bootImage, nil, 0o644); err != nil || os.Truncate(bootImage, bootHalfSize) != nil {
+		t.Fatal("cannot create FAT image")
+	}
+	run(t, "", "mkfs.vfat", "-F", "32", "-n", "NABOSBOOT", bootImage)
+	bootFiles, err := filepath.Glob(filepath.Join(boot, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyArgs := append([]string{"-i", bootImage}, bootFiles...)
+	run(t, "", "mcopy", append(copyArgs, "::")...)
+	bootData, err := os.ReadFile(bootImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []int64{bootOffset, bootOffset + bootHalfSize} {
+		if _, err := out.WriteAt(bootData, offset); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for i, tree := range parts {
 		if tree == "" {
 			continue
 		}
-		part := filepath.Join(f.tmp, fmt.Sprintf("part%d.ext4", i))
+		part := filepath.Join(f.tmp, fmt.Sprintf("part%d.ext4", i+2))
 		os.Remove(part)
-		run(t, "", "mkfs.ext4", "-q", "-F", "-d", tree, part, fmt.Sprintf("%dk", size/1024))
+		run(t, "", "mkfs.ext4", "-q", "-F", "-d", tree, part, fmt.Sprintf("%dk", rootPartSize/1024))
 		data, err := os.ReadFile(part)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := out.WriteAt(data, int64(4*MiB+i*size)); err != nil {
+		if _, err := out.WriteAt(data, int64(firstRoot+i*rootPartSize)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -301,6 +344,74 @@ func testBootScript(t *testing.T, target string) {
 		_, text := boot(t, false, false, "printenv bootcmd bootdelay scriptaddr;", true)
 		containsAll(t, strings.Split(text, "\n"), "bootcmd=load mmc 0:1 ${scriptaddr} boot.scr && source ${scriptaddr}",
 			"bootdelay=-2", "scriptaddr=0x05400000")
+	})
+
+	t.Run("p1 switches between FAT boot halves without moving roots or raw env", func(t *testing.T) {
+		f.t = t
+		disk := f.disk(target, true, true, false)
+		image, err := os.OpenFile(disk, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer image.Close()
+		checkLayout := func(activeBoot uint32) {
+			t.Helper()
+			var mbr [512]byte
+			if _, err := image.ReadAt(mbr[:], 0); err != nil {
+				t.Fatal(err)
+			}
+			rootStart := uint32((bootOffset + 2*bootHalfSize) / 512)
+			rootSize := uint32(rootPartSize / 512)
+			for i, start := range []uint32{activeBoot, rootStart, rootStart + rootSize, rootStart + 2*rootSize} {
+				entry := mbr[446+i*16:]
+				if got := binary.LittleEndian.Uint32(entry[8:12]); got != start {
+					t.Errorf("p%d starts at sector %d, want %d", i+1, got, start)
+				}
+				wantSize, wantType := rootSize, byte(0x83)
+				if i == 0 {
+					wantSize, wantType = uint32(bootHalfSize/512), 0x0c
+				}
+				if binary.LittleEndian.Uint32(entry[12:16]) != wantSize || entry[4] != wantType {
+					t.Errorf("p%d size/type = %d/%#x, want %d/%#x", i+1,
+						binary.LittleEndian.Uint32(entry[12:16]), entry[4], wantSize, wantType)
+				}
+			}
+		}
+		checkEnv := func() {
+			t.Helper()
+			want, err := os.ReadFile(filepath.Join(f.tmp, "uboot.env.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]byte, len(want))
+			for _, offset := range []int64{MiB, 2 * MiB} {
+				if _, err := image.ReadAt(got, offset); err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(got, want) {
+					t.Errorf("raw environment differs at %d", offset)
+				}
+			}
+		}
+		checkLayout(bootOffset / 512)
+		checkEnv()
+		lines, _ := f.boot(disk, "", true)
+		containsAll(t, strings.Fields(booting(t, lines, "A")), "root=/dev/mmcblk0p2", "rauc.slot=A")
+		// The second boot must work even when the first FAT copy is unreadable.
+		if _, err := image.WriteAt(make([]byte, 512), bootOffset); err != nil {
+			t.Fatal(err)
+		}
+		// MBR entry 1 starts at byte 446; its start LBA is at byte 454.
+		var start [4]byte
+		binary.LittleEndian.PutUint32(start[:], uint32((bootOffset+bootHalfSize)/512))
+		if _, err := image.WriteAt(start[:], 454); err != nil {
+			t.Fatal(err)
+		}
+		checkLayout(uint32((bootOffset + bootHalfSize) / 512))
+		checkEnv()
+		lines, _ = f.boot(disk, "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
+		containsAll(t, strings.Fields(booting(t, lines, "B")), "root=/dev/mmcblk0p3", "rauc.slot=B")
+		containsAll(t, strings.Fields(booting(t, lines, "A")), "root=/dev/mmcblk0p2", "rauc.slot=A")
 	})
 
 	t.Run("first boot uses slot A and never tries empty B", func(t *testing.T) {

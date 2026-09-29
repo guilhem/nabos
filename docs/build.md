@@ -61,7 +61,7 @@ La fabrication sépare compilation, livraison et tests :
 
 Il n'y a pas de deuxième résolution de paquets sur Internet pour l'image livrée, ni de reconstruction après validation. Ces tests exécutent les services en simulation et le script de démarrage dans le sandbox ; ils ne démarrent pas un noyau Raspberry Pi complet. Les essais matériels restent nécessaires. La compression de l'image et des entrées utilise `xz -T0`, avec des horodatages séparés dans les logs.
 
-Les bundles `.raucb` utilisent SquashFS avec Zstd niveau 15. La fabrication vérifie `CONFIG_SQUASHFS=y` ou `m` et `CONFIG_SQUASHFS_ZSTD=y` dans la configuration des en-têtes correspondant au noyau livré. Pour une mise à jour, le noyau déjà démarré sur le lapin doit aussi prendre en charge SquashFS/Zstd pour ouvrir le bundle ; le support dans le nouveau noyau seul ne suffit pas.
+Les bundles `.raucb` sont signés, au format RAUC `verity`, et utilisent SquashFS avec Zstd niveau 15. Ils contiennent `rootfs.ext4` pour la classe `rootfs`, puis `boot.vfat` pour la classe `bootloader` ; RAUC installe la racine inactive avant de basculer la copie FAT. La fabrication vérifie `CONFIG_SQUASHFS=y` ou `m` et `CONFIG_SQUASHFS_ZSTD=y` dans la configuration des en-têtes correspondant au noyau livré. Pour une mise à jour, le noyau déjà démarré sur le lapin doit aussi prendre en charge SquashFS/Zstd pour ouvrir le bundle ; le support dans le nouveau noyau seul ne suffit pas. Si un futur format de bundle ou une autre exigence du lecteur devient incompatible avec la version installée, publier d'abord une release de transition que l'ancien système peut lire.
 
 Pour assembler des composants déjà construits, placer les trois fichiers `go-<cible>.tar`, `rust-<cible>.tar` et `uboot-<cible>.tar` dans un répertoire, puis passer `--components /chemin/composants` à `image/build.sh`. Rust et les compilateurs cross ne sont alors pas nécessaires au job d'image. Sans cette option, le script appelle les cibles `go`, `rust` et `uboot` du Makefile.
 
@@ -90,17 +90,20 @@ Le code et les fichiers de verrouillage doivent correspondre à cette release. U
 
 ## Partitionnement et démarrage
 
-| Zone | Contenu |
+| Zone | Contenu au premier flash |
 |---|---|
-| 1 Mio et 2 Mio, hors partitions | Deux copies de l'environnement U-Boot |
-| Partition 1, à partir de 4 Mio | Firmware Raspberry Pi, U-Boot, script de sélection A/B |
-| Partition 2 | Système A, 6 Gio, prérempli au flash |
-| Partition 3 | Système B, 6 Gio, vide avant la première mise à jour |
-| Partition 4 | Données ext4, étendue une seule fois au premier démarrage |
+| 1 Mio et 2 Mio, hors partitions | Deux copies identiques de l'environnement U-Boot, 64 Kio chacune |
+| 4–516 Mio | Deux copies FAT de 256 Mio, initialement identiques : 4–260 Mio et 260–516 Mio |
+| Partition 1 | Entrée MBR pointant vers la copie FAT à 4 Mio ou à 260 Mio ; initialement 4 Mio |
+| Partition 2, à partir de 516 Mio | Racine A ext4, 6 Gio, préremplie |
+| Partition 3, à partir de 6660 Mio | Racine B ext4, 6 Gio, vide jusqu'à sa première installation RAUC |
+| Partition 4, à partir de 12804 Mio | Données ext4, 1 Gio puis agrandies au premier démarrage |
 
-U-Boot lit noyau et Device Tree dans le slot choisi. Overlays et modules restent dans ce même système. À la fabrication, ce Device Tree reçoit le profil `image/nabos-overlay.dts`, qui désactive Bluetooth (UART0), VCHIQ, framebuffer, USB et régulateurs caméra ; la partition firmware garde le DTB d'origine pour U-Boot. L'état RAUC est conservé dans `/data`. Un nouveau slot n'est confirmé qu'après le contrôle local des services essentiels. Un échec de démarrage consomme une tentative puis ramène au dernier slot valide. La partition de firmware partagée reste fixe dans cette version.
+RAUC utilise nativement [`boot-mbr-switch`](https://rauc.readthedocs.io/en/v1.11.3/advanced.html#update-bootloader-partition-in-mbr) sur la région 4–516 Mio : il écrit la copie FAT inactive, puis change l'entrée MBR de la partition 1. Le handler de fin d'installation exécute `sync /dev/mmcblk0` ; une erreur fait échouer l'installation. Les deux copies contiennent le firmware Raspberry Pi, U-Boot, sa configuration et les DTB nécessaires avant Linux ; elles peuvent être mises à jour par bundle. U-Boot lit ensuite le noyau et le Device Tree dans la racine A ou B choisie. Les modules et overlays Linux restent dans cette même racine. À la fabrication, ce Device Tree reçoit le profil `image/nabos-overlay.dts`, qui désactive Bluetooth (UART0), VCHIQ, framebuffer, USB et régulateurs caméra ; la copie FAT garde le DTB d'origine pour U-Boot. La partition de démarrage n'est jamais montée sous Linux.
 
-Le système racine est monté en lecture seule ; identité, connexion réseau, réglages et calibration sont persistants. Journaux et fichiers temporaires sont volatils. Aucun serveur SQL n'est installé : la configuration applicative est un fichier JSON versionné écrit atomiquement. Les évolutions de schéma doivent rester lisibles par la version précédente pour permettre le rollback.
+L'état RAUC est conservé dans `/data`. Un nouveau slot racine n'est confirmé qu'après le contrôle local des services essentiels ; un échec de démarrage consomme une tentative puis ramène au dernier slot valide. Ce contrôle ne valide pas le firmware partagé : une copie FAT défectueuse peut empêcher le démarrage des deux racines et nécessiter une réparation de la carte SD. Avant chaque future release, tester les combinaisons ancien/nouveau démarrage × ancienne/nouvelle racine, car une coupure peut survenir avant ou après le changement de l'entrée MBR. Ce plan concerne le premier flash et les mises à jour de ce format ; aucune migration d'un ancien partitionnement n'est prévue. Changer le partitionnement nécessite un nouveau flash.
+
+Le système racine est monté en lecture seule ; identité, connexion réseau, réglages et calibration restent sur `/data`. Journaux et fichiers temporaires sont volatils. Aucun serveur SQL n'est installé : la configuration applicative est un fichier JSON versionné écrit atomiquement. N'introduire une migration de schéma que lorsqu'elle est nécessaire, et vérifier alors la lecture des données par la version précédente après rollback.
 
 SSH utilise le service OpenSSH fourni par Raspberry Pi OS, conditionné par un fichier `/data/nabos/ssh/authorized_keys` non vide et des données persistantes disponibles. L'interface authentifiée valide les clés avec `ssh-keygen`, écrit ce fichier atomiquement et demande uniquement `start` ou `stop` sur `ssh.service` via Polkit. Les clés hôtes sont créées dans `/data/system/ssh/etc/ssh` au premier démarrage du service ; la configuration OpenSSH reste dans le slot pour recevoir les mises à jour. Le compte `nabos` a un shell, conserve son mot de passe verrouillé et dispose de sudo sans mot de passe. Gérer ses clés permet donc d'accorder un accès administrateur au système. Une ancienne version sans cette fonction ferme SSH en cas de rollback ; les clés restent sur `/data` pour le retour à une version compatible.
 
@@ -132,3 +135,10 @@ Les tests d'image sont inclus dans `go test ./...`. Pour exécuter aussi le scri
 de démarrage dans le sandbox U-Boot, fournir `NABOS_UBOOT_SANDBOX`,
 `NABOS_SOURCES` et `NABOS_VENDOR_DTBS` ; la fabrication des images le fait
 automatiquement.
+
+La CI exécute aussi `TestRaucBootMBRIntegration` avec
+`NABOS_RAUC_INTEGRATION=1`, sous root dans un espace de montage privé : RAUC
+installe de vrais bundles signés sur un périphérique loop jetable, avec les
+environnements U-Boot et le partitionnement du dépôt. Ce test couvre les bascules
+dans les deux sens et les refus d'installation ; il ne simule pas les propriétés
+électriques d'une carte SD ni le démarrage du firmware Raspberry Pi.
