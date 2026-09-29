@@ -113,6 +113,15 @@ result = subprocess.run(['systemd-tmpfiles', '--create', '--prefix=/etc/mtab',
                          '--prefix=/etc/polkit-1/rules.d'], capture_output=True, text=True)
 assert result.returncode == 0 and 'Read-only file system' not in result.stderr, result.stderr
 assert Path('/etc/cloud/cloud-init.disabled').is_file()
+assert Path('/etc/timezone').read_text() == 'Europe/Paris\n'
+assert os.readlink('/etc/localtime') == '/usr/share/zoneinfo/Europe/Paris'
+assert Path('/etc/localtime').is_file()
+# Check the slot's directory before persist hides it with the data bind mount.
+info = Path('/var/lib/NetworkManager').stat()
+assert info.st_mode & 0o777 == 0o700, oct(info.st_mode)
+assert (info.st_uid, info.st_gid) == (0, 0)
+info = Path('/var/lib/NetworkManager/NetworkManager.state').stat()
+assert (info.st_uid, info.st_gid) == (0, 0)
 network = configparser.ConfigParser(interpolation=None)
 network.read_string(subprocess.check_output(['NetworkManager', '--print-config'], text=True))
 assert network['main']['rc-manager'] == 'unmanaged'
@@ -185,7 +194,8 @@ done
 [[ $(sudo chroot "$root" getent passwd nabos) == 'nabos:x:1000:1000:'*':/var/lib/nabos:/bin/bash' ]] ||
   { echo 'Unexpected SSH account' >&2; exit 1; }
 sudo env QEMU_CPU=arm1176 chroot "$root" /usr/sbin/visudo --check
-for path in /nabos-build /usr/bin/gcc /usr/bin/make /usr/bin/cmake; do
+for path in /nabos-build /usr/bin/gcc /usr/bin/make /usr/bin/cmake \
+  /usr/sbin/policy-rc.d /etc/apt/apt.conf.d/99nabos-build; do
   [[ ! -e $root$path && ! -L $root$path ]] || { echo "Build artifact shipped: $path" >&2; exit 1; }
 done
 if [[ $target == zero2-arm64 ]]; then
