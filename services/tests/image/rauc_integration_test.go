@@ -154,7 +154,9 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	}
 	assertEnv := func(order, active string) {
 		t.Helper()
-		r := execute(t, "", []string{pathEnv}, "fw_printenv")
+		// exec.Command resolves PATH before applying cmd.Env; call our wrapper
+		// explicitly so this assertion never reads the host's fw_env.config.
+		r := execute(t, "", nil, filepath.Join(bin, "fw_printenv"))
 		if r.code != 0 || !strings.Contains(r.stdout, "BOOT_ORDER="+order) || !strings.Contains(r.stdout, "BOOT_"+active+"_LEFT=3") {
 			t.Fatalf("stored redundant U-Boot environment: exit %d\n%s%s", r.code, r.stdout, r.stderr)
 		}
