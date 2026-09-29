@@ -74,6 +74,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label>Langue <select name="locale">{{range .Data.Locales}}<option{{if eq . $.S.Locale}} selected{{end}}>{{.}}</option>{{end}}</select></label>
 <label>Fuseau horaire <input name="timezone" value="{{.S.Timezone}}" required></label>
 <label>Volume <input type="range" name="volume" min="0" max="100" step="5" value="{{.S.Volume}}"></label>
+<p>Ce réglage réduit le niveau choisi avec la molette et revient à 100 % au démarrage.</p>
 <p>Recherche et installation des nouvelles versions : <a href="/updates">Mises à jour</a>.</p>
 {{if .Data.Voice}}<label><input type="checkbox" name="voice"{{if .Data.VoiceOn}} checked{{end}}> Assistant vocal (Linux Voice Assistant, via Home Assistant)</label>{{end}}
 </section>
