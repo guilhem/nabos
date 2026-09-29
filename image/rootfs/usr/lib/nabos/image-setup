@@ -44,6 +44,8 @@ chmod 0440 /etc/sudoers.d/010_nabos-nopasswd
 
 # pi-gen soft-blocks Wi-Fi on some boards until a country is set; comitup owns Wi-Fi.
 rm -f /var/lib/systemd/rfkill/*
+# boot-init seeds this state on first boot; Comitup does not enable the radio.
+printf '[main]\nWirelessEnabled=true\n' > /var/lib/NetworkManager/NetworkManager.state
 
 ln -sfn /usr/share/zoneinfo/Europe/Paris /etc/localtime
 echo Europe/Paris > /etc/timezone

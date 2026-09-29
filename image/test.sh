@@ -117,6 +117,23 @@ network = configparser.ConfigParser(interpolation=None)
 network.read_string(subprocess.check_output(['NetworkManager', '--print-config'], text=True))
 assert network['main']['rc-manager'] == 'unmanaged'
 assert os.readlink('/etc/resolv.conf') == '/run/NetworkManager/resolv.conf'
+radio = configparser.ConfigParser()
+radio.read('/var/lib/NetworkManager/NetworkManager.state')
+assert radio.getboolean('main', 'WirelessEnabled'), 'Wi-Fi must be enabled on first boot'
+# Exercise first-boot seeding and a later boot with a saved radio preference.
+seed = ('NABOS_BOOT_INIT_LIB=1 . /usr/lib/nabos/boot-init; '
+        'PERSIST=/var/lib/NetworkManager; persist; mountpoint -q /var/lib/NetworkManager')
+state = Path('/var/lib/NetworkManager/NetworkManager.state')
+saved = Path('/data/system/var/lib/NetworkManager/NetworkManager.state')
+default_state = state.read_text()
+subprocess.run(['sh', '-c', seed], check=True)
+assert saved.read_text() == default_state
+saved.write_text('[main]\nWirelessEnabled=false\n')
+subprocess.run(['umount', '/var/lib/NetworkManager'], check=True)
+subprocess.run(['sh', '-c', seed], check=True)
+radio.read(state)
+assert not radio.getboolean('main', 'WirelessEnabled'), 'Saved radio preference must be preserved'
+subprocess.run(['umount', '/var/lib/NetworkManager'], check=True)
 for name in ('systemd-growfs-root.service', 'cloud-init-main.service', 'cloud-init-network.service',
              'bluetooth.service'):
     assert os.readlink('/etc/systemd/system/' + name) == '/dev/null', name
