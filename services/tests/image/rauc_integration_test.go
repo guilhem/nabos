@@ -2,6 +2,7 @@ package image
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -239,7 +240,12 @@ func raBoot(t *testing.T, path, marker string) {
 	t.Helper()
 	run(t, "", "mkfs.vfat", "-F", "32", "-n", "NABOSBOOT", path)
 	mark := filepath.Join(t.TempDir(), "nabos-marker")
-	write(t, mark, marker)
+	// Empty filesystems compress below verity's minimum squashfs size (4 KiB).
+	content := make([]byte, 16*1024)
+	if _, err := rand.Read(content); err != nil {
+		t.Fatal(err)
+	}
+	write(t, mark, marker+"\n"+string(content))
 	run(t, "", "mcopy", "-i", path, mark, "::marker")
 }
 
