@@ -50,19 +50,25 @@ func genimagePartitions(t *testing.T) ([]string, map[string]map[string]string) {
 // The same partition and environment constants appear in several files.
 func TestCardLayout(t *testing.T) {
 	names, parts := genimagePartitions(t)
-	if !slices.Equal(names, []string{"uboot-env", "uboot-env-redund", "boot", "rootfs-a", "rootfs-b", "data"}) {
+	if !slices.Equal(names, []string{"uboot-env", "uboot-env-redund", "boot", "boot-redund", "rootfs-a", "rootfs-b", "data"}) {
 		t.Fatalf("partitions %q", names)
 	}
 	if parts["uboot-env"]["in-partition-table"] != "false" || parts["uboot-env-redund"]["in-partition-table"] != "false" {
 		t.Error("environment copies must stay out of the partition table")
 	}
-	if sizes(t, parts["boot"]["offset"]) != 4*MiB {
-		t.Error("boot offset")
+	if parts["boot-redund"]["in-partition-table"] != "false" || parts["boot-redund"]["image"] != "boot.vfat" {
+		t.Error("the second boot copy must be prefilled outside the partition table")
 	}
-	for name, size := range map[string]int{"boot": 256 * MiB, "rootfs-a": 6144 * MiB, "rootfs-b": 6144 * MiB, "data": 1024 * MiB} {
+	end := 4 * MiB
+	for i, name := range names[2:] {
+		size := []int{256, 256, 6144, 6144, 1024}[i] * MiB
+		if got := sizes(t, parts[name]["offset"]); got != end {
+			t.Errorf("%s offset %d, want %d (gap or overlap)", name, got, end)
+		}
 		if got := sizes(t, parts[name]["size"]); got != size {
 			t.Errorf("%s size %d", name, got)
 		}
+		end += size
 	}
 	if parts["rootfs-a"]["image"] != "rootfs.ext4" {
 		t.Error("slot A image")
@@ -77,7 +83,7 @@ func TestCardLayout(t *testing.T) {
 	if !reflect.DeepEqual(images, map[string]bool{"boot.vfat": true, "data.ext4": true, "uboot.env": true}) {
 		t.Errorf("images %v", images)
 	}
-	if end := 4*MiB + (256+2*6144+1024)*MiB; end >= 15_000_000_000 {
+	if end >= 15_000_000_000 {
 		t.Error("does not fit the smallest \"16 GB\" cards")
 	}
 }
@@ -130,7 +136,9 @@ func TestEnvironmentLocationAgreesEverywhere(t *testing.T) {
 func TestAttemptsAndSlotsAgree(t *testing.T) {
 	conf := read(t, filepath.Join(rootfsDir, "etc/rauc/system.conf"))
 	for _, want := range []string{"boot-attempts=3", "boot-attempts-primary=3",
-		"device=/dev/mmcblk0p2\ntype=ext4\nbootname=A", "device=/dev/mmcblk0p3\ntype=ext4\nbootname=B"} {
+		"device=/dev/mmcblk0p2\ntype=ext4\nbootname=A", "device=/dev/mmcblk0p3\ntype=ext4\nbootname=B",
+		"[slot.bootloader.0]\ndevice=/dev/mmcblk0\ntype=boot-mbr-switch\nregion-start=4M\nregion-size=512M\ninstall-same=false",
+		"[handlers]\npost-install=/usr/lib/nabos/rauc-post-install"} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("system.conf lacks %q", want)
 		}

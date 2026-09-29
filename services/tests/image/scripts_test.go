@@ -143,12 +143,15 @@ func TestBootInitGrowsOnlyTheDataPartitionOnA16GBCard(t *testing.T) {
 	const sector = 512
 	table := "label: dos\n"
 	start := 4 * MiB
-	for _, p := range []struct {
+	for i, p := range []struct {
 		size int
 		kind string
 	}{{256 * MiB, "c"}, {6144 * MiB, "83"}, {6144 * MiB, "83"}, {1024 * MiB, "83"}} {
 		table += fmt.Sprintf("start=%d,size=%d,type=%s\n", start/sector, p.size/sector, p.kind)
 		start += p.size
+		if i == 0 {
+			start += 256 * MiB // second boot copy is reserved outside the MBR table
+		}
 	}
 	run(t, table, "sfdisk", "-q", card)
 	type part = map[string]any

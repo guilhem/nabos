@@ -1,0 +1,3 @@
+#!/bin/sh
+# Flush the whole SD card, including the switched MBR, before reporting success.
+exec sync /dev/mmcblk0

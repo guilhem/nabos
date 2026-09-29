@@ -193,7 +193,7 @@ in_target finalize
 kernel=$(cat "$payload/kernel-release")
 sudo ln -sfn /run/NetworkManager/resolv.conf "$root/etc/resolv.conf"
 
-# The immutable firmware partition contains no application kernel or modules.
+# The shared boot image contains no application kernel, overlays or modules.
 for file in "$root"/boot/firmware/{bootcode.bin,start*.elf,fixup*.dat}; do
   [[ -f $file ]] && cp "$file" "$work/boot/"
 done
@@ -233,6 +233,10 @@ mcopy -i "$work/images/boot.vfat" -s "$work/boot/"* ::
 truncate -s 1G "$work/images/data.ext4"
 mkfs.ext4 -q -F -L nabos-data "$work/images/data.ext4"
 mkenvimage -r -s 0x10000 -o "$work/images/uboot.env" "$repo/image/boot/uboot.env"
+[[ $(stat -c %s "$work/images/uboot.env") == 65536 ]]
+[[ $(stat -c %s "$work/images/boot.vfat") == $((256 * 1024 * 1024)) ]]
+[[ $(stat -c %s "$work/images/rootfs.ext4") == $((6 * 1024 * 1024 * 1024)) ]]
+[[ $(stat -c %s "$work/images/data.ext4") == $((1024 * 1024 * 1024)) ]]
 mkdir "$work/empty"
 genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" --inputpath "$work/images" --outputpath "$work/images" --tmppath "$work/genimage-tmp"
 chmod a-w "$work/images/sdcard.img" "$work/images/rootfs.ext4" "$work/images/boot.vfat"
@@ -241,11 +245,19 @@ bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" "$payload" "$work
 sudo rm -rf "$payload/src/uboot"
 mkdir "$work/bundle"
 ln "$work/images/rootfs.ext4" "$work/bundle/rootfs.ext4"
-printf '[update]\ncompatible=%s\nversion=%s\n\n[bundle]\nformat=verity\n\n[image.rootfs]\nfilename=rootfs.ext4\n' \
-  "$compatible" "$version" > "$work/bundle/manifest.raucm"
+ln "$work/images/boot.vfat" "$work/bundle/boot.vfat"
+sed -e "s/@COMPATIBLE@/$compatible/g" -e "s/@VERSION@/$version/g" \
+  "$repo/image/manifest.raucm.in" > "$work/bundle/manifest.raucm"
 rauc bundle --mksquashfs-args="-comp zstd -Xcompression-level 15" \
   --cert="$signing_cert" --key="$signing_key" "$work/bundle" "$out/nabos-$target.raucb"
 rauc info --keyring="$signing_cert" "$out/nabos-$target.raucb"
+rauc info --keyring="$signing_cert" --output-format=json "$out/nabos-$target.raucb" |
+  jq -e --arg compatible "$compatible" --arg version "$version" \
+    --arg rootfs "$(sha256sum "$work/images/rootfs.ext4" | cut -d' ' -f1)" \
+    --arg boot "$(sha256sum "$work/images/boot.vfat" | cut -d' ' -f1)" \
+    '.compatible == $compatible and .version == $version and (.images | length) == 2 and
+     .images[0].rootfs.filename == "rootfs.ext4" and .images[0].rootfs.checksum == $rootfs and
+     .images[1].bootloader.filename == "boot.vfat" and .images[1].bootloader.checksum == $boot'
 echo "$(date -u +%FT%TZ) Compressing SD image"
 xz -T0 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
 cp "$repo/image/sources.lock.json" "$out/sources-$target.lock.json"
