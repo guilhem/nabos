@@ -176,7 +176,8 @@ Permissions (no root):
   `KERNEL=="mem", GROUP="kmem", MODE="0660"`, `AmbientCapabilities=CAP_SYS_RAWIO`,
   `CapabilityBoundingSet=CAP_SYS_RAWIO`. Access to `/dev/mem` is root-equivalent;
   the capability is confined to this one unit.
-- `dtparam=audio=off` (PWM1 on GPIO 13 is used by the LEDs).
+- Analog audio must stay disabled (PWM1 on GPIO 13 is used by the LEDs); it is
+  off in the vendor DTB, and config.txt dtparams do not reach Linux.
 
 Media: copy `assets/sounds/` into `/usr/share/nabos/sounds/` and
 `assets/choreographies/` into `/usr/share/nabos/choreographies/`.

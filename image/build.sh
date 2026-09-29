@@ -200,7 +200,9 @@ done
 cp "$work/components/uboot/u-boot.bin" "$work/boot/u-boot.bin"
 cp "$root/boot/firmware/LICENCE.broadcom" "$work/boot/"
 cp "$repo/image/boot/config.txt" "$work/boot/config.txt"
-cp "$root/boot/dtb/"*.dtb "$work/boot/"
+# Pristine DTBs for the firmware and U-Boot: the slot copy has Linux's profile
+# (image/nabos-overlay.dts), which disables a UART.
+cp "$root/boot/firmware/"*.dtb "$work/boot/"
 sed -e "s/@TARGET@/$target/g" -e "s/@KERNEL_IMAGE@/$kernel_image/g" -e "s/@DTB@/$dtb/g" \
   "$repo/image/boot/boot.env.in" > "$work/boot/boot.env"
 mkimage -A arm -T script -C none -n 'NabOS RAUC A/B' -d "$repo/image/boot/boot.cmd" "$work/boot/boot.scr"

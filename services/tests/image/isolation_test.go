@@ -15,6 +15,23 @@ import (
 func TestImageIsolation(t *testing.T) {
 	cp := must(exec.LookPath("cp"))
 	checksum := must(exec.LookPath("sha256sum"))
+	dtDir := t.TempDir()
+	pristine := filepath.Join(dtDir, "pristine.dtb")
+	profile := filepath.Join(dtDir, "nabos.dtbo")
+	slotDTB := filepath.Join(dtDir, "slot.dtb")
+	run(t, baseDTS+`/ {
+		soc {
+			uart0: serial@7e201000 { reg = <0x7e201000 0x1000>; };
+			fb: fb {};
+			vchiq: mailbox@7e00b840 { reg = <0x7e00b840 0x3c>; };
+			usb: usb@7e980000 { reg = <0x7e980000 0x10000>; };
+			watchdog@7e100000 { reg = <0x7e100000 0x28>; };
+		};
+		cam1_reg: cam1_regulator {};
+		cam_dummy_reg: cam_dummy_reg {};
+	};`, "dtc", "-@", "-I", "dts", "-O", "dtb", "-o", pristine, "-")
+	run(t, "", "dtc", "-@", "-I", "dts", "-O", "dtb", "-o", profile, filepath.Join(imageDir, "nabos-overlay.dts"))
+	run(t, "", "fdtoverlay", "-i", pristine, "-o", slotDTB, profile)
 	for _, scenario := range []struct {
 		name, target  string
 		fail, corrupt bool
@@ -35,15 +52,22 @@ func TestImageIsolation(t *testing.T) {
 			if scenario.target == "zero2-arm64" {
 				kernel = "6.12-rpi-v8"
 			}
+			kernelDTBs := filepath.Join(fixture, "usr/lib/modules", kernel, "dtb")
+			if scenario.target == "zero2-arm64" {
+				kernelDTBs = filepath.Join(kernelDTBs, "broadcom")
+			}
 			for _, dir := range []string{filepath.Join(checkout, "image"), filepath.Join(checkout, "services"),
 				filepath.Join(checkout, "build/iot"), filepath.Join(payload, "inputs/go-modcache"),
-				filepath.Join(fixture, "data"),
+				filepath.Join(fixture, "data"), filepath.Join(fixture, "boot/dtb"), kernelDTBs,
 				filepath.Join(payload, "src/uboot/scripts"), filepath.Join(fixture, "usr/bin"),
 				filepath.Join(fixture, "usr/lib/aarch64-linux-gnu"), filepath.Join(fixture, "usr/share/nabos/sounds"),
 				filepath.Join(fixture, "usr/share/nabos/choreographies"), filepath.Join(fixture, "lib/modules", kernel, "updates/nabos"), boot} {
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if err := os.Symlink("modules/"+kernel+"/dtb", filepath.Join(fixture, "usr/lib/linux-image-"+kernel)); err != nil {
+				t.Fatal(err)
 			}
 			copyFile(t, filepath.Join(imageDir, "test.sh"), filepath.Join(checkout, "image/test.sh"))
 			write(t, filepath.Join(checkout, "build/iot/keep"), "another build")
@@ -60,6 +84,10 @@ func TestImageIsolation(t *testing.T) {
 			}
 			write(t, filepath.Join(fixture, "lib/modules", kernel, "updates/nabos/ears.ko"), "shipped module")
 			write(t, filepath.Join(boot, "u-boot.bin"), "shipped U-Boot")
+			write(t, filepath.Join(boot, "boot.env"), "nabos_dtb="+dtbs[scenario.target]+"\n")
+			copyFile(t, pristine, filepath.Join(boot, dtbs[scenario.target]))
+			copyFile(t, pristine, filepath.Join(kernelDTBs, dtbs[scenario.target]))
+			copyFile(t, slotDTB, filepath.Join(fixture, "boot/dtb", dtbs[scenario.target]))
 			expected := filepath.Join(tmp, "expected-uboot.bin")
 			copyFile(t, filepath.Join(boot, "u-boot.bin"), expected)
 			original := filepath.Join(tmp, "production image.img")

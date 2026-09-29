@@ -1,0 +1,25 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * Linux-only hardware profile. image/prepare.sh merges it at build time into
+ * the slot's vendor DTB, which U-Boot loads for Linux; the firmware partition
+ * keeps the pristine DTB for U-Boot itself. Labels are those of the locked
+ * bcm2708-rpi-zero-w and bcm2710-rpi-zero-2-w DTBs.
+ *
+ * Left enabled on purpose: mini UART (console), SD card and SDIO Wi-Fi,
+ * firmware mailbox and vcio (LEDs), watchdog, RNG, thermal, OTP, ACT LED.
+ * Analog audio, PWM, SPI, I2C and video are already disabled in the vendor DTB.
+ */
+
+/* PL011 only carries the Bluetooth chip, which NabOS does not use. */
+&uart0 { status = "disabled"; };
+/* Headless; config.txt also sets max_framebuffers=0. */
+&fb { status = "disabled"; };
+/* VideoCore multimedia services (HDMI audio, camera, codecs). */
+&vchiq { status = "disabled"; };
+/* No USB device is used. */
+&usb { status = "disabled"; };
+/* No camera. */
+&cam1_reg { status = "disabled"; };
+&cam_dummy_reg { status = "disabled"; };
