@@ -52,7 +52,7 @@ func TestImageIsolation(t *testing.T) {
 			if scenario.target == "zero2-arm64" {
 				kernel = "6.12-rpi-v8"
 			}
-			kernelDTBs := filepath.Join(fixture, "usr/lib/linux-image-"+kernel)
+			kernelDTBs := filepath.Join(fixture, "usr/lib/modules", kernel, "dtb")
 			if scenario.target == "zero2-arm64" {
 				kernelDTBs = filepath.Join(kernelDTBs, "broadcom")
 			}
@@ -65,6 +65,9 @@ func TestImageIsolation(t *testing.T) {
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if err := os.Symlink("modules/"+kernel+"/dtb", filepath.Join(fixture, "usr/lib/linux-image-"+kernel)); err != nil {
+				t.Fatal(err)
 			}
 			copyFile(t, filepath.Join(imageDir, "test.sh"), filepath.Join(checkout, "image/test.sh"))
 			write(t, filepath.Join(checkout, "build/iot/keep"), "another build")

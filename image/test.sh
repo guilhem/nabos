@@ -213,7 +213,8 @@ done
 # Linux gets the hardware profile (image/nabos-overlay.dts); the firmware and
 # U-Boot keep the kernel package's pristine DTB, with its UART and watchdog.
 dtb=$(sed -n 's/^nabos_dtb=//p' "$boot/boot.env")
-pristine=$(find "$root/usr/lib/linux-image-$kernel" -name "$dtb" -print -quit)
+# Newer kernels make linux-image-$kernel a symlink into modules/$kernel/dtb.
+pristine=$(find -H "$root/usr/lib/linux-image-$kernel" -name "$dtb" -print -quit)
 cmp "$boot/$dtb" "$pristine"
 [[ $(fdtget -d okay "$boot/$dtb" /soc/watchdog@7e100000 status) == okay ]] ||
   { echo "Watchdog disabled in $dtb" >&2; exit 1; }
