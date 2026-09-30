@@ -67,25 +67,26 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 		}
 	})
 	run(t, "", "udevadm", "settle", "--timeout=10")
-	// Host udev can remove/recreate /dev loop nodes while probing the changed MBR.
-	// Private nodes address the same kernel partitions throughout this test.
-	slotDevices := make(map[string]string)
+	// Keep udev from probing partially updated filesystems/MBRs throughout the test.
+	// https://systemd.io/BLOCK_DEVICE_LOCKING/
+	diskDevice, err := os.OpenFile(loop, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = diskDevice.Close() })
+	if err := syscall.Flock(int(diskDevice.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
 	for _, n := range []string{"p2", "p3"} {
-		var stat syscall.Stat_t
-		if err := syscall.Stat(loop+n, &stat); err != nil {
+		if _, err := os.Stat(loop + n); err != nil {
 			t.Fatalf("loop partition %s: %v", loop+n, err)
 		}
-		node := filepath.Join(dir, "slot-"+n)
-		if err := syscall.Mknod(node, syscall.S_IFBLK|0o600, int(stat.Rdev)); err != nil {
-			t.Fatal(err)
-		}
-		slotDevices[n] = node
 	}
 
 	config := read(t, filepath.Join(rootfsDir, "etc/rauc/system.conf"))
 	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-rauc-integration")
-	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", slotDevices["p2"])
-	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", slotDevices["p3"])
+	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", loop+"p2")
+	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", loop+"p3")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0", loop)
 	config = strings.ReplaceAll(config, "/run/rauc", filepath.Join(dir, "mount"))
 	config = strings.ReplaceAll(config, "/data/rauc", filepath.Join(dir, "data"))
