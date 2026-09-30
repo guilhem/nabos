@@ -25,7 +25,7 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("NABOS_RAUC_INTEGRATION=1 requires root")
 	}
-	for _, name := range []string{"rauc", "genimage", "losetup", "dbus-daemon", "dbus-send", "mkenvimage", "fw_printenv", "fw_setenv", "mkfs.vfat", "mkfs.ext4", "mcopy", "openssl", "sync"} {
+	for _, name := range []string{"rauc", "genimage", "losetup", "udevadm", "dbus-daemon", "dbus-send", "mkenvimage", "fw_printenv", "fw_setenv", "mkfs.vfat", "mkfs.ext4", "mcopy", "openssl", "sync"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Fatal(err)
 		}
@@ -66,11 +66,17 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 			t.Errorf("detach %s: %s", loop, r.stderr)
 		}
 	})
-	for _, n := range []string{"p2", "p3"} {
-		if _, err := os.Stat(loop + n); err != nil {
-			t.Fatalf("loop partition %s: %v", loop+n, err)
+	settlePartitions := func() {
+		t.Helper()
+		// Udev may remove/recreate loop nodes after the MBR changes.
+		run(t, "", "udevadm", "settle", "--timeout=10")
+		for _, n := range []string{"p2", "p3"} {
+			if _, err := os.Stat(loop + n); err != nil {
+				t.Fatalf("settled loop partition %s: %v", loop+n, err)
+			}
 		}
 	}
+	settlePartitions()
 
 	config := read(t, filepath.Join(rootfsDir, "etc/rauc/system.conf"))
 	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-rauc-integration")
@@ -149,6 +155,9 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 		r := execute(t, "", []string{busEnv, pathEnv}, "rauc", "--conf="+conf, "install", bundle)
 		if (r.code == 0) != wantSuccess {
 			t.Fatalf("rauc install %s: exit %d\n%s%s\nservice:\n%s", bundle, r.code, r.stdout, r.stderr, read(t, serviceLog))
+		}
+		if wantSuccess {
+			settlePartitions()
 		}
 		return r
 	}
