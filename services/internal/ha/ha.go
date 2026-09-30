@@ -151,11 +151,15 @@ func (b *Bridge) Start(cfg config.HomeAssistant) error {
 func (b *Bridge) announce(ctx context.Context, cm *autopaho.ConnectionManager, prefix string) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// Consumers can send commands as soon as a discovery entity is published.
+	if _, err := cm.Subscribe(ctx, &paho.Subscribe{Subscriptions: []paho.SubscribeOptions{{Topic: b.topic("+/set"), QoS: 1}, {Topic: b.topic("+/press"), QoS: 1}}}); err != nil {
+		slog.Warn("Home Assistant command subscriptions", "err", err)
+		return
+	}
 	for topic, cfg := range b.Discovery(prefix) {
 		raw, _ := json.Marshal(cfg)
 		cm.Publish(ctx, &paho.Publish{Topic: topic, QoS: 1, Retain: true, Payload: raw})
 	}
-	cm.Subscribe(ctx, &paho.Subscribe{Subscriptions: []paho.SubscribeOptions{{Topic: b.topic("+/set"), QoS: 1}, {Topic: b.topic("+/press"), QoS: 1}}})
 	cm.Publish(ctx, &paho.Publish{Topic: b.topic("availability"), QoS: 1, Retain: true, Payload: []byte("online")})
 	b.mu.Lock()
 	raw, ok := b.last["state"]
