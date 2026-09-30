@@ -209,32 +209,35 @@ inode = lock.stat().st_ino
 # A live FD deliberately survives the first daemon and protects the same inode.
 guard = lock.open('r+')
 fcntl.flock(guard, fcntl.LOCK_SH)
-address, pid = subprocess.check_output(['dbus-daemon', '--session', '--fork',
-    '--address=unix:path=/run/device-core/bus', '--print-address', '--print-pid'], text=True).splitlines()
 service = 'io.github.guilhem.DeviceCore1'
 root_path = '/io/github/guilhem/DeviceCore1'
-env = dict(os.environ, HOME='/var/lib/nabos', XDG_RUNTIME_DIR='/run/user/1000',
-    DEVICE_CORE_BUS_ADDRESS=address, DEVICE_CORE_DATA_DIR='/data/device-core',
+as_nabos = ['setpriv', '--reuid=1000', '--regid=1000', '--clear-groups',
+            '--no-new-privs', '--bounding-set=-all']
+env = dict(os.environ, HOME='/var/lib/nabos', XDG_RUNTIME_DIR=str(runtime),
+    DEVICE_CORE_DATA_DIR='/data/device-core',
     DEVICE_CORE_NETWORK_GUARD=str(lock), DEVICE_CORE_UPDATE_REPO='', DEVICE_CORE_UPDATE_ASSET='')
 env.pop('DEVICE_CORE_HTTP_ADDR', None)
+# A session bus admits its owner; exercise all peers as the service user.
+address, pid = subprocess.check_output(as_nabos + ['dbus-daemon', '--session', '--fork',
+    '--address=unix:path=/run/device-core/bus', '--print-address', '--print-pid'], env=env, text=True).splitlines()
+env['DEVICE_CORE_BUS_ADDRESS'] = address
 process = None
 try:
     for boot in range(2):
         with (runtime / 'simulation.log').open('w') as log:
-            process = subprocess.Popen(['setpriv', '--reuid=1000', '--regid=1000',
-                '--clear-groups', '--no-new-privs', '--bounding-set=-all',
+            process = subprocess.Popen(as_nabos + [
                 '/usr/bin/device-core', '--simulate'], cwd=runtime, env=env,
                 stdout=log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + 60
             while True:
-                ready = subprocess.run(['busctl', '--address=' + address, '--timeout=2',
+                ready = subprocess.run(as_nabos + ['busctl', '--address=' + address, '--timeout=2',
                     'get-property', service, root_path, service + '.Manager', 'Ready'],
-                    capture_output=True, text=True)
+                    env=env, capture_output=True, text=True)
                 if ready.returncode == 0 and ready.stdout.strip() == 'b true':
                     break
                 assert process.poll() is None and time.monotonic() < deadline, (runtime / 'simulation.log').read_text()
                 time.sleep(0.1)
-            call = ['busctl', '--address=' + address, '--timeout=5', '--json=short',
+            call = as_nabos + ['busctl', '--address=' + address, '--timeout=5', '--json=short',
                     'call', service, root_path + '/Config', service + '.Config']
             revision = json.loads(subprocess.check_output(call + ['Read'], text=True))['data'][0]
             if boot == 0:
@@ -250,8 +253,7 @@ try:
             process.terminate()
             process.wait(timeout=10)
             process = None
-    subprocess.run(['setpriv', '--reuid=1000', '--regid=1000', '--clear-groups',
-        '--no-new-privs', '--bounding-set=-all', '/bin/sh', '-ec',
+    subprocess.run(as_nabos + ['/bin/sh', '-ec',
         'touch "$HOME/lva/.image-write-check"; rm "$HOME/lva/.image-write-check"'], env=env, check=True)
 finally:
     if process is not None:
