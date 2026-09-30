@@ -106,6 +106,10 @@ struct FakeState {
     scan_count: usize,
     reject_scan: bool,
     next_profile: usize,
+    delayed_rollback: bool,
+    final_snapshot_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    save_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    destroy_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
 }
 impl FakeState {
     fn new(outcome: Outcome) -> Self {
@@ -154,15 +158,23 @@ impl FakeState {
             scan_count: 0,
             reject_scan: false,
             next_profile: 3,
+            delayed_rollback: false,
+            final_snapshot_gate: None,
+            save_gate: None,
+            destroy_gate: None,
         }
     }
     fn rollback(&mut self) {
         if let Some(cp) = self.checkpoint.take() {
             self.profiles.retain(|p, _| cp.profiles.contains(p));
             self.active = cp.active;
-            self.state = cp.state;
+            self.state = if self.delayed_rollback { 40 } else { cp.state };
             self.mode = cp.mode;
-            self.address = cp.address;
+            self.address = if self.delayed_rollback {
+                String::new()
+            } else {
+                cp.address
+            };
             self.reason = 0;
         }
     }
@@ -215,8 +227,13 @@ impl Manager {
         self.0.lock().unwrap().rollback();
         HashMap::from([(DEV.into(), 0)])
     }
-    fn checkpoint_destroy(&self, checkpoint: OwnedObjectPath) {
+    async fn checkpoint_destroy(&self, checkpoint: OwnedObjectPath) {
         assert_eq!(checkpoint.as_str(), CP);
+        let gate = self.0.lock().unwrap().destroy_gate.take();
+        if let Some((entered, resume)) = gate {
+            entered.send(()).unwrap();
+            resume.await.unwrap();
+        }
         self.0.lock().unwrap().checkpoint = None;
     }
     async fn activate_connection(
@@ -387,7 +404,7 @@ impl ProfileApi {
             s.address.clear();
         }
     }
-    fn update2(&self, settings: Settings, flags: u32, args: Dict) -> Dict {
+    async fn update2(&self, settings: Settings, flags: u32, args: Dict) -> Dict {
         assert_eq!(flags, 1);
         assert!(args.is_empty());
         assert_eq!(
@@ -398,6 +415,11 @@ impl ProfileApi {
                 .and_then(|v| bool::try_from(v).ok()),
             Some(true)
         );
+        let gate = self.state.lock().unwrap().save_gate.take();
+        if let Some((entered, resume)) = gate {
+            entered.send(()).unwrap();
+            resume.await.unwrap();
+        }
         let mut s = self.state.lock().unwrap();
         let p = s
             .profiles
@@ -494,7 +516,19 @@ struct IpApi(Fake);
 #[zbus::interface(name = "org.freedesktop.NetworkManager.IP4Config")]
 impl IpApi {
     #[zbus(property)]
-    fn address_data(&self) -> Vec<Dict> {
+    async fn address_data(&self) -> Vec<Dict> {
+        let gate = {
+            let mut s = self.0.lock().unwrap();
+            if s.saved_count > 0 {
+                s.final_snapshot_gate.take()
+            } else {
+                None
+            }
+        };
+        if let Some((entered, resume)) = gate {
+            entered.send(()).unwrap();
+            resume.await.unwrap();
+        }
         let s = self.0.lock().unwrap();
         if s.address.is_empty() {
             vec![]
@@ -707,6 +741,156 @@ async fn private_bus_wifi_failures_preserve_old_profiles_and_restore_hotspot() {
         assert_eq!(s.profiles.len(), 2);
         assert!(s.profiles.contains_key(OLD));
         assert_eq!(s.saved_count, 0);
+    }
+}
+
+#[tokio::test]
+async fn private_bus_delayed_rollback_preserves_client_grace_and_bounds_hotspot_recovery() {
+    for (prior_hotspot, becomes_ready) in [(false, true), (false, false), (true, false)] {
+        let bus = PrivateBus::start();
+        let state = Arc::new(Mutex::new(FakeState::new(Outcome::Auth)));
+        let old_settings = {
+            let mut s = state.lock().unwrap();
+            s.delayed_rollback = true;
+            if !prior_hotspot {
+                s.active = OLD.into();
+                s.mode = 2;
+                s.address = "192.168.5.7".into();
+            }
+            copy_settings(&s.profiles.get(OLD).unwrap().settings)
+        };
+        let _nm = fake_nm(&bus, state.clone()).await;
+        let (mut core, _) = controller(&bus).await;
+        core.reconcile_inner().await.unwrap();
+        assert_eq!(
+            core.attempt(&request(""), &AtomicBool::new(false)).await,
+            Err("wifi-authentication-failed")
+        );
+        assert_eq!(state.lock().unwrap().profiles.len(), 2);
+        assert!(
+            state.lock().unwrap().profiles.get(OLD).unwrap().settings == old_settings,
+            "rollback changed the saved profile"
+        );
+        assert!(state.lock().unwrap().checkpoint.is_none());
+        if prior_hotspot {
+            assert_eq!(state.lock().unwrap().active, RECOVERY);
+            assert_eq!(state.lock().unwrap().activation_count, 2);
+            assert_eq!(core.shared.lock().unwrap().status.mode, "hotspot");
+            continue;
+        }
+        assert_eq!(state.lock().unwrap().active, OLD);
+        assert_eq!(state.lock().unwrap().state, 40);
+        assert_eq!(core.shared.lock().unwrap().status.mode, "reconnecting");
+        let deadline = core.grace.unwrap();
+        assert!(deadline >= Instant::now() + Duration::from_secs(85));
+        assert!(deadline <= Instant::now() + GRACE);
+        core.reconcile_inner().await.unwrap();
+        assert_eq!(core.grace, Some(deadline));
+        assert_eq!(state.lock().unwrap().activation_count, 1);
+        // NM completes the old-profile activation first; DHCP is still pending.
+        state.lock().unwrap().state = 100;
+        core.reconcile_inner().await.unwrap();
+        assert_eq!(core.grace, Some(deadline));
+        assert_eq!(state.lock().unwrap().active, OLD);
+        assert_eq!(state.lock().unwrap().activation_count, 1);
+        if becomes_ready {
+            state.lock().unwrap().address = "192.168.5.7".into();
+            core.reconcile_inner().await.unwrap();
+            assert_eq!(core.shared.lock().unwrap().status.mode, "client");
+            assert_eq!(core.shared.lock().unwrap().status.profile_uuid, OLD_UUID);
+            assert!(core.grace.is_none());
+            assert_eq!(state.lock().unwrap().activation_count, 1);
+        } else {
+            // Exercise the existing deadline without a 90-second wall-clock wait.
+            core.grace = Some(Instant::now());
+            core.reconcile_inner().await.unwrap();
+            assert_eq!(state.lock().unwrap().active, RECOVERY);
+            assert_eq!(state.lock().unwrap().activation_count, 2);
+            core.reconcile_inner().await.unwrap();
+            assert_eq!(core.shared.lock().unwrap().status.mode, "hotspot");
+        }
+        assert_eq!(state.lock().unwrap().profiles.len(), 2);
+        assert!(
+            state.lock().unwrap().profiles.get(OLD).unwrap().settings == old_settings,
+            "recovery changed the saved profile"
+        );
+    }
+}
+
+#[tokio::test]
+async fn private_bus_cancel_has_atomic_commit_boundary_and_keeps_attempt_active() {
+    for stage in ["save", "snapshot", "destroy"] {
+        let bus = PrivateBus::start();
+        let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
+        let (entered, waiting) = oneshot::channel();
+        let (resume, paused) = oneshot::channel();
+        {
+            let mut s = state.lock().unwrap();
+            let gate = Some((entered, paused));
+            match stage {
+                "save" => s.save_gate = gate,
+                "snapshot" => s.final_snapshot_gate = gate,
+                "destroy" => s.destroy_gate = gate,
+                _ => unreachable!(),
+            }
+        }
+        let _nm = fake_nm(&bus, state.clone()).await;
+        let (mut core, api) = controller(&bus).await;
+        core.reconcile_inner().await.unwrap();
+        let client = bus.connect().await;
+        let proxy = Proxy::new(&client, SERVICE, PATH, INTERFACE).await.unwrap();
+        let core_task = tokio::spawn(core.run());
+        let id: u64 = proxy
+            .call(
+                "Connect",
+                &(vec![254u8, 0, 42], "wpa-psk", "newpassword", "", ""),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(api.shared.lock().unwrap().active.is_some());
+        assert!(state.lock().unwrap().checkpoint.is_some());
+        let cancel = proxy.call::<_, _, ()>("Cancel", &(id,)).await;
+        if stage == "destroy" {
+            assert!(cancel
+                .unwrap_err()
+                .to_string()
+                .contains("attempt-committing"));
+        } else {
+            cancel.unwrap();
+        }
+        let busy = proxy
+            .call::<_, _, u64>("Connect", &(vec![1u8], "open", "", "", ""))
+            .await
+            .unwrap_err();
+        assert!(busy.to_string().contains("network-busy"));
+        assert!(api.shared.lock().unwrap().active.is_some());
+        resume.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while api.shared.lock().unwrap().active.is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if stage == "destroy" {
+            assert_eq!(api.shared.lock().unwrap().status.phase, "succeeded");
+            assert_eq!(api.shared.lock().unwrap().status.mode, "client");
+            assert_eq!(state.lock().unwrap().profiles.len(), 3);
+        } else {
+            assert_eq!(api.shared.lock().unwrap().status.phase, "cancelled");
+            assert_eq!(api.shared.lock().unwrap().status.mode, "hotspot");
+            assert_eq!(state.lock().unwrap().active, RECOVERY);
+            assert_eq!(state.lock().unwrap().profiles.len(), 2);
+        }
+        assert!(state.lock().unwrap().profiles.contains_key(OLD));
+        assert_eq!(state.lock().unwrap().saved_count, 1);
+        assert!(state.lock().unwrap().checkpoint.is_none());
+        assert!(proxy.call::<_, _, ()>("Cancel", &(id,)).await.is_err());
+        core_task.abort();
     }
 }
 

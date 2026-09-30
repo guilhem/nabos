@@ -83,6 +83,7 @@ struct Shared {
     profiles: Vec<Profile>,
     reservation: Option<Reservation>,
     active: Option<(u64, Arc<AtomicBool>)>,
+    committing: bool,
     next_attempt: u64,
 }
 
@@ -94,6 +95,7 @@ impl Default for Shared {
             profiles: Vec::new(),
             reservation: None,
             active: None,
+            committing: false,
             next_attempt: 0,
         }
     }
@@ -161,6 +163,7 @@ impl Shared {
             r.authorized_until = None;
         }
         self.active = None;
+        self.committing = false;
         match result {
             Ok(()) => {
                 self.status.phase = "succeeded";
@@ -373,6 +376,7 @@ impl Api {
             }
         }
         s.active = Some((id, cancelled));
+        s.committing = false;
         s.status.attempt_id = id;
         s.status.phase = "connecting";
         s.status.error = "";
@@ -383,6 +387,9 @@ impl Api {
         let s = self.shared.lock().unwrap();
         if let Some((id, cancelled)) = &s.active {
             if *id == attempt_id {
+                if s.committing {
+                    return Err(fdo::Error::Failed("attempt-committing".into()));
+                }
                 cancelled.store(true, Ordering::SeqCst);
                 return Ok(());
             }
@@ -794,6 +801,15 @@ impl Controller {
                     if current.status.mode != "client" || current.status.profile_uuid != uuid {
                         return Err("connection-lost");
                     }
+                    {
+                        // Cancel uses the same mutex: every accepted cancellation
+                        // precedes commit, including one during the last snapshot.
+                        let mut s = self.shared.lock().unwrap();
+                        if cancelled.load(Ordering::SeqCst) {
+                            return Err("cancelled");
+                        }
+                        s.committing = true;
+                    }
                     nm.destroy(&checkpoint).await?;
                     self.shared.lock().unwrap().observe(current.status);
                     self.grace = None;
@@ -816,7 +832,12 @@ impl Controller {
             if let Some(path) = candidate {
                 let _ = nm.delete(&path).await;
             }
-            if restored && nm.checkpoints().await.is_ok_and(|c| c.is_empty()) {
+            // Client rollback starts asynchronous reactivation/DHCP. Let the
+            // existing grace below finish that recovery before opening an AP.
+            if restored
+                && before.status.mode == "hotspot"
+                && nm.checkpoints().await.is_ok_and(|c| c.is_empty())
+            {
                 if let Ok(snapshot) = nm.snapshot().await {
                     if snapshot.status.mode != "client" && snapshot.status.mode != "hotspot" {
                         let _ = nm.hotspot().await;

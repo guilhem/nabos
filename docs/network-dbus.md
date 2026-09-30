@@ -27,7 +27,9 @@ Methods (D-Bus signatures):
   An existing profile is selected by UUID; otherwise SSID is 1–32 bytes.
   An empty token is for authenticated administration. A nonempty token requires
   the hotspot and physical authorization, consumed once on acceptance.
-- `Cancel(attempt_id: t)`: cancel only the matching active attempt.
+- `Cancel(attempt_id: t)`: cancel only the matching active attempt. Accepted
+  cancellations roll back; after the final commit boundary, the method rejects
+  cancellation with `attempt-committing`.
 - `Forget(uuid: s)`: delete a saved client profile, never the recovery hotspot.
 
 Go binds the reservation token to an HttpOnly browser cookie, never accepts it
@@ -35,5 +37,18 @@ from an arbitrary form field, and admits pre-admin requests only when the actual
 socket local address is the active hotspot address `10.41.0.1`. Lease renewal
 does not renew physical presence. A radio transition is independent of HTTP
 request cancellation. With an administrator, all network routes require login.
+
+The physical press consumed by pre-admin Wi-Fi setup does not authorize creating
+the administrator. Go disarms and clears admin presence before submitting
+`Connect`, including when the D-Bus result is ambiguous. After reconnecting to the
+client network, open `/setup`, then press the button again. Go serializes this
+readiness check and arming with connection submission: only `mode=client` with a
+usable address and `phase != connecting` can arm setup. Unavailable or nonready
+status disarms it. Reloads and form errors do not rearm or clear fresh proof.
+The optional MQTT `down.edge_monotonic_ns` decimal string carries the original
+GPIO `CLOCK_MONOTONIC` edge (see [protocol-v1.md](protocol-v1.md)). Admin proof must
+be newer than the arming cutoff, not in the future, and less than five minutes
+old; missing metadata, other gestures, delayed old edges and duplicates cannot
+renew proof. Service restarts require opening setup and a new press.
 
 Simulation never connects to the system bus or claims this production name.

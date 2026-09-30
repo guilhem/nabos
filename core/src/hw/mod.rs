@@ -21,7 +21,7 @@ pub type Tx = UnboundedSender<Input>;
 
 #[derive(Debug)]
 pub enum HwEvent {
-    Button(&'static str),
+    Button(&'static str, Option<u64>),
     /// Manual ear movement: 0 left, 1 right.
     EarMoved(usize),
     Tag(TagEvent),

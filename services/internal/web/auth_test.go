@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,6 +20,14 @@ func newAuth(t *testing.T) *Auth {
 		t.Fatal(err)
 	}
 	return NewAuth(st)
+}
+
+func freshPresence(t *testing.T, a *Auth) {
+	t.Helper()
+	if !a.ArmPresence() {
+		t.Fatal("setup did not arm")
+	}
+	a.MarkPresence(a.MonoNow())
 }
 
 func do(h http.Handler, method, path, cookie, origin string) *httptest.ResponseRecorder {
@@ -47,7 +56,7 @@ func TestAuthFlow(t *testing.T) {
 	if _, err := a.Setup("carotte-42"); err != ErrNoPresence {
 		t.Fatalf("setup without pressing the button: %v", err)
 	}
-	a.MarkPresence()
+	freshPresence(t, a)
 	if _, err := a.Setup(strings.Repeat("x", maxPassword+1)); err == nil {
 		t.Fatal("oversized password accepted")
 	}
@@ -82,7 +91,7 @@ func TestLoginLockout(t *testing.T) {
 	a := newAuth(t)
 	now := time.Unix(1_800_000_000, 0)
 	a.Now = func() time.Time { return now }
-	a.MarkPresence()
+	freshPresence(t, a)
 	a.Setup("carotte-42")
 	// Concurrent wrong attempts cannot slip past the lockout.
 	var wg sync.WaitGroup
@@ -119,7 +128,7 @@ func TestSessionsAreBoundedAndResetWorks(t *testing.T) {
 	a := newAuth(t)
 	now := time.Unix(1_800_000_000, 0)
 	a.Now = func() time.Time { return now }
-	a.MarkPresence()
+	freshPresence(t, a)
 	first, _ := a.Setup("carotte-42")
 	for i := 0; i < 3*maxSessions; i++ {
 		now = now.Add(time.Second)
@@ -171,5 +180,124 @@ func TestSameOriginIncludesScheme(t *testing.T) {
 		if sameOrigin(r) != tc.want {
 			t.Errorf("sameOrigin(%q, %q)", tc.target, tc.origin)
 		}
+	}
+}
+
+func TestPresenceUsesArmedEdgeTime(t *testing.T) {
+	a := newAuth(t)
+	now := uint64(10 * time.Minute)
+	a.MonoNow = func() uint64 { return now }
+	a.MarkPresence(now)
+	if a.Present() {
+		t.Fatal("startup presence must be disarmed")
+	}
+	if !a.ArmPresence() {
+		t.Fatal("arm")
+	}
+	cutoff := now
+	for _, edge := range []uint64{0, cutoff - 1, cutoff, cutoff + 1, ^uint64(0)} {
+		a.MarkPresence(edge)
+		if a.Present() {
+			t.Fatalf("accepted pre-arm or future edge %d", edge)
+		}
+	}
+	now += uint64(time.Second)
+	edge := now
+	a.MarkPresence(edge)
+	if !a.Present() {
+		t.Fatal("fresh edge refused")
+	}
+	now += uint64(time.Minute)
+	if !a.ArmPresence() || a.cutoff != cutoff || a.presence != edge || !a.Present() {
+		t.Fatal("reload cleared proof or moved cutoff")
+	}
+	a.MarkPresence(edge - 1)
+	if a.presence != edge {
+		t.Fatal("out-of-order edge replaced proof")
+	}
+	now = edge + uint64(presenceTTL)
+	a.MarkPresence(edge)
+	if a.Present() || a.presence != edge {
+		t.Fatal("duplicate extended proof past the edge's expiry")
+	}
+	a.MarkPresence(now)
+	if !a.Present() {
+		t.Fatal("new press refused")
+	}
+	a.DisarmPresence()
+	a.MarkPresence(now)
+	if a.Present() || a.presence != 0 {
+		t.Fatal("disarm did not clear and reject proof")
+	}
+	a.ArmPresence()
+	a.MarkPresence(edge)
+	if a.Present() {
+		t.Fatal("rearm admitted old proof")
+	}
+	a.DisarmPresence()
+	now = 0
+	if a.ArmPresence() || a.Present() {
+		t.Fatal("clock failure armed presence")
+	}
+}
+
+func TestSetupRechecksPresenceAtCommit(t *testing.T) {
+	for _, invalidate := range []string{"disarm", "expire"} {
+		t.Run(invalidate, func(t *testing.T) {
+			a := newAuth(t)
+			var now atomic.Uint64
+			now.Store(uint64(10 * time.Minute))
+			a.MonoNow = now.Load
+			a.ArmPresence()
+			now.Add(uint64(time.Second))
+			a.MarkPresence(now.Load())
+
+			// Hold the real store lock: hashing and an in-flight config wait must
+			// not prevent invalidation, or let its old proof commit afterwards.
+			entered, release, stored := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			go func() {
+				a.store.Update(func(*config.Settings) error {
+					close(entered)
+					<-release
+					return errors.New("no change")
+				})
+				close(stored)
+			}()
+			<-entered
+			checked := make(chan struct{})
+			var checks atomic.Int32
+			a.MonoNow = func() uint64 {
+				n := now.Load()
+				if checks.Add(1) == 1 {
+					close(checked)
+				}
+				return n
+			}
+			done := make(chan error, 1)
+			go func() { _, err := a.Setup("carotte-42"); done <- err }()
+			<-checked
+			invalidated := make(chan struct{})
+			go func() {
+				if invalidate == "disarm" {
+					a.DisarmPresence()
+				} else {
+					now.Add(uint64(presenceTTL))
+				}
+				close(invalidated)
+			}()
+			select {
+			case <-invalidated:
+			case <-time.After(time.Second):
+				close(release)
+				<-stored
+				<-done
+				t.Fatal("pending config commit blocked presence invalidation")
+			}
+			close(release)
+			<-stored
+			if err := <-done; err != ErrNoPresence || a.Configured() || len(a.sessions) != 0 {
+				t.Fatalf("stale presence committed: error=%v configured=%v", err, a.Configured())
+			}
+		})
 	}
 }

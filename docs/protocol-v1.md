@@ -119,6 +119,7 @@ Ear status: `ok`, `broken`, `missing`.
 
 ```json
 {"v":1,"event":"click","time":1790000000.12}
+{"v":1,"event":"down","edge_monotonic_ns":"9007199254740993","time":1790000000.12}
 {"v":1,"left":3,"right":null,"time":1790000000.5}
 {"v":1,"ear":"left","time":1790000000.1}
 {"v":1,"event":"detected","tech":"st25tb","uid":"d0:02:18:00:00:00:00:01","support":"formatted",
@@ -129,6 +130,12 @@ Button events: `down`, `up`, `click`, `double_click`, `triple_click`, `hold` (2 
 `click_and_hold` (click, then 2 s press), `double_click_and_hold` (two clicks, then
 the third press held 10 s, measured by the core). A third press released within
 150 ms is a `triple_click`; released later but before 10 s it emits nothing.
+Physical `down` events carry optional `edge_monotonic_ns`: the GPIO kernel
+`CLOCK_MONOTONIC` timestamp in nanoseconds as a decimal string, preserving integer
+precision. `time` remains the wall-clock publication time. Events without edge
+metadata retain their normal gesture behaviour but cannot prove admin presence;
+publication or receipt time is never a substitute. Deliberate simulated downs
+must supply a timestamp from the same Linux monotonic clock.
 `ear_moved` is published as soon as an ear is turned by hand (`ear`: `left` or
 `right`); the `ears` event with detected positions still follows after 0.5 s
 of stillness. RFID `support`: `formatted`, `foreign-data`, `locked`, `empty`,
@@ -297,8 +304,17 @@ explicit manual recovery. Catalogue refreshes never replace installation state.
 
 ### First password
 
-The first admin password can only be set within 5 minutes after a press on the
-rabbit's head button (physical presence). Two clicks then a third press held 10 s
+The first admin password requires opening `/setup` after the client network is
+ready and its phase is no longer `connecting`, then pressing the rabbit's head
+button again. Setup starts disarmed, including after a service restart. Submitting
+pre-admin Wi-Fi `Connect` disarms and clears presence before the D-Bus call, even
+if its result is ambiguous. Unavailable, nonready or connecting network status
+also disarms setup. The first ready `/setup` request arms it with a monotonic
+cutoff; reloads and form errors preserve this cutoff and any fresh proof.
+Only a `down` with `cutoff < edge_monotonic_ns <= CLOCK_MONOTONIC now` and an age
+strictly less than 5 minutes can prove presence. Expiry uses the original edge,
+so delayed delivery and duplicate events cannot renew it. Setup checks presence
+again atomically at the settings commit boundary. Two clicks then a third press held 10 s
 (`double_click_and_hold`) erase a forgotten password. Sessions are in memory
 (32 at most, 7 days).
 

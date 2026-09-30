@@ -288,6 +288,8 @@ func (a *App) wifiConnect(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "appuyez sur le bouton du lapin pour autoriser cette tentative pendant cinq minutes", http.StatusForbidden)
 			return
 		}
+		// This press belongs to Wi-Fi, even if Connect's reply is lost.
+		a.auth.DisarmPresence()
 	} else if !a.auth.Valid(r) {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -348,16 +350,24 @@ func (a *App) wifiForget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) setupNetwork(w http.ResponseWriter, r *http.Request) bool {
+	a.wifiMu.Lock()
+	defer a.wifiMu.Unlock()
 	if a.auth.Configured() {
 		return true
 	}
 	s, err := network.ReadStatus(r.Context())
 	if err != nil {
+		a.auth.DisarmPresence()
 		http.Error(w, network.ErrUnavailable.Error(), http.StatusServiceUnavailable)
 		return false
 	}
-	if !s.ClientReady() {
+	if !s.ClientReady() || s.Phase == "connecting" {
+		a.auth.DisarmPresence()
 		http.Redirect(w, r, "/wifi", http.StatusSeeOther)
+		return false
+	}
+	if !a.auth.ArmPresence() {
+		http.Error(w, network.ErrUnavailable.Error(), http.StatusServiceUnavailable)
 		return false
 	}
 	return true

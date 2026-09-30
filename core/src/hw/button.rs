@@ -144,7 +144,10 @@ pub fn spawn(chip: &str, line: u32, tx: Tx, presence: Option<crate::network::Pre
                             }
                         }
                         for ev in fsm.edge(down, Duration::from_nanos(e.timestamp_ns)) {
-                            send(&tx, HwEvent::Button(ev));
+                            send(
+                                &tx,
+                                HwEvent::Button(ev, (ev == "down").then_some(e.timestamp_ns)),
+                            );
                         }
                     }
                     Err(e) => error!("button read: {e}"),
@@ -153,7 +156,7 @@ pub fn spawn(chip: &str, line: u32, tx: Tx, presence: Option<crate::network::Pre
                 // edge is always read before a timer that it precedes.
                 Ok(false) => {
                     if let Some(ev) = fsm.timeout(start + wait) {
-                        send(&tx, HwEvent::Button(ev));
+                        send(&tx, HwEvent::Button(ev, None));
                     }
                 }
                 Err(e) => {

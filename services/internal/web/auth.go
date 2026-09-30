@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/config"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -62,8 +63,9 @@ func checkPassword(a config.Admin, pw string) bool {
 }
 
 type Auth struct {
-	store *config.Store
-	Now   func() time.Time
+	store   *config.Store
+	Now     func() time.Time
+	MonoNow func() uint64
 
 	// login serialises password checks: the global lockout cannot be
 	// bypassed by concurrent attempts, and hashing is rate limited.
@@ -73,26 +75,65 @@ type Auth struct {
 	sessions map[string]time.Time
 	failures int
 	locked   time.Time
-	presence time.Time
+	armed    bool
+	cutoff   uint64
+	presence uint64
 }
 
 func NewAuth(store *config.Store) *Auth {
-	return &Auth{store: store, Now: time.Now, sessions: map[string]time.Time{}}
+	return &Auth{store: store, Now: time.Now, MonoNow: monotonicNow, sessions: map[string]time.Time{}}
 }
 
 func (a *Auth) Configured() bool { return a.store.Get().Admin.Hash != "" }
 
-// MarkPresence records a physical button press on the rabbit.
-func (a *Auth) MarkPresence() {
+func monotonicNow() uint64 {
+	var ts unix.Timespec
+	if unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts) != nil || ts.Nano() <= 0 {
+		return 0
+	}
+	return uint64(ts.Nano())
+}
+
+// ArmPresence opens setup once. Reloads must preserve the cutoff and proof.
+func (a *Auth) ArmPresence() bool {
 	a.mu.Lock()
-	a.presence = a.Now()
+	defer a.mu.Unlock()
+	if !a.armed {
+		now := a.MonoNow()
+		if now == 0 {
+			return false
+		}
+		a.armed, a.cutoff, a.presence = true, now, 0
+	}
+	return true
+}
+
+func (a *Auth) DisarmPresence() {
+	a.mu.Lock()
+	a.armed, a.cutoff, a.presence = false, 0, 0
 	a.mu.Unlock()
+}
+
+// MarkPresence uses the GPIO CLOCK_MONOTONIC edge, never delivery time.
+func (a *Auth) MarkPresence(edge uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.MonoNow()
+	if a.armed && a.cutoff < edge && edge <= now && now-edge < uint64(presenceTTL) && edge > a.presence {
+		a.presence = edge
+	}
+}
+
+// present is called with mu held, including at the config commit boundary.
+func (a *Auth) present() bool {
+	now := a.MonoNow()
+	return a.armed && a.cutoff < a.presence && a.presence <= now && now-a.presence < uint64(presenceTTL)
 }
 
 func (a *Auth) Present() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return !a.presence.IsZero() && a.Now().Sub(a.presence) < presenceTTL
+	return a.present()
 }
 
 // Reset forgets the password (physical recovery: click then hold the button).
@@ -100,6 +141,7 @@ func (a *Auth) Reset() error {
 	_, err := a.store.Update(func(s *config.Settings) error { s.Admin = config.Admin{}; return nil })
 	a.mu.Lock()
 	a.sessions = map[string]time.Time{}
+	a.armed, a.cutoff, a.presence = false, 0, 0
 	a.mu.Unlock()
 	return err
 }
@@ -136,13 +178,24 @@ func (a *Auth) Setup(pw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Acquire Store before Auth, so invalidation can proceed while Update waits.
+	// Keep Auth locked through persistence, then release it before newSession.
+	locked := false
 	_, err = a.store.Update(func(s *config.Settings) error {
+		a.mu.Lock()
+		locked = true
+		if !a.present() {
+			return ErrNoPresence
+		}
 		if s.Admin.Hash != "" {
 			return ErrConfigured
 		}
 		s.Admin = admin
 		return nil
 	})
+	if locked {
+		a.mu.Unlock()
+	}
 	if err != nil {
 		return "", err
 	}

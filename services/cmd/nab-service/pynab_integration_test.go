@@ -308,10 +308,7 @@ func TestPynabMQTTIntegration(t *testing.T) {
 	})
 	a.publishSettings(ctx)
 	go a.servicesLoop(ctx)
-	a.auth.MarkPresence()
-	if _, err := a.auth.Setup("carotte-42"); err != nil {
-		t.Fatal(err)
-	}
+	serviceSession(t, a)
 	adminHash := a.store.Get().Admin.Hash
 
 	t.Run("book ear navigation, targeted click cancel, exclusive chime", func(t *testing.T) {

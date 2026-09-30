@@ -23,7 +23,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{define "setup"}}{{template "top" .}}
 <section><h2>Premier démarrage</h2>
 <p>Le Wi-Fi est connecté. Choisissez maintenant le mot de passe d'administration du lapin.</p>
-<p><b>Appuyez une fois sur le bouton de la tête du lapin</b>, puis validez dans les 5 minutes. Cela prouve que vous avez le lapin sous la main.</p>
+<p><b>Cette page étant ouverte, appuyez à nouveau sur le bouton de la tête du lapin</b>, puis validez dans les 5 minutes. L'appui utilisé pour connecter le Wi-Fi ne permet pas de créer le mot de passe.</p>
 <form method="post" action="/setup">
 <label>Mot de passe (8 à 128 caractères)<br><input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
 <label>Confirmation<br><input type="password" name="confirm" minlength="8" maxlength="128" required autocomplete="new-password"></label>
@@ -308,7 +308,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{define "wifi-transition"}}{{template "top" .}}
 <section id="wifi-transition" data-attempt="{{.Data.Attempt}}"><p role="status" id="wifi-status">Tentative {{.Data.Attempt}} lancée. Le lapin passe sur le réseau choisi. La coupure de cette page est attendue et ne l’annule pas.</p>
 <p>Rejoignez le même réseau que le lapin, puis ouvrez <a href="http://nabaztag.local/">nabaztag.local</a> ou son adresse indiquée par votre routeur. Le réseau local suffit ; Internet n’est pas nécessaire.</p>
-{{if .Data.Setup}}<p>Vous pourrez alors <a href="/setup">créer le mot de passe d’administration</a>.</p>{{end}}
+{{if .Data.Setup}}<p>Après reconnexion, ouvrez la <a href="/setup">page de création du mot de passe d’administration</a>, puis appuyez à nouveau sur le bouton du lapin avant de valider.</p>{{end}}
 <p>En cas d’échec, le lapin revient à son ancienne connexion ou au hotspot. Rejoignez ce hotspot et ouvrez <a href="http://10.41.0.1/wifi">10.41.0.1</a> pour réessayer.</p>
 <form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{.Data.Attempt}}"><button>Annuler si le lapin est encore accessible</button></form>
 <p><a href="/wifi">Revenir au Wi-Fi</a></p></section><script src="/wifi.js" defer></script>

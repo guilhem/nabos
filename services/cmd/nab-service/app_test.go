@@ -104,15 +104,11 @@ func TestClockQualityWithoutInternet(t *testing.T) {
 
 func TestEveryPageRenders(t *testing.T) {
 	a := testApp(t)
-	a.auth.MarkPresence()
-	tok, err := a.auth.Setup("carotte-42")
-	if err != nil {
-		t.Fatal(err)
-	}
+	cookie := serviceSession(t, a)
 	h := a.routes()
 	for _, p := range []string{"/", "/settings", "/updates", "/tags", "/sounds"} {
 		r := httptest.NewRequest("GET", p, nil)
-		r.AddCookie(&http.Cookie{Name: "nab_session", Value: tok})
+		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), "</html>") {
