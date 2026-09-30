@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,7 +56,7 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { broker.Process.Kill(); broker.Wait() })
-	a.bus = bus.New("127.0.0.1", port, "agent-check", bus.Handlers{})
+	a.bus = bus.New("127.0.0.1", port, "agent-check", bus.Handlers{OnState: a.onState})
 	if err := a.bus.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +162,76 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	if len(a.mediaGate) != 0 {
 		t.Fatal("optional absent updater stranded product services")
 	}
+	t.Run("HA state stays current after a delayed device read", func(t *testing.T) {
+		cfg := a.store.Get().HomeAssistant
+		cfg.Enabled, cfg.Host, cfg.Port = true, "127.0.0.1", port
+		if err := a.ha.Start(cfg); err != nil {
+			t.Fatal(err)
+		}
+		defer a.ha.Stop()
+		pynabWait(t, "HA broker connected", 5*time.Second, a.ha.Connected)
+		revision, settings, err := a.device.ReadConfig(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entered, resume, overlap := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
+		var blockNext, inFlight atomic.Bool
+		blockNext.Store(true)
+		read := func() (string, device.Settings, *dbus.Error) {
+			if blockNext.CompareAndSwap(true, false) {
+				inFlight.Store(true)
+				close(entered)
+				<-resume
+				inFlight.Store(false)
+			} else if inFlight.Load() {
+				select {
+				case overlap <- struct{}{}:
+				default:
+				}
+			}
+			return revision, settings, nil
+		}
+		if err := f.Conn.ExportMethodTable(map[string]interface{}{"Read": read}, device.Path("Config"), device.Interface("Config")); err != nil {
+			t.Fatal(err)
+		}
+		worker, stop := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); a.deviceLoop(worker) }()
+		released := false
+		defer func() {
+			if !released {
+				close(resume)
+			}
+			stop()
+			<-done
+		}()
+		publish(bus.TopicState, `{"v":1,"state":"playing","ears":{"left":1,"right":2}}`)
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("device read did not start")
+		}
+		publish(bus.TopicState, `{"v":1,"state":"idle","ears":{"left":4,"right":5}}`)
+		pynabWait(t, "new core state received", time.Second, func() bool { state, _ := a.bus.State(); return state.State == "idle" && state.Ears.Left == 4 })
+		select {
+		case <-overlap:
+			t.Fatal("state forwarding started concurrent device reads")
+		case <-time.After(250 * time.Millisecond):
+		}
+		close(resume)
+		released = true
+		sub := pynabTool(t, "MOSQUITTO_SUB", "mosquitto_sub", "../../../build/tools/root/usr/bin/mosquitto_sub")
+		out, err := exec.Command(sub, "-h", "127.0.0.1", "-p", strconv.Itoa(port), "-q", "1", "-t", "nabos/"+a.ha.Node+"/state", "-C", "1", "-W", "5").CombinedOutput()
+		var payload struct {
+			State  string `json:"state"`
+			Volume int    `json:"volume"`
+			Left   int    `json:"left_ear"`
+			Right  int    `json:"right_ear"`
+		}
+		if err != nil || json.Unmarshal(out, &payload) != nil || payload.State != "idle" || payload.Volume != int(settings.Volume) || payload.Left != 4 || payload.Right != 5 {
+			t.Fatalf("retained HA state after delayed reply: %s (%v)", out, err)
+		}
+	})
 }
 
 func TestDeviceLoopRegistersOnlyWhenRequired(t *testing.T) {

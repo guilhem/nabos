@@ -61,7 +61,7 @@ type App struct {
 	mastodonKick    chan struct{}
 	oauth           *oauthLogin
 
-	clockKick, weatherKick chan struct{}
+	clockKick, weatherKick, haKick chan struct{}
 
 	mu          sync.Mutex
 	forecast    *weather.Forecast
@@ -99,6 +99,7 @@ func NewApp(env Env) (*App, error) {
 		started:       time.Now(),
 		clockKick:     make(chan struct{}, 1),
 		weatherKick:   make(chan struct{}, 1),
+		haKick:        make(chan struct{}, 1),
 		clk:           clock.State{LastChime: -1},
 		network:       "ok",
 		ctx:           context.Background(),
@@ -277,12 +278,8 @@ func (a *App) onState(s bus.CoreState) {
 		a.clk.Asleep = &asleep
 	}
 	a.mu.Unlock()
-	go func() {
-		settings, err := a.systemSettings(a.ctx)
-		if err == nil {
-			a.ha.State(s.State, int(settings.Volume), s.Ears.Left, s.Ears.Right)
-		}
-	}()
+	// ponytail: coalesce state snapshots; queue transitions if every one is needed.
+	kick(a.haKick)
 }
 
 func str(m map[string]any, k string) string {

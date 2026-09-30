@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/guilhem/nabos/services/internal/bus"
 	"github.com/guilhem/nabos/services/internal/device"
 )
 
@@ -186,6 +187,7 @@ func (a *App) deviceLoop(ctx context.Context) {
 	defer ticker.Stop()
 	registered, observed := "", ""
 	lastSettings := device.Settings{}
+	lastState := bus.CoreState{}
 	refresh := func() {
 		var owner string
 		callCtx, cancel := context.WithTimeout(ctx, device.Timeout)
@@ -217,12 +219,17 @@ func (a *App) deviceLoop(ctx context.Context) {
 		}
 		a.agent.recover(ctx)
 		settings, err := a.systemSettings(ctx)
-		if err == nil && settings != lastSettings {
-			lastSettings = settings
-			a.publishSettings(ctx)
+		if err == nil {
+			changed := settings != lastSettings
+			if changed {
+				a.publishSettings(ctx)
+				kick(a.clockKick)
+			}
 			state, _ := a.bus.State()
-			a.ha.State(state.State, int(settings.Volume), state.Ears.Left, state.Ears.Right)
-			kick(a.clockKick)
+			if changed || state.State != lastState.State || state.Ears != lastState.Ears {
+				a.ha.State(state.State, int(settings.Volume), state.Ears.Left, state.Ears.Right)
+			}
+			lastSettings, lastState = settings, state
 		}
 	}
 	refresh()
@@ -231,6 +238,8 @@ func (a *App) deviceLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			refresh()
+		case <-a.haKick:
 			refresh()
 		case signal := <-signals:
 			if signal == nil {
