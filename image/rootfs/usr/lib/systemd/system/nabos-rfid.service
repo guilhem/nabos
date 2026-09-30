@@ -3,7 +3,7 @@ Description=Detect the RFID/NFC reader and load its overlay
 ConditionPathExists=!/dev/rfid0
 ConditionPathExists=!/dev/nfc0
 After=systemd-modules-load.service sys-kernel-config.mount
-Before=nab-core.service
+Before=nab-hardware.service
 
 [Service]
 Type=oneshot

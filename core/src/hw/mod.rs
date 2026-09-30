@@ -1,23 +1,19 @@
 //! Hardware access. Each device is served by its own thread and reports
-//! asynchronous events to the engine through the input channel.
+//! typed asynchronous events to the hardware service.
 
 pub mod button;
 pub mod cr14;
 pub mod ears;
 pub mod leds;
 pub mod nfc;
-pub mod player;
 
-use crate::engine::Input;
-use crate::protocol::Tech;
-use crate::resources::Resources;
 use crate::Config;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc::UnboundedSender, oneshot, watch};
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-pub type Tx = UnboundedSender<Input>;
+pub type Tx = UnboundedSender<HwEvent>;
 
 #[derive(Debug)]
 pub enum HwEvent {
@@ -40,39 +36,55 @@ pub struct TagEvent {
 }
 
 pub fn send(tx: &Tx, ev: HwEvent) {
-    let _ = tx.send(Input::Hw(ev));
+    let _ = tx.send(ev);
 }
 
-/// Cooperative cancellation shared by a job and the engine.
-#[derive(Clone)]
-pub struct Cancel(watch::Receiver<bool>);
-pub struct CancelSource(watch::Sender<bool>);
-
-impl CancelSource {
-    pub fn new() -> (CancelSource, Cancel) {
-        let (tx, rx) = watch::channel(false);
-        (CancelSource(tx), Cancel(rx))
-    }
-    pub fn cancel(&self) {
-        let _ = self.0.send(true);
-    }
-}
+/// Admission is fenced against cancellation under one lock. An admitted driver
+/// command is indivisible; cancellation only removes commands still waiting.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<std::sync::Mutex<bool>>);
 
 impl Cancel {
-    /// A token that is never cancelled (shared, no allocation per call).
-    pub fn never() -> Cancel {
-        static NEVER: std::sync::OnceLock<(watch::Sender<bool>, watch::Receiver<bool>)> =
-            std::sync::OnceLock::new();
-        Cancel(NEVER.get_or_init(|| watch::channel(false)).1.clone())
+    pub fn cancel(&self) {
+        *self.0.lock().unwrap() = true;
+    }
+    pub fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
     pub fn is_cancelled(&self) -> bool {
-        *self.0.borrow()
+        *self.0.lock().unwrap()
     }
-    pub async fn wait(&self) {
-        let mut rx = self.0.clone();
-        if rx.wait_for(|v| *v).await.is_err() {
-            std::future::pending::<()>().await;
-        }
+    pub fn admit(&self) -> bool {
+        !*self.0.lock().unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Tech {
+    St25tb,
+    T2t,
+}
+
+#[derive(Default)]
+struct WritePhase {
+    admitted: bool,
+    canceled: bool,
+    finished: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct WriteControl(Arc<std::sync::Mutex<WritePhase>>);
+
+impl WriteControl {
+    pub fn cancel(&self) {
+        self.0.lock().unwrap().canceled = true;
+    }
+    pub fn uncertain(&self) -> bool {
+        let phase = self.0.lock().unwrap();
+        phase.admitted && !phase.finished
+    }
+    pub fn finish(&self) {
+        self.0.lock().unwrap().finished = true;
     }
 }
 
@@ -138,6 +150,8 @@ pub struct WriteReq {
     pub uid: Vec<u8>,
     pub payload: Vec<u8>,
     pub deadline: Instant,
+    pub cancel: Cancel,
+    pub control: WriteControl,
     pub reply: oneshot::Sender<Result<(), String>>,
 }
 
@@ -146,32 +160,40 @@ pub struct Rfid {
     tx: std::sync::mpsc::Sender<WriteReq>,
 }
 
-impl Rfid {
-    pub async fn write(
-        &self,
-        tech: Tech,
-        uid: Vec<u8>,
-        payload: Vec<u8>,
-        timeout: Duration,
-    ) -> Result<(), String> {
-        let (reply, rx) = oneshot::channel();
-        let req = WriteReq {
-            tech,
-            uid,
-            payload,
-            deadline: Instant::now() + timeout,
-            reply,
-        };
-        self.tx
-            .send(req)
-            .map_err(|_| "reader stopped".to_string())?;
-        match tokio::time::timeout(timeout + Duration::from_secs(2), rx).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(_)) => Err("reader stopped".into()),
-            Err(_) => Err("timeout".into()),
+impl WriteReq {
+    pub fn stopped(&self) -> Option<&'static str> {
+        if self.cancel.is_cancelled()
+            || self.control.0.lock().unwrap().canceled
+            || self.reply.is_closed()
+        {
+            Some("canceled")
+        } else if Instant::now() >= self.deadline {
+            Some("timeout")
+        } else {
+            None
         }
     }
+    pub fn admit(&self) -> Result<(), String> {
+        let canceled = self.cancel.0.lock().unwrap();
+        let mut phase = self.control.0.lock().unwrap();
+        if *canceled || phase.canceled || self.reply.is_closed() {
+            return Err("canceled".into());
+        }
+        if Instant::now() >= self.deadline {
+            return Err("timeout".into());
+        }
+        phase.admitted = true;
+        Ok(())
+    }
 }
+
+impl Rfid {
+    pub fn start(&self, req: WriteReq) -> Result<(), String> {
+        self.tx.send(req).map_err(|_| "reader stopped".to_string())
+    }
+}
+
+pub type Status = (String, bool, String, String, bool, bool, String, i16, i16);
 
 pub struct HwInfo {
     pub model: &'static str,
@@ -181,27 +203,19 @@ pub struct HwInfo {
 pub struct Hw {
     pub leds: leds::Leds,
     pub ears: ears::Ears,
-    pub player: Arc<player::Player>,
-    pub res: Resources,
     pub rfid: Option<Rfid>,
     pub button: bool,
     pub info: HwInfo,
 }
 
 impl Hw {
-    pub fn open(
-        cfg: &Config,
-        tx: Tx,
-        presence: Option<crate::network::Presence>,
-        player: Arc<player::Player>,
-    ) -> Hw {
+    pub fn open(cfg: &Config, tx: Tx, presence: Option<crate::network::Presence>) -> Hw {
         let sim = cfg.simulate;
         // Physical setup confirmation remains available while LED initialization
         // waits for its hardware thread.
-        let button = !sim && button::spawn(&cfg.gpio_chip, cfg.button_gpio, tx.clone(), presence);
+        let button = sim || button::spawn(&cfg.gpio_chip, cfg.button_gpio, tx.clone(), presence);
         let leds = leds::Leds::open(cfg);
         let ears = ears::Ears::open(sim, tx.clone());
-        let res = Resources::new(cfg.sounds_dirs.clone(), cfg.chor_dirs.clone());
         let spawn_reader =
             |kind: &'static str,
              run: fn(std::sync::mpsc::Receiver<WriteReq>, Tx) -> std::io::Result<()>| {
@@ -229,8 +243,6 @@ impl Hw {
         Hw {
             leds,
             ears,
-            player,
-            res,
             rfid,
             button,
             info: HwInfo {
@@ -240,16 +252,22 @@ impl Hw {
         }
     }
 
-    pub fn describe(&self) -> serde_json::Value {
-        serde_json::json!({
-            "model": self.info.model,
-            "rfid": self.rfid.as_ref().map(|r| r.kind).unwrap_or("none"),
-            "left_ear": self.ears.status(0),
-            "right_ear": self.ears.status(1),
-            "leds": self.leds.ok,
-            "button": self.button,
-            "simulated": self.info.simulated,
-        })
+    pub fn status(&self) -> Status {
+        let (left, right) = self.ears.snapshot();
+        (
+            self.info.model.into(),
+            self.info.simulated,
+            self.ears.status(0).into(),
+            self.ears.status(1).into(),
+            self.leds.available(),
+            self.button,
+            self.rfid.as_ref().map_or("none", |r| r.kind).into(),
+            left,
+            right,
+        )
+    }
+    pub fn ready(&self) -> bool {
+        self.button && self.leds.available() && !self.ears.broken(0) && !self.ears.broken(1)
     }
 }
 

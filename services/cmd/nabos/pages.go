@@ -25,6 +25,7 @@ import (
 	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/network"
 	"github.com/guilhem/nabos/services/internal/pynab"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 	"github.com/guilhem/nabos/services/internal/web"
 )
 
@@ -177,7 +178,11 @@ func (a *App) routes() http.Handler {
 		a.mu.Lock()
 		tag := a.lastTag
 		a.mu.Unlock()
-		a.render(w, r, "tags", "Étiquettes", map[string]any{"Tag": tag, "Books": pynab.Books(a.env.SoundsDirs), "Languages": pynab.Languages, "SurpriseKinds": pynab.SurpriseKinds})
+		var payload map[string]any
+		if tag != nil {
+			payload = tag.payload()
+		}
+		a.render(w, r, "tags", "Étiquettes", map[string]any{"Tag": payload, "Books": pynab.Books(a.env.SoundsDirs), "Languages": pynab.Languages, "SurpriseKinds": pynab.SurpriseKinds})
 	})
 	m.HandleFunc("POST /tags/write", a.writeTag)
 	m.HandleFunc("GET /sounds", func(w http.ResponseWriter, r *http.Request) {
@@ -199,23 +204,24 @@ func (a *App) healthz(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	connected, core := a.bus.Healthy()
-	state, _ := a.bus.State()
+	state, initialized := a.rabbit.State()
 	hardware := state.HardwareReady()
+	engine := initialized && a.rabbit.Ready()
+	var deviceReady bool
+	deviceReady = a.device.Property(r.Context(), "Manager", "Ready", &deviceReady) == nil && deviceReady
 	w.Header().Set("Content-Type", "application/json")
-	if !connected || !core || !hardware {
+	if !engine || !deviceReady || !hardware {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	json.NewEncoder(w).Encode(map[string]any{"mqtt": connected, "core": core, "hardware": hardware, "version": a.env.Version})
+	json.NewEncoder(w).Encode(map[string]any{"hardware": hardware, "device": deviceReady, "engine": engine, "version": a.env.Version})
 }
 
 func (a *App) home(w http.ResponseWriter, r *http.Request) {
-	core, online := a.bus.State()
-	connected, _ := a.bus.Healthy()
+	state, online := a.rabbit.State()
 	_, clk := a.clockQuality()
 	a.mu.Lock()
 	data := map[string]any{
-		"Core": core, "Online": online, "MQTT": connected, "Network": a.network,
+		"Rabbit": state, "Online": online && a.rabbit.Ready(), "Network": a.network,
 		"Forecast": a.forecast, "WeatherError": a.wxErr, "HA": a.ha.Connected(), "HAError": a.haErr,
 		"Recovered": a.store.Recovered, "Version": a.env.Version, "Clock": clk,
 	}
@@ -246,14 +252,14 @@ func (a *App) action(w http.ResponseWriter, r *http.Request) {
 			a.stopRadio()
 		} else {
 			a.stopRadio()
-			err = a.do(ctx, "cancel", nil, 5*time.Second)
+			err = a.do(ctx, rabbit.Command{Action: rabbit.Cancel}, 5*time.Second)
 		}
 	case "test_ears", "test_leds":
-		err = a.do(ctx, "test", map[string]any{"test": strings.TrimPrefix(r.FormValue("name"), "test_")}, 60*time.Second)
+		err = a.do(ctx, rabbit.Command{Action: rabbit.Test, Test: strings.TrimPrefix(r.FormValue("name"), "test_")}, 60*time.Second)
 		msg = "Test réussi"
 	case "play":
 		res := r.FormValue("resource")
-		err = a.do(ctx, "play", map[string]any{"sequence": []any{map[string]any{"audio": []string{res}}}}, 5*time.Minute)
+		err = a.do(ctx, rabbit.Command{Action: rabbit.Play, Cancelable: true, Sequence: []rabbit.Item{{Audio: []string{res}}}}, 5*time.Minute)
 		msg = "Son joué"
 	case "reboot":
 		err = a.device.Reboot(ctx)
@@ -394,7 +400,7 @@ func (a *App) writeTag(w http.ResponseWriter, r *http.Request) {
 			kind.Data = "DATA_IN_LOCAL_DB"
 			association = &config.TagAction{App: kindName, Value: strings.TrimSpace(r.FormValue("value"))}
 			check := a.store.Get()
-			check.Tags[str(tag, "uid")] = *association
+			check.Tags[tag.UID] = *association
 			err = check.Validate()
 		default:
 			err = errors.New("application d'étiquette inconnue")
@@ -405,24 +411,27 @@ func (a *App) writeTag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.FormValue("mode") == "associate" {
-		if association == nil || str(tag, "app") != kind.App || str(tag, "support") != "formatted" {
+		if association == nil || tag.App != kind.App || tag.Support != "formatted" {
 			back(w, r, "/tags", errors.New("choisissez l'application déjà inscrite sur l'étiquette (radio, IFTTT ou webhook)"), "")
 			return
 		}
-		_, err := a.store.Update(func(s *config.Settings) error { s.Tags[str(tag, "uid")] = *association; return nil })
+		_, err := a.store.Update(func(s *config.Settings) error { s.Tags[tag.UID] = *association; return nil })
 		back(w, r, "/tags", err, "Association enregistrée")
 		return
 	}
 	picture, _ := strconv.Atoi(r.FormValue("picture"))
-	err := a.do(r.Context(), "rfid_write", map[string]any{
-		"tech": tag["tech"], "uid": tag["uid"], "picture": max(0, min(picture, 255)), "app": kind.App, "data": kind.Data, "timeout": 20,
-	}, 30*time.Second)
+	appID, err := pynab.TagAppID(kind.App)
+	if err == nil {
+		err = a.do(r.Context(), rabbit.Command{Action: rabbit.RfidWrite, Tag: &rabbit.TagWrite{
+			Tech: tag.Tech, UID: tag.RawUID, Picture: uint8(max(0, min(picture, 255))), App: appID, Data: []byte(kind.Data), Timeout: 20,
+		}}, 30*time.Second)
+	}
 	if err == nil {
 		_, err = a.store.Update(func(s *config.Settings) error {
 			if association != nil {
-				s.Tags[str(tag, "uid")] = *association
+				s.Tags[tag.UID] = *association
 			} else {
-				delete(s.Tags, str(tag, "uid"))
+				delete(s.Tags, tag.UID)
 			}
 			return nil
 		})

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/airquality"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 	"github.com/guilhem/nabos/services/internal/radio"
 )
 
@@ -31,7 +32,7 @@ func (a *App) refreshAirQuality(ctx context.Context, cached bool) (*airquality.R
 		a.airResult = nil
 		a.airFetched = time.Time{}
 		a.serviceError("airquality", nil)
-		a.send("info", map[string]any{"info_id": "airquality", "animation": nil})
+		a.send(rabbit.Command{Action: rabbit.Info, InfoID: "airquality"})
 		return nil, errors.New("qualité de l'air désactivée")
 	}
 	if cached && a.airResult != nil && a.airQuery == q && time.Since(a.airFetched) < 15*time.Minute {
@@ -43,7 +44,7 @@ func (a *App) refreshAirQuality(ctx context.Context, cached bool) (*airquality.R
 	a.airResult = f
 	a.airQuery = q
 	a.airFetched = time.Now()
-	a.send("info", map[string]any{"info_id": "airquality", "animation": airquality.Info(cfg.Visual, f)})
+	a.send(rabbit.Command{Action: rabbit.Info, InfoID: "airquality", Animation: airquality.Info(cfg.Visual, f)})
 	a.serviceError("airquality", err)
 	return f, err
 }
@@ -53,7 +54,7 @@ func (a *App) announceAirQuality(ctx context.Context) error {
 		return errors.New("qualité de l'air désactivée")
 	}
 	f, fetchErr := a.refreshAirQuality(ctx, true)
-	if err := a.media(ctx, "message", airquality.Message(f), time.Minute); err != nil {
+	if err := a.media(ctx, airquality.Message(f), time.Minute); err != nil {
 		return err
 	}
 	return fetchErr
@@ -90,8 +91,8 @@ func (a *App) playRadio(ctx context.Context, station string) error {
 		return errors.New("lapin occupé")
 	}
 	defer func() { <-a.mediaGate }()
-	state, online := a.bus.State()
-	if !online || state.State == "asleep" {
+	state, initialized := a.rabbit.State()
+	if !initialized || !a.rabbit.Ready() || state.State == "asleep" {
 		return errors.New("lapin endormi ou indisponible")
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -105,10 +106,10 @@ func (a *App) playRadio(ctx context.Context, station string) error {
 	if err != nil {
 		return err
 	}
-	err = a.playOwned(ctx, "play", map[string]any{"sequence": []any{
-		map[string]any{"audio": []string{"radio/*.mp3"}},
-		map[string]any{"stream": u, "choreography": "urn:x-chor:streaming"},
-		map[string]any{"audio": []string{"radio/*.mp3"}},
+	err = a.playOwned(ctx, rabbit.Command{Action: rabbit.Play, Cancelable: true, Sequence: []rabbit.Item{
+		{Audio: []string{"radio/*.mp3"}},
+		{Stream: u, Choreography: "urn:x-chor:streaming"},
+		{Audio: []string{"radio/*.mp3"}},
 	}})
 	if err != nil {
 		return err

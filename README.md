@@ -4,7 +4,7 @@ Logiciel libre pour les Nabaztag équipés d'une carte **TagTagTag 2019/2021** o
 
 [![Images](https://github.com/guilhem/nabos/actions/workflows/images.yml/badge.svg)](https://github.com/guilhem/nabos/actions/workflows/images.yml)
 
-NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et un bus MQTT 5 local. `nab-core` garde le matériel et les chorégraphies en Rust. Le dépôt indépendant `device-core` fournit les services Linux en Rust : réseau, audio, configuration système, horloge, SSH, voix et mises à jour. `nab-core` et `nab-service` l'appellent directement par D-Bus ; Go garde l'interface et les applications. Les réglages système vivent dans `/data/device-core/settings.json`, les réglages applicatifs dans `/data/nabos/application.json`.
+NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et des API D-Bus typées. `nab-hardware` garde uniquement le matériel en Rust. `nabos` possède en Go les états, la file média, les chorégraphies, l’interface et les applications. Le dépôt indépendant `device-core` fournit les services Linux en Rust : réseau, audio, configuration système, horloge, SSH, voix et mises à jour. Les réglages système vivent dans `/data/device-core/settings.json`, les réglages applicatifs dans `/data/nabos/application.json`. MQTT sert uniquement à Home Assistant via son broker configuré ; aucun broker local n’est installé.
 
 Les outils de fabrication et les tests propres à NabOS sont aussi en Go. Linux Voice Assistant conserve ses dépendances Python.
 
@@ -43,10 +43,9 @@ Cette extraction utilise de nouveaux contrats et fichiers de configuration. Aucu
 
 | Composant | Rôle |
 |---|---|
-| `core/` — `nab-core` | Matériel, états, séquences, chorégraphies, synchronisation avec le son via D-Bus |
+| `core/` — `nab-hardware` | Oreilles, LED, bouton et RFID/NFC ; [API D-Bus matérielle](docs/hardware-dbus.md) |
 | `device-core` — dépôt indépendant | NetworkManager, audio, réglages système, horloge, SSH, voix, RAUC ; API D-Bus, HTTP facultatif désactivé dans NabOS |
-| `services/` — `nab-service` | Interface locale, applications pynab, Home Assistant ; clients D-Bus de device-core |
-| Mosquitto | Transport MQTT 5 local ; [contrat JSON v1](docs/protocol-v1.md) |
+| `services/` — `nabos` | États, médias, chorégraphies, interface et applications ; clients D-Bus de hardware/device-core |
 | PipeWire + WirePlumber | Lecture et capture ALSA ; compatibilité PulseAudio pour la voix |
 | NetworkManager | Radio Wi-Fi, profils et secrets ; [API D-Bus de device-core](docs/network-dbus.md) |
 | RAUC + U-Boot | Installation signée A/B et retour à la version précédente |
@@ -76,9 +75,9 @@ La [documentation de fabrication](docs/build.md) décrit les commandes locales, 
 ```sh
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go test -race ./...)
-(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nab-service)
+(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nabos)
 ```
 
-Les simulations requièrent Mosquitto, ses clients et un bus D-Bus privé. `DEVICE_CORE_BIN` désigne le binaire externe de simulation (voir le guide de fabrication). Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).
+Les simulations utilisent un bus D-Bus privé explicite (`NABOS_DEVICE_BUS_ADDRESS`) ; Mosquitto et ses clients servent uniquement aux fixtures Home Assistant. `DEVICE_CORE_BIN` désigne le binaire externe de simulation (voir le guide de fabrication). Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Le projet est distribué sous GPL-3.0-only ; les attributions des éléments réutilisés sont dans [NOTICE](NOTICE). Les firmwares binaires nécessaires au Raspberry Pi restent une exception fournie par Raspberry Pi OS.

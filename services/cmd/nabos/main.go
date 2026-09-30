@@ -1,4 +1,4 @@
-// nab-service: web interface, settings, PyNab services, Home Assistant,
+// nabos: web interface, settings, PyNab services, Home Assistant,
 // voice assistant and updates for NabOS (docs/protocol-v1.md).
 package main
 
@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -17,11 +16,10 @@ import (
 var version = "dev"
 
 type Env struct {
-	MQTTHost, HTTPAddr, DataDir string
-	MQTTPort                    int
-	SoundsDirs                  []string
-	Version                     string
-	WeatherURL, GeocodingURL    string
+	HTTPAddr, DataDir        string
+	SoundsDirs, ChorDirs     []string
+	Version                  string
+	WeatherURL, GeocodingURL string
 }
 
 func env(name, def string) string {
@@ -32,17 +30,12 @@ func env(name, def string) string {
 }
 
 func loadEnv() Env {
-	port, err := strconv.Atoi(env("NABOS_MQTT_PORT", "1883"))
-	if err != nil {
-		port = 1883
-	}
 	v := env("NABOS_VERSION", version)
 	return Env{
-		MQTTHost:     env("NABOS_MQTT_HOST", "127.0.0.1"),
-		MQTTPort:     port,
 		HTTPAddr:     env("NABOS_HTTP_ADDR", ":8080"),
 		DataDir:      env("NABOS_DATA_DIR", "/data/nabos"),
 		SoundsDirs:   strings.Split(env("NABOS_SOUNDS_DIRS", "/usr/share/nabos/sounds:/data/nabos/media/sounds"), ":"),
+		ChorDirs:     strings.Split(env("NABOS_CHOREOGRAPHIES_DIRS", "/usr/share/nabos/choreographies:/data/nabos/media/choreographies"), ":"),
 		Version:      v,
 		WeatherURL:   env("NABOS_WEATHER_URL", "https://api.open-meteo.com/v1/forecast"),
 		GeocodingURL: env("NABOS_GEOCODING_URL", "https://geocoding-api.open-meteo.com/v1/search"),
@@ -54,10 +47,10 @@ func main() {
 	for _, a := range os.Args[1:] {
 		switch a {
 		case "--version", "-version":
-			fmt.Println("nab-service", version)
+			fmt.Println("nabos", version)
 			return
 		case "--help", "-h":
-			fmt.Println("usage: nab-service [--version]\nConfiguration via NABOS_* variables, see docs/protocol-v1.md")
+			fmt.Println("usage: nabos [--version]\nConfiguration via NABOS_* variables, see docs/protocol-v1.md")
 			return
 		}
 	}

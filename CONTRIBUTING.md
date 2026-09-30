@@ -1,26 +1,26 @@
 # Contribuer à NabOS
 
-Le système courant est décrit dans le [README](README.md), son transport dans le [contrat MQTT v1](docs/protocol-v1.md), et ses images dans le [guide de build](docs/build.md).
+Le système courant est décrit dans le [README](README.md), ses [rôles et contrats D-Bus](docs/protocol-v1.md), et ses images dans le [guide de build](docs/build.md).
 
 ## Boucle locale
 
-Utiliser Go 1.27.1, Rust 1.98.1 et Mosquitto avec ses clients. `nab-core` et le binaire externe `device-core` possèdent un mode `--simulate`. Fournir un bus privé explicite (`NABOS_DEVICE_BUS_ADDRESS` pour nab-core, `DEVICE_CORE_BUS_ADDRESS` pour device-core) ; ils ne doivent pas modifier les services de l’hôte. Python reste nécessaire aux composants externes et à la fabrication d'U-Boot ; les outils et tests propres au dépôt sont en Go.
+Utiliser Go 1.27.1, Rust 1.98.1 ; Mosquitto et ses clients servent aux fixtures Home Assistant. `nab-hardware` et le binaire externe `device-core` possèdent un mode `--simulate`. Fournir un bus privé explicite (`NABOS_DEVICE_BUS_ADDRESS` pour nab-hardware et nabos, `DEVICE_CORE_BUS_ADDRESS` pour device-core) ; ils ne doivent pas modifier les services de l’hôte. Python reste nécessaire aux composants externes et à la fabrication d'U-Boot ; les outils et tests propres au dépôt sont en Go.
 
 ```sh
 cargo fmt --manifest-path core/Cargo.toml --check
 cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go vet ./... && go test -race ./...)
-(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nab-service)
+(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nabos)
 ```
 
-Les réglages Linux appartiennent à device-core (`/data/device-core/settings.json`) ; Go ne conserve que les applications (`/data/nabos/application.json`). Cette extraction ne fournit ni migration ni rétrocompatibilité des anciens formats ou API. Les commandes MQTT sont identifiées, expirables et non retenues. Ne pas déplacer la temporisation des mouvements hors du cœur local.
+Les réglages Linux appartiennent à device-core (`/data/device-core/settings.json`) ; Go ne conserve que les applications (`/data/nabos/application.json`). Cette extraction ne fournit ni migration ni rétrocompatibilité des anciens formats ou API. Go possède les états, médias et chorégraphies ; Rust conserve uniquement le matériel et la temporisation des pilotes. Respecter le [contrat hardware D-Bus](docs/hardware-dbus.md).
 
 ## Modifications système
 
 Les modules externes sont construits contre les en-têtes et symboles du noyau installé dans l'image. Vérifier les deux architectures. Une compilation ARMv7 ne valide pas le Zero ARMv6. Ne jamais installer ou compiler les dépendances sur l'appareil lors d'une mise à jour.
 
-Le dépôt `build/device-core` est un checkout de travail indépendant, ignoré par NabOS ; les builds utilisent exclusivement son archive de commit verrouillée, jamais ce checkout. `make device-core-source` extrait la source verrouillée ; `make package-device-core TARGET=...` produit le binaire et les entrées de replay séparées de nab-core.
+Le dépôt `build/device-core` est un checkout de travail indépendant, ignoré par NabOS ; les builds utilisent exclusivement son archive de commit verrouillée, jamais ce checkout. `make device-core-source` extrait la source verrouillée ; `make package-device-core TARGET=...` produit le binaire et les entrées de replay séparées de nab-hardware.
 
 Pour modifier une source externe, mettre à jour sa révision et son SHA-256 dans `image/sources.lock.json`. Conserver les licences et les archives nécessaires à la reconstruction. Les dépendances Cargo et Go doivent avoir leurs fichiers de verrouillage à jour.
 

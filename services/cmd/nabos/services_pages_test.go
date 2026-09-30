@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"github.com/guilhem/nabos/services/internal/hardware"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,7 +20,9 @@ import (
 func serviceSession(t *testing.T, a *App) *http.Cookie {
 	t.Helper()
 	a.auth.ArmPresence()
-	freshDown(a)
+	// This helper creates an HTTP session; physical button admission is tested
+	// through the authenticated D-Bus fixture in wifi_test.go.
+	a.auth.MarkPresence(a.auth.MonoNow())
 	token, err := a.auth.Setup("carotte-42")
 	if err != nil {
 		t.Fatal(err)
@@ -151,10 +156,10 @@ func TestServiceAndTagPagesRenderCatalogueAndActions(t *testing.T) {
 }
 
 func TestAssociateLegacyLockedTagWithoutWritingHardware(t *testing.T) {
-	a := testApp(t) // no broker or hardware: association must not issue rfid_write
+	a := testApp(t) // no engine or hardware: association must not issue rfid_write
 	cookie := serviceSession(t, a)
 	const uid = "d0:02:18:01:02:03:04:05"
-	a.lastTag = map[string]any{"uid": uid, "app": "radio", "support": "formatted", "locked": true}
+	a.lastTag = &productTag{UID: uid, App: "radio", Support: "formatted", Locked: true}
 	f := url.Values{"mode": {"associate"}, "kind": {"radio"}, "value": {"https://example.com/live.mp3"}}
 	w := serviceRequest(a.routes(), "POST", "/tags/write", f, cookie)
 	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "ok=") {
@@ -171,5 +176,27 @@ func TestAssociateLegacyLockedTagWithoutWritingHardware(t *testing.T) {
 	w = serviceRequest(a.routes(), "POST", "/tags/write", f, cookie)
 	if !strings.Contains(w.Header().Get("Location"), "err=") || a.store.Get().Tags[uid].App != "radio" {
 		t.Fatal("mismatched app changed an old tag")
+	}
+}
+
+func TestTagWriteUsesNativeBytesAndPersistsAssociation(t *testing.T) {
+	a := testApp(t)
+	native := startNative(t, a)
+	cookie := serviceSession(t, a)
+	tag := tagFromHardware(hardware.Tag{Tech: "st25tb", UID: []byte{0xd0, 2, 0x18, 1, 2, 3, 4, 5}, Support: "empty"})
+	a.lastTag = &tag
+	form := url.Values{"kind": {"radio"}, "picture": {"3"}, "value": {"https://example.com/live.mp3"}}
+	w := serviceRequest(a.routes(), "POST", "/tags/write", form, cookie)
+	if strings.Contains(w.Header().Get("Location"), "err=") {
+		t.Fatal(w.Header())
+	}
+	native.mu.Lock()
+	writes := append([]rabbit.TagWrite(nil), native.writes...)
+	native.mu.Unlock()
+	if len(writes) != 1 || writes[0].App != 12 || writes[0].Picture != 3 || string(writes[0].Data) != "DATA_IN_LOCAL_DB" || !bytes.Equal(writes[0].UID, tag.RawUID) {
+		t.Fatal(writes)
+	}
+	if got := a.store.Get().Tags[tag.UID]; got.App != "radio" || got.Value != form.Get("value") {
+		t.Fatal(got)
 	}
 }

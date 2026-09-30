@@ -131,7 +131,7 @@ func (a *App) serviceAction(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("association introuvable")
 			break
 		}
-		go a.serviceTag(map[string]any{"app": name, "uid": uid})
+		go a.serviceTag(productTag{App: name, UID: uid})
 	default:
 		err = errors.New("service inconnu")
 	}

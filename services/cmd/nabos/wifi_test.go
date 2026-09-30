@@ -12,9 +12,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,10 +190,34 @@ func wifiRequest(h http.Handler, method, path string, form url.Values, cookie *h
 	return w
 }
 
-// Deliberate simulation injection uses the same Linux clock as GPIO edges.
-func freshDown(a *App) uint64 {
+var wifiHardware = map[*App]*nativeFixture{}
+
+// Use the authenticated hardware signal path, including exact uint64 edges.
+func physicalButton(t *testing.T, a *App, button string, edge uint64) {
+	t.Helper()
+	f := wifiHardware[a]
+	if f == nil {
+		f = startNativeDispatch(t, a, a.onEvent)
+		wifiHardware[a] = f
+		t.Cleanup(func() { delete(wifiHardware, a) })
+	}
+	f.event(t, "Button", button, edge)
+	for {
+		select {
+		case event := <-f.observed:
+			if event.Kind == "button" && event.Button == button && (button != "down" || event.EdgeMonotonicNS == edge) {
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("hardware button was not dispatched")
+		}
+	}
+}
+
+func freshDown(t *testing.T, a *App) uint64 {
+	t.Helper()
 	edge := a.auth.MonoNow()
-	a.onEvent(appEvent{kind: "button", data: map[string]any{"event": "down", "edge_monotonic_ns": strconv.FormatUint(edge, 10)}})
+	physicalButton(t, a, "down", edge)
 	return edge
 }
 
@@ -205,7 +229,7 @@ func TestWifiBeforeAdminOnRealHotspot(t *testing.T) {
 		return wifiRequest(h, method, path, f, cookie, hotspotAddress, "http://10.41.0.1", false)
 	}
 	password := url.Values{"password": {"carotte-42"}, "confirm": {"carotte-42"}}
-	freshDown(a)
+	freshDown(t, a)
 	if w := request("POST", "/setup", password, nil); w.Header().Get("Location") != "/wifi" || a.auth.Configured() {
 		t.Fatal("admin creation bypassed Wi-Fi")
 	}
@@ -267,7 +291,7 @@ func TestWifiBeforeAdminOnRealHotspot(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"authorized":true`) || strings.Contains(w.Body.String(), coreLease) {
 		t.Fatal("authorization status leaks lease or is wrong")
 	}
-	consumedEdge := freshDown(a)
+	consumedEdge := freshDown(t, a)
 	w = request("POST", "/wifi/connect", form, cookie)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "coupure") || strings.Contains(w.Body.String(), form.Get("password")) || strings.Contains(w.Body.String(), coreLease) {
 		t.Fatal("transition or secrets", w.Code)
@@ -301,7 +325,7 @@ func TestWifiBeforeAdminOnRealHotspot(t *testing.T) {
 	if w := request("POST", "/setup", password, nil); w.Header().Get("Location") != "/wifi" || a.auth.Present() || a.auth.Configured() {
 		t.Fatal("client address during connecting armed admin setup")
 	}
-	duringConnect := freshDown(a)
+	duringConnect := freshDown(t, a)
 	core.mu.Lock()
 	core.status.Phase, core.status.Ready = "succeeded", true
 	core.mu.Unlock()
@@ -312,18 +336,15 @@ func TestWifiBeforeAdminOnRealHotspot(t *testing.T) {
 	if !strings.HasPrefix(w.Header().Get("Location"), "/setup?err=") || a.auth.Configured() {
 		t.Fatal("Wi-Fi proof authorized admin creation after reconnect")
 	}
-	// These downs happened before the setup cutoff, even if MQTT delivers
+	// These downs happened before the setup cutoff, even if the event queue delivers
 	// them later and publication/receipt time both appear fresh.
 	for _, edge := range []uint64{consumedEdge, duringConnect} {
-		a.onEvent(appEvent{kind: "button", received: time.Now(), data: map[string]any{
-			"event": "down", "time": float64(time.Now().UnixNano()) / 1e9,
-			"edge_monotonic_ns": strconv.FormatUint(edge, 10),
-		}})
+		physicalButton(t, a, "down", edge)
 		if a.auth.Present() {
 			t.Fatal("delayed pre-setup down authorized admin creation")
 		}
 	}
-	freshDown(a)
+	freshDown(t, a)
 	if w := request("GET", "/setup", nil, nil); w.Code != 200 || !a.auth.Present() {
 		t.Fatal("setup reload cleared fresh proof")
 	}
@@ -420,7 +441,7 @@ func TestSetupDisarmsOnNetworkAndServiceTransitions(t *testing.T) {
 			if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
 				t.Fatal("open setup", w.Code)
 			}
-			freshDown(a)
+			freshDown(t, a)
 			if !a.auth.Present() {
 				t.Fatal("ready setup refused fresh press")
 			}
@@ -429,7 +450,7 @@ func TestSetupDisarmsOnNetworkAndServiceTransitions(t *testing.T) {
 			if (tc.unavailable && w.Code != 503) || (!tc.unavailable && w.Header().Get("Location") != "/wifi") || a.auth.Present() {
 				t.Fatal("network transition kept setup armed", w.Code, w.Header())
 			}
-			oldEdge := freshDown(a)
+			oldEdge := freshDown(t, a)
 			if a.auth.Present() {
 				t.Fatal("down during unavailable setup granted proof")
 			}
@@ -437,23 +458,28 @@ func TestSetupDisarmsOnNetworkAndServiceTransitions(t *testing.T) {
 			if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
 				t.Fatal("reopen setup", w.Code)
 			}
-			a.onEvent(appEvent{kind: "button", data: map[string]any{"event": "down", "edge_monotonic_ns": strconv.FormatUint(oldEdge, 10)}})
+			physicalButton(t, a, "down", oldEdge)
 			if a.auth.Present() {
 				t.Fatal("delayed down survived setup rearm")
 			}
 		})
 	}
 	// A service restart has no proof or armed gate, even on a ready client.
-	oldEdge := freshDown(a)
+	oldEdge := freshDown(t, a)
+	stopCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	a.rabbit.Stop(stopCtx)
+	stop()
+	delete(wifiHardware, a)
+	// Finish the old hardware callbacks before replacing the service auth state.
 	a.auth = web.NewAuth(a.store)
-	a.onEvent(appEvent{kind: "button", data: map[string]any{"event": "down", "edge_monotonic_ns": strconv.FormatUint(oldEdge, 10)}})
+	physicalButton(t, a, "down", oldEdge)
 	if a.auth.Present() {
 		t.Fatal("restart admitted a queued down")
 	}
 	if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
 		t.Fatal("open setup after restart", w.Code)
 	}
-	a.onEvent(appEvent{kind: "button", data: map[string]any{"event": "down", "edge_monotonic_ns": strconv.FormatUint(oldEdge, 10)}})
+	physicalButton(t, a, "down", oldEdge)
 	if a.auth.Present() {
 		t.Fatal("restart admitted pre-arm proof after opening setup")
 	}
@@ -465,37 +491,38 @@ func TestButtonPresenceRequiresFreshDownMetadata(t *testing.T) {
 	core.status = network.Status{Mode: "client", Ready: true, Generation: "network:1", Address: "192.0.2.10", Phase: "idle"}
 	core.mu.Unlock()
 	a := testApp(t)
-	now := uint64(1<<53) + 1000 // Above JSON's exact floating-point integer range.
-	a.auth.MonoNow = func() uint64 { return now }
+	var now atomic.Uint64
+	now.Store(uint64(1<<53) + 1000) // Above JSON's exact floating-point integer range.
+	a.auth.MonoNow = now.Load
 	h := a.routes()
 	if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
 		t.Fatal("open setup", w.Code)
 	}
-	cutoff := now
-	now++
+	cutoff := now.Load()
+	now.Add(1)
 	for _, event := range []string{"up", "click", "hold", "double_click", "click_and_hold"} {
-		a.onEvent(appEvent{kind: "button", data: map[string]any{"event": event, "edge_monotonic_ns": strconv.FormatUint(now, 10)}})
+		physicalButton(t, a, event, now.Load())
 		if a.auth.Present() {
 			t.Fatal("non-down granted presence", event)
 		}
 	}
-	for _, edge := range []any{nil, "", "bad", "1.0", "+123", "-1", " 123", "18446744073709551616", float64(now), "0",
-		strconv.FormatUint(cutoff, 10), strconv.FormatUint(now+1, 10)} {
-		a.onEvent(appEvent{kind: "button", received: time.Now(), data: map[string]any{"event": "down", "edge_monotonic_ns": edge, "time": float64(time.Now().Unix())}})
+	// D-Bus transports the timestamp as uint64; malformed JSON no longer exists.
+	for _, edge := range []uint64{0, cutoff, now.Load() + 1} {
+		physicalButton(t, a, "down", edge)
 		if a.auth.Present() {
-			t.Fatalf("invalid metadata granted presence: %v", edge)
+			t.Fatalf("invalid edge granted presence: %v", edge)
 		}
 	}
-	edge := freshDown(a)
+	edge := freshDown(t, a)
 	if !a.auth.Present() {
-		t.Fatal("exact decimal down refused")
+		t.Fatal("exact uint64 down refused")
 	}
-	now = edge + uint64(5*time.Minute)
-	a.onEvent(appEvent{kind: "button", data: map[string]any{"event": "down", "edge_monotonic_ns": strconv.FormatUint(edge, 10)}})
+	now.Store(edge + uint64(5*time.Minute))
+	physicalButton(t, a, "down", edge)
 	if a.auth.Present() {
 		t.Fatal("duplicate renewed expired proof")
 	}
-	freshDown(a)
+	freshDown(t, a)
 	if !a.auth.Present() {
 		t.Fatal("new down refused after expiry")
 	}
@@ -511,7 +538,7 @@ func TestWifiConnectDisarmsBeforeDBusAndStaysDisarmedOnError(t *testing.T) {
 	if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
 		t.Fatal("open setup", w.Code)
 	}
-	freshDown(a)
+	freshDown(t, a)
 	core.mu.Lock()
 	core.status = network.Status{Mode: "hotspot", Generation: "network:1", Address: hotspotAddress, Phase: "idle"}
 	core.connectEntered, core.connectResume = make(chan struct{}), make(chan struct{})
@@ -538,7 +565,7 @@ func TestWifiConnectDisarmsBeforeDBusAndStaysDisarmedOnError(t *testing.T) {
 		<-done
 		t.Fatal("Connect started with admin proof still armed")
 	}
-	freshDown(a)
+	freshDown(t, a)
 	if a.auth.Present() {
 		close(core.connectResume)
 		<-done
@@ -620,7 +647,7 @@ func TestSetupNetworkGenerationRequiresNewProof(t *testing.T) {
 	if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
-	freshDown(a)
+	freshDown(t, a)
 	core.mu.Lock()
 	core.status.Generation = "network:2"
 	core.mu.Unlock()
@@ -628,7 +655,7 @@ func TestSetupNetworkGenerationRequiresNewProof(t *testing.T) {
 	if w := serviceRequest(h, "POST", "/setup", password, nil); !strings.Contains(w.Header().Get("Location"), "err=") || a.auth.Configured() {
 		t.Fatal("old network proof committed administrator", w.Header())
 	}
-	freshDown(a)
+	freshDown(t, a)
 	if w := serviceRequest(h, "POST", "/setup", password, nil); w.Header().Get("Location") != "/settings" {
 		t.Fatal("fresh proof rejected", w.Header())
 	}

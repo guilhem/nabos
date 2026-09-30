@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/guilhem/nabos/services/internal/bus"
 	"github.com/guilhem/nabos/services/internal/device"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 )
 
 func (a *App) clockNow() time.Time { _, _, now := a.clockSnapshot(); return now }
@@ -21,12 +21,12 @@ func (a *App) clockNow() time.Time { _, _, now := a.clockSnapshot(); return now 
 // operation, including silence between chapters. Generic audio/voice use the
 // daemon's own gate; the parent validates this agent's systemd unit.
 type maintenanceAgent struct {
-	app                          *App
-	mu                           sync.Mutex
-	held                         bool
-	recovering                   bool
-	token, operation, owner      string
-	releasedToken, releasedOwner string
+	app                                             *App
+	mu                                              sync.Mutex
+	held                                            bool
+	recovering                                      bool
+	token, operation, owner                         string
+	releasedToken, releasedOwner, releasedOperation string
 }
 
 func (m *maintenanceAgent) daemon(sender dbus.Sender) bool {
@@ -56,22 +56,32 @@ func (m *maintenanceAgent) Acquire(sender dbus.Sender, operation string) (string
 			return "", dbus.MakeFailedError(errors.New("media busy"))
 		}
 	}
-	connected, online := m.app.bus.Healthy()
-	state, _ := m.app.bus.State()
+	state, online := m.app.rabbit.State()
 	m.app.mu.Lock()
 	busy := m.app.interaction != nil || m.app.radioCancel != nil || m.app.mediaCancel != nil
 	m.app.mu.Unlock()
-	if !connected || !online || busy || state.Playing != nil || state.State != "idle" && state.State != "asleep" {
+	if !online || !m.app.rabbit.Ready() || !state.HardwareReady() || busy || state.Playing != nil || state.State != "idle" && state.State != "asleep" {
 		if acquired {
 			<-m.app.mediaGate
 		}
-		return "", dbus.MakeFailedError(errors.New("rabbit busy or MQTT offline"))
+		return "", dbus.MakeFailedError(errors.New("rabbit busy or hardware offline"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
+	defer cancel()
+	// Holding the app gate alone does not stop idle animations or queued ears.
+	// Keep both gates closed if quiescence cannot be confirmed.
+	m.held, m.operation, m.owner = true, operation, string(sender)
+	if err := m.app.rabbit.SetMaintenance(ctx, true); err != nil {
+		m.recovering = true
+		return "", dbus.MakeFailedError(err)
+	}
+	if !m.daemon(sender) {
+		m.recovering = true
+		return "", dbus.NewError("org.freedesktop.DBus.Error.AccessDenied", nil)
 	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		if acquired {
-			<-m.app.mediaGate
-		}
+		m.recovering = true
 		return "", dbus.MakeFailedError(err)
 	}
 	m.held, m.token, m.operation, m.owner = true, hex.EncodeToString(raw), operation, string(sender)
@@ -83,23 +93,40 @@ func (m *maintenanceAgent) Release(sender dbus.Sender, token string) *dbus.Error
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.held && token != "" && token == m.releasedToken && m.releasedOwner == string(sender) {
+	if m.token == "" && token != "" && token == m.releasedToken && m.releasedOwner == string(sender) {
 		return nil
 	}
 	if !m.held || token == "" || token != m.token || m.owner != string(sender) {
 		return dbus.NewError("org.freedesktop.DBus.Error.AccessDenied", nil)
 	}
 	status, err := m.app.device.UpdateStatus(context.Background())
-	if err != nil || status.State == "installing" || status.State == "downloading" {
+	if err != nil || !maintenanceSafe(status.State) || !m.daemon(sender) {
 		return dbus.MakeFailedError(errors.New("updater recovery pending"))
 	}
-	m.release()
+	m.releaseReservation()
 	return nil
 }
-func (m *maintenanceAgent) release() {
-	m.releasedToken, m.releasedOwner = m.token, m.owner
+
+// Release acknowledges this agent only. Both agents stay paused until the
+// coordinator has released every reservation and reopened its admission gate.
+func (m *maintenanceAgent) releaseReservation() {
+	m.releasedToken, m.releasedOwner, m.releasedOperation = m.token, m.owner, m.operation
+	m.token, m.owner, m.operation = "", "", ""
+	m.recovering = true
+	kick(m.app.haKick)
+}
+
+func (m *maintenanceAgent) resume() *dbus.Error {
+	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
+	defer cancel()
+	if err := m.app.rabbit.SetMaintenance(ctx, false); err != nil {
+		return dbus.MakeFailedError(err)
+	}
 	<-m.app.mediaGate
 	m.held, m.recovering, m.token, m.operation, m.owner = false, false, "", "", ""
+	kick(m.app.clockKick)
+	go m.app.restoreRabbit()
+	return nil
 }
 
 // Abort is the daemon's rollback for an Acquire whose reply was lost. It is
@@ -110,13 +137,17 @@ func (m *maintenanceAgent) Abort(sender dbus.Sender, operation string) *dbus.Err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.held {
+	if !m.held || m.token == "" && m.releasedOperation == operation && m.releasedOwner == string(sender) {
 		return nil
 	}
 	if m.owner != string(sender) || m.operation != operation {
 		return dbus.NewError("org.freedesktop.DBus.Error.AccessDenied", nil)
 	}
-	m.release()
+	status, err := m.app.device.UpdateStatus(context.Background())
+	if err != nil || !maintenanceSafe(status.State) || !m.daemon(sender) {
+		return dbus.MakeFailedError(errors.New("updater recovery pending"))
+	}
+	m.releaseReservation()
 	return nil
 }
 func maintenanceSafe(state string) bool {
@@ -130,15 +161,19 @@ func (m *maintenanceAgent) holdRecovery() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.recovering = true
+	m.app.stopMedia()
+	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
+	defer cancel()
+	// SetMaintenance pauses the engine even while an app sequence is draining.
+	_ = m.app.rabbit.SetMaintenance(ctx, true)
+	m.token, m.operation, m.owner = "", "", ""
 	if !m.held {
 		select {
 		case m.app.mediaGate <- struct{}{}:
 			m.held = true
 		default:
-			return // the active media drains; retry before releasing recovery
 		}
 	}
-	m.token, m.operation, m.owner = "", "", ""
 }
 func (m *maintenanceAgent) recover(ctx context.Context) {
 	m.mu.Lock()
@@ -154,6 +189,10 @@ func (m *maintenanceAgent) recover(ctx context.Context) {
 			return
 		}
 	}
+	var owner string
+	if m.app.device.Conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, device.Destination).Store(&owner) != nil {
+		return
+	}
 	var ready, maintenance bool
 	if m.app.device.Property(ctx, "Manager", "Ready", &ready) != nil || !ready || m.app.device.Property(ctx, "Manager", "Maintenance", &maintenance) != nil || maintenance {
 		return
@@ -166,9 +205,8 @@ func (m *maintenanceAgent) recover(ctx context.Context) {
 			safe = !slices.Contains(capabilities, "updates")
 		}
 	}
-	if safe {
-		<-m.app.mediaGate
-		m.held, m.recovering = false, false
+	if safe && m.daemon(dbus.Sender(owner)) {
+		_ = m.resume()
 	}
 }
 
@@ -187,7 +225,7 @@ func (a *App) deviceLoop(ctx context.Context) {
 	defer ticker.Stop()
 	registered, observed := "", ""
 	lastSettings := device.Settings{}
-	lastState := bus.CoreState{}
+	lastState := rabbit.State{}
 	refresh := func() {
 		var owner string
 		callCtx, cancel := context.WithTimeout(ctx, device.Timeout)
@@ -201,6 +239,7 @@ func (a *App) deviceLoop(ctx context.Context) {
 		if owner != observed {
 			a.agent.holdRecovery()
 			observed = owner
+			a.setIndicator("")
 			if state, err := a.device.VoiceState(ctx); err == nil {
 				a.voiceEvent("status", map[string]any{"status": state})
 			}
@@ -225,7 +264,7 @@ func (a *App) deviceLoop(ctx context.Context) {
 				a.publishSettings(ctx)
 				kick(a.clockKick)
 			}
-			state, _ := a.bus.State()
+			state, _ := a.rabbit.State()
 			if changed || state.State != lastState.State || state.Ears != lastState.Ears {
 				a.ha.State(state.State, int(settings.Volume), state.Ears.Left, state.Ears.Right)
 			}
@@ -246,9 +285,8 @@ func (a *App) deviceLoop(ctx context.Context) {
 				continue
 			}
 			if signal.Name == "org.freedesktop.DBus.NameOwnerChanged" {
-				a.agent.holdRecovery()
-				registered, observed = "", ""
-				a.setIndicator("")
+				// Resolve the current owner in refresh. Buffered notifications for
+				// an already recovered owner must not cancel new product media.
 				refresh()
 			} else if signal.Name == device.Interface("Voice")+".Event" && a.agent.daemon(dbus.Sender(signal.Sender)) {
 				var event, raw string

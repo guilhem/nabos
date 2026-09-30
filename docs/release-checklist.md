@@ -1,4 +1,4 @@
-Image NabOS pour un premier flash et des mises à jour signées de ce partitionnement. Aucune migration d'un ancien agencement ni repartitionnement par mise à jour n'est prévue. Raspberry Pi OS Lite Trixie, RAUC A/B, PipeWire et MQTT 5 ; carte microSD de 16 Go minimum. Choisir `zero-armv6` pour le Zero W original, `zero2-arm64` pour le Zero 2 W.
+Image NabOS pour un premier flash et des mises à jour signées de ce partitionnement. Aucune migration d'un ancien agencement ni repartitionnement par mise à jour n'est prévue. Raspberry Pi OS Lite Trixie, RAUC A/B, PipeWire et D-Bus ; carte microSD de 16 Go minimum. Choisir `zero-armv6` pour le Zero W original, `zero2-arm64` pour le Zero 2 W.
 
 Créer d'abord une **prérelease** avec son changelog ; la CI y ajoute les artefacts selon la [procédure de release](build.md#créer-une-release). La réussite de la CI valide la fabrication ; elle ne valide pas le matériel. Le passage en **stable est bloqué** tant que les essais ci-dessous ne sont pas réussis et consignés sur **Zero W et Zero 2 W** réels, avec version, révision de carte, carte SD et journaux. Copier les journaux volatils sur `/data` avant chaque arrêt ou coupure contrôlée ; distinguer les inspections sur l'hôte des exécutions sur l'appareil.
 
@@ -10,7 +10,7 @@ Les [essais Zero 2 W du 30 septembre 2026](qualification-zero2-2026-09-30.md) co
 - [ ] Démarrage autonome de PipeWire et des applications, sans connexion utilisateur.
 - [ ] Oreilles, calibration, cinq LED, bouton, capture et lecture simultanées ; lecteurs CR14 et NFC ST25 testés séparément sur leurs cartes.
 - [ ] Animations pendant le son ; arrêt et reprise après redémarrage de PipeWire.
-- [ ] Reconnexion MQTT ; aucune commande expirée, retenue ou déjà exécutée ne se rejoue.
+- [ ] Reconnexion D-Bus après restart hardware/application ; aucun mouvement ancien ne se rejoue, LED nettoyées et oreilles/RFID réellement au repos avant une nouvelle prise de contrôle.
 - [ ] Sur l'image fraîchement flashée, contrôler les deux environnements U-Boot bruts à 1 et 2 Mio (64 Kio chacun), les deux copies FAT identiques à 4 et 260 Mio (256 Mio chacune) et l'entrée MBR de p1. Démarrer matériellement depuis chacune des copies FAT en faisant pointer p1 vers elle.
 - [ ] Installer un vrai bundle RAUC signé `verity`/Zstd sur l'appareil : `rootfs.ext4` vers la racine inactive puis `boot.vfat` via `boot-mbr-switch`. Vérifier p1 basculée entre 4 et 260 Mio, A → B puis B → A, et noyau, DTB, overlays et modules provenant du même slot racine.
 - [ ] Refus de signatures incorrectes et de la mauvaise architecture ; interruption du téléchargement. Vérifier aussi qu'un système déjà installé sait ouvrir le bundle suivant ; si le lecteur change de manière incompatible, qualifier une release de transition.
@@ -19,7 +19,7 @@ Les [essais Zero 2 W du 30 septembre 2026](qualification-zero2-2026-09-30.md) co
 - [ ] Réseau, identité, authentification, réglages et calibration conservés après mise à jour et rollback . Cette extraction ne migre pas les anciennes configurations ; qualifier le nouveau format par premier flash.
 - [ ] Interface de mise à jour après le premier flash : choix d'une version, canaux Stable/Test, réglages conservés et automatique désactivé par défaut.
 - [ ] Automatique nocturne : heure fiable, fin des lectures/radio/voix, créneau traversant minuit, désactivation avant redémarrage et une seule tentative par créneau.
-- [ ] Reprise après redémarrage de device-core ou nab-service et coupure en fin d'installation : aucune seconde écriture ni redémarrage intempestif ; échec ou rollback visible dans l'interface, version exclue de l'automatique, réessai manuel possible.
+- [ ] Reprise après redémarrage de device-core ou nabos et coupure en fin d'installation : aucune seconde écriture ni redémarrage intempestif ; échec ou rollback visible dans l'interface, version exclue de l'automatique, réessai manuel possible.
 - [ ] Horloge, sommeil, lecture et RFID utilisables sans Internet ni Home Assistant.
 - [ ] Tai-chi et surprises : programmation, langues, déclenchement manuel, sommeil et redémarrage ; tags pynab existants et nouvellement écrits.
 - [ ] Boule magique au clic puis maintien ; récupération administrateur uniquement après deux clics puis maintien de 10 secondes, sans extinction accidentelle.
@@ -35,19 +35,20 @@ Les assets comprennent l'image de premier flash, le bundle RAUC signé, les mani
 
 - [ ] Pin externe final : dépôt indépendant, commit, archive immuable et SHA-256 ; fabrication depuis cette archive pour ARMv6 et ARM64, distincte de la révision NabOS. Aucune valeur provisoire publiée.
 - [ ] Replay hors résolution Internet : deux Cargo.lock, deux vendors et identités séparées ; refus d’une archive, d’un binaire, d’un verrou Cargo ou d’une architecture substitués.
+- [ ] Séparation des privilèges : seul nab-hardware reçoit CAP_SYS_RAWIO et gpio/video/kmem ; nabos reçoit CAP_NET_BIND_SERVICE et /data/nabos ; aucun paquet/configuration/unité/binaire de Mosquitto ou ancien service livré.
 - [ ] Image livrée : seulement les trois exécutables et leurs ressources/notices ; aucun checkout, outil Go/Cargo, cache ou vendor de fabrication.
 - [ ] Racine réellement en lecture seule, montages de boot-init et restrictions systemd effectives : premier démarrage puis redémarrage ; `/data/device-core/settings.json` et `/data/nabos/application.json` séparés. Activer SSH et LVA dès ce premier démarrage, vérifier home/cache/préférences sous `/var/lib/nabos/lva`.
-- [ ] device-core sans capability matérielle, PipeWire partagé ; droits NetworkManager/power/time/SSH/NTP/LVA accordés uniquement à son unité. Refus depuis nab-core, nab-service et une session du même compte ; présence D-Bus admise uniquement depuis nab-core.
-- [ ] HTTP device-core désactivé : contrôle de santé dépendant de Ready D-Bus, de nab-service et des unités actives ; daemon arrêté ou non prêt ne doit pas confirmer le slot.
+- [ ] device-core sans capability matérielle, PipeWire partagé ; droits NetworkManager/power/time/SSH/NTP/LVA accordés uniquement à son unité. Refus depuis nab-hardware, nabos et une session du même compte ; présence D-Bus admise uniquement depuis nab-hardware.
+- [ ] HTTP device-core désactivé : contrôle de santé dépendant des deux Ready D-Bus, de nabos et des unités actives ; daemon arrêté ou non prêt ne doit pas confirmer le slot.
 - [ ] Garder un FD de réseau ouvert, redémarrer device-core, vérifier inode inchangé et mutations toujours bloquées ; fermer le FD, vérifier reprise. Vérifier aussi nouveau generation/ancien generation rejeté.
-- [ ] Audio interrompu, restart du core et disparition du client : aucun ancien ID ne stoppe une nouvelle lecture ; chorégraphies et calibration matérielle inchangées.
-- [ ] Réseau sans Go/MQTT ; clients Go/nab-core connectés directement au même bus device-core. RAUC reste accessible à root pour la santé ; documenter la portée par compte partagé de sa policy D-Bus.
+- [ ] Audio interrompu, restart de nabos et disparition du client : aucun ancien ID ne stoppe une nouvelle lecture ; chorégraphies et calibration matérielle inchangées.
+- [ ] Réseau sans Go ; clients Go/nab-hardware connectés directement au même bus device-core. RAUC reste accessible à root pour la santé ; documenter la portée par compte partagé de sa policy D-Bus.
 
 ## Qualification Wi-Fi
 
 - [ ] Sur ARMv6 et ARM64 : scan explicite pendant le hotspot, saisie manuelle, connexion avec mot de passe erroné et absence de DHCP, annulation et retour à la connexion précédente ou au hotspot.
 - [ ] Confirmer la réussite sur un LAN sans Internet ; conserver les profils fonctionnels précédents.
 - [ ] Premier démarrage et persistance après coupure de courant, redémarrage du cœur et de NetworkManager pendant une tentative, racine réellement en lecture seule et restrictions systemd effectives.
-- [ ] Wi-Fi device-core sans Go ni MQTT ; matériel disponible malgré NetworkManager indisponible.
+- [ ] Wi-Fi device-core sans Go ; matériel disponible malgré NetworkManager indisponible.
 - [ ] Formulaire avant administration accessible uniquement par le hotspot réel avec confirmation physique liée à la réservation ; après administration, connexion obligatoire y compris sur le hotspot.
 - [ ] Vérifier DNS captif et accès HTTP sur 80 ; `/healthz` distant reste inaccessible.

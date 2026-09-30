@@ -298,8 +298,8 @@ const core = {user: 'nabos', system_unit: 'device-core.service', no_new_privileg
 for (const action of ['network-control', 'wifi.scan', 'wifi.share.open',
                      'settings.modify.system', 'checkpoint-rollback']) {
   assert.equal(decide(action, core), 'yes');
-  assert.equal(decide(action, {...core, system_unit: 'nab-service.service'}), 'no');
-  assert.equal(decide(action, {...core, system_unit: 'nab-core.service'}), 'no');
+  assert.equal(decide(action, {...core, system_unit: 'nabos.service'}), 'no');
+  assert.equal(decide(action, {...core, system_unit: 'nab-hardware.service'}), 'no');
   assert.equal(decide(action, {...core, system_unit: 'user@1000.service'}), 'no');
   assert.equal(decide(action, {...core, no_new_privileges: false}), 'no');
   assert.equal(decide(action, {...core, user: 'nobody'}), 'not_handled');

@@ -1,10 +1,10 @@
-//! Authenticated maintenance callbacks; the engine owns the reservation and barrier.
+//! Authenticated maintenance reservations and recovery at hardware quiescence.
 
+use crate::bus::Hardware;
 use crate::device::{bounded, Device, ROOT, SERVICE};
-use crate::engine::Input;
 use std::io::Read;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use zbus::{fdo, message::Header, Connection, Proxy};
 
 pub const PATH: &str = "/io/github/guilhem/DeviceCore1/Agent";
@@ -13,13 +13,6 @@ pub enum Operation {
     Acquire(String),
     Release(String),
     Abort(String),
-}
-
-pub struct Request {
-    pub connection: Connection,
-    pub owner: String,
-    pub operation: Operation,
-    pub reply: oneshot::Sender<fdo::Result<String>>,
 }
 
 pub struct Observation {
@@ -137,7 +130,7 @@ impl State {
     }
 }
 
-struct Agent(UnboundedSender<Input>);
+pub struct Agent(pub Arc<Hardware>);
 
 impl Agent {
     async fn request(
@@ -157,22 +150,13 @@ impl Agent {
                 "invalid-maintenance-argument".into(),
             ));
         }
-        let (reply, receiver) = oneshot::channel();
         self.0
-            .send(Input::Maintenance(Request {
-                connection: bus.clone(),
-                owner: sender.to_string(),
-                operation,
-                reply,
-            }))
-            .map_err(|_| fdo::Error::Failed("engine-stopped".into()))?;
-        receiver
+            .maintenance_request(bus, sender.to_string(), operation)
             .await
-            .map_err(|_| fdo::Error::Failed("engine-stopped".into()))?
     }
 }
 
-/// Fence the engine's mutation, after queued input or D-Bus awaits, against the
+/// Fence a callback, after D-Bus awaits, against the
 /// actual current daemon owner. An old authenticated request can become stale.
 pub async fn authorize(bus: &Connection, sender: &str) -> fdo::Result<()> {
     let dbus = zbus::fdo::DBusProxy::new(bus).await?;
@@ -218,7 +202,7 @@ impl Agent {
     }
 }
 
-pub fn start(device: Device, tx: UnboundedSender<Input>) {
+pub fn start(device: Device, hardware: Arc<Hardware>) {
     tokio::spawn(async move {
         let mut exported: Option<Connection> = None;
         let mut registered = String::new();
@@ -233,10 +217,6 @@ pub fn start(device: Device, tx: UnboundedSender<Input>) {
                     .as_ref()
                     .is_none_or(|old| old.is_closed() || old.unique_name() != bus.unique_name())
                 {
-                    bus.object_server()
-                        .at(PATH, Agent(tx.clone()))
-                        .await
-                        .map_err(|e| e.to_string())?;
                     exported = Some(bus.clone());
                     registered.clear();
                 }
@@ -291,9 +271,7 @@ pub fn start(device: Device, tx: UnboundedSender<Input>) {
                 }
                 last_error.clear();
             }
-            if tx.send(Input::MaintenanceObserved(observation)).is_err() {
-                break;
-            }
+            hardware.observe(observation).await;
         }
     });
 }

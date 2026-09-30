@@ -56,8 +56,8 @@ systemctl set-default multi-user.target
 systemctl --global enable pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
 # No Bluetooth feature is used; remove the D-Bus activation alias before masking.
 systemctl disable bluetooth.service
-systemctl enable device-core.service nab-core.service nab-service.service nabos-rfid.service nabos-health.service \
-	linux-voice-assistant.service tagtagtag-mixerd.service mosquitto.service \
+systemctl enable device-core.service nab-hardware.service nabos.service nabos-rfid.service nabos-health.service \
+	linux-voice-assistant.service tagtagtag-mixerd.service \
 	NetworkManager.service avahi-daemon.service systemd-timesyncd.service ssh.service
 # Writers to the read-only root, jobs with nothing to do here, and services that
 # would fight NetworkManager or tagtagtag-mixerd (owner of the mixer state).

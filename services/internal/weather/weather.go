@@ -15,39 +15,30 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/config"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 )
 
-// Animation is the core "info" animation format.
-type Animation struct {
-	Tempo  int                 `json:"tempo"`
-	Colors []map[string]string `json:"colors"`
+func anim(tempo uint32, frames ...[3]rabbit.RGB) *rabbit.Animation {
+	return &rabbit.Animation{Tempo: tempo, Frames: frames}
 }
 
-func anim(tempo int, frames ...[3]string) *Animation {
-	a := &Animation{Tempo: tempo}
-	for _, f := range frames {
-		a.Colors = append(a.Colors, map[string]string{"left": f[0], "center": f[1], "right": f[2]})
-	}
-	return a
-}
-
-const k, y, b = "000000", "ffff00", "0000ff"
+var k, y, b = rabbit.RGB{}, rabbit.RGB{255, 255, 0}, rabbit.RGB{0, 0, 255}
 
 // Weather animations using the original Violet color sequences.
 var (
-	sunny  = anim(25, [3]string{y, y, y}, [3]string{y, y, y}, [3]string{y, y, y}, [3]string{y, y, y}, [3]string{y, y, y}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k})
-	cloudy = anim(125, [3]string{k, y, k}, [3]string{b, k, b})
-	foggy  = anim(25, [3]string{b, b, b}, [3]string{b, b, b}, [3]string{b, b, b}, [3]string{b, b, b}, [3]string{b, b, b}, [3]string{k, k, k})
-	rainy  = anim(20, [3]string{k, k, k}, [3]string{k, b, k}, [3]string{b, k, b}, [3]string{k, k, k}, [3]string{k, k, b}, [3]string{b, k, k}, [3]string{k, k, b}, [3]string{k, b, k}, [3]string{k, k, b})
-	snowy  = anim(40, [3]string{b, k, k}, [3]string{k, k, k}, [3]string{k, k, b}, [3]string{k, k, k}, [3]string{k, b, k}, [3]string{k, k, k}, [3]string{k, k, b}, [3]string{k, k, k}, [3]string{k, b, k}, [3]string{k, k, k}, [3]string{b, k, k}, [3]string{k, k, k})
-	stormy = anim(25, [3]string{k, b, y}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{b, y, k}, [3]string{k, b, y}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, y, b}, [3]string{y, b, k})
+	sunny  = anim(25, [3]rabbit.RGB{y, y, y}, [3]rabbit.RGB{y, y, y}, [3]rabbit.RGB{y, y, y}, [3]rabbit.RGB{y, y, y}, [3]rabbit.RGB{y, y, y}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k})
+	cloudy = anim(125, [3]rabbit.RGB{k, y, k}, [3]rabbit.RGB{b, k, b})
+	foggy  = anim(25, [3]rabbit.RGB{b, b, b}, [3]rabbit.RGB{b, b, b}, [3]rabbit.RGB{b, b, b}, [3]rabbit.RGB{b, b, b}, [3]rabbit.RGB{b, b, b}, [3]rabbit.RGB{k, k, k})
+	rainy  = anim(20, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, b, k}, [3]rabbit.RGB{b, k, b}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, b}, [3]rabbit.RGB{b, k, k}, [3]rabbit.RGB{k, k, b}, [3]rabbit.RGB{k, b, k}, [3]rabbit.RGB{k, k, b})
+	snowy  = anim(40, [3]rabbit.RGB{b, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, b}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, b, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, b}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, b, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{b, k, k}, [3]rabbit.RGB{k, k, k})
+	stormy = anim(25, [3]rabbit.RGB{k, b, y}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{b, y, k}, [3]rabbit.RGB{k, b, y}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, y, b}, [3]rabbit.RGB{y, b, k})
 	// Rain within the hour.
-	rainSoon = anim(16, [3]string{k, "003399", k}, [3]string{"003399", k, "003399"}, [3]string{k, k, k}, [3]string{k, "003399", k}, [3]string{"003399", k, "003399"}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, k, k}, [3]string{k, "003399", k}, [3]string{"003399", k, "003399"}, [3]string{k, k, k}, [3]string{k, "003399", k}, [3]string{"003399", k, "003399"}, [3]string{k, k, k})
+	rainSoon = anim(16, [3]rabbit.RGB{k, rabbit.RGB{0, 51, 153}, k}, [3]rabbit.RGB{rabbit.RGB{0, 51, 153}, k, rabbit.RGB{0, 51, 153}}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, rabbit.RGB{0, 51, 153}, k}, [3]rabbit.RGB{rabbit.RGB{0, 51, 153}, k, rabbit.RGB{0, 51, 153}}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, rabbit.RGB{0, 51, 153}, k}, [3]rabbit.RGB{rabbit.RGB{0, 51, 153}, k, rabbit.RGB{0, 51, 153}}, [3]rabbit.RGB{k, k, k}, [3]rabbit.RGB{k, rabbit.RGB{0, 51, 153}, k}, [3]rabbit.RGB{rabbit.RGB{0, 51, 153}, k, rabbit.RGB{0, 51, 153}}, [3]rabbit.RGB{k, k, k})
 )
 
 // Class maps a WMO weather code to a sky sound (weather/sky/<class>.mp3)
 // and an animation.
-func Class(code int) (string, *Animation) {
+func Class(code int) (string, *rabbit.Animation) {
 	switch {
 	case code <= 1:
 		return "sunny", sunny
@@ -173,7 +164,7 @@ func (c *Client) Geocode(ctx context.Context, name, lang string) (*Place, error)
 }
 
 // Infos returns the idle animations to show: weather and rain (nil removes).
-func Infos(cfg config.Weather, f *Forecast) (weatherInfo, rainInfo *Animation) {
+func Infos(cfg config.Weather, f *Forecast) (weatherInfo, rainInfo *rabbit.Animation) {
 	if f == nil {
 		return nil, nil
 	}
@@ -187,8 +178,8 @@ func Infos(cfg config.Weather, f *Forecast) (weatherInfo, rainInfo *Animation) {
 }
 
 // Message builds the spoken forecast (core "message" args). day: 0 today, 1 tomorrow.
-func Message(cfg config.Weather, f *Forecast, day int) map[string]any {
-	sig := map[string]any{"audio": []string{"weather/signature.mp3"}}
+func Message(cfg config.Weather, f *Forecast, day int) rabbit.Command {
+	sig := &rabbit.Item{Audio: []string{"weather/signature.mp3"}}
 	var audio []string
 	switch {
 	case cfg.Location == "":
@@ -208,7 +199,7 @@ func Message(cfg config.Weather, f *Forecast, day int) map[string]any {
 			"weather/" + unit,
 		}
 	}
-	return map[string]any{"signature": sig, "body": []any{map[string]any{"audio": audio}}}
+	return rabbit.Command{Action: rabbit.Message, Cancelable: true, Signature: sig, Body: []rabbit.Item{{Audio: audio}}}
 }
 
 // NextAnnouncement for frequencies 1 and 2 (random like weather).

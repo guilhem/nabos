@@ -1,23 +1,69 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
 	"time"
 
-	"github.com/guilhem/nabos/services/internal/bus"
 	"github.com/guilhem/nabos/services/internal/config"
+	"github.com/guilhem/nabos/services/internal/hardware"
 	"github.com/guilhem/nabos/services/internal/pynab"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 )
 
 type appEvent struct {
-	kind     string
-	data     map[string]any
+	rabbit.Event
 	received time.Time
 }
+
+// Product names and colon-separated UIDs stay at the app/HA boundary.
+type productTag struct {
+	Removed                       bool
+	Tech, UID, App, Data, Support string
+	RawUID                        []byte
+	Locked, Formatted             bool
+	Picture                       uint8
+	Received                      time.Time
+}
+
+func tagFromHardware(tag hardware.Tag) productTag {
+	uid := make([]string, len(tag.UID))
+	for i, b := range tag.UID {
+		uid[i] = fmt.Sprintf("%02x", b)
+	}
+	data := tag.Data
+	if end := bytes.IndexByte(data, 0xff); end >= 0 {
+		data = data[:end]
+	}
+	app := ""
+	if tag.Formatted && tag.App != 255 {
+		app = pynab.TagApp(tag.App)
+	}
+	return productTag{Removed: tag.Removed, Tech: tag.Tech, UID: strings.Join(uid, ":"), RawUID: append([]byte(nil), tag.UID...), App: app, Data: strings.ToValidUTF8(string(data), "\ufffd"), Support: tag.Support, Locked: tag.Locked, Formatted: tag.Formatted, Picture: tag.Picture, Received: time.Now()}
+}
+func (tag productTag) payload() map[string]any {
+	event := "detected"
+	if tag.Removed {
+		event = "removed"
+	}
+	payload := map[string]any{"event": event, "tech": tag.Tech, "uid": tag.UID, "v": 1, "time": float64(tag.Received.UnixNano()) / 1e9}
+	if !tag.Removed {
+		payload["support"], payload["locked"] = tag.Support, tag.Locked
+		if tag.Formatted {
+			payload["picture"] = tag.Picture
+		}
+		if tag.App != "" {
+			payload["app"], payload["data"] = tag.App, tag.Data
+		}
+	}
+	return payload
+}
+
 type interaction struct {
 	kind      string
 	events    chan appEvent
@@ -89,7 +135,7 @@ func (a *App) stopMedia() {
 
 // All media passes through this gate. Interactive sequences keep it between
 // chapters, so a chime cannot slip between a book's cancellation and next page.
-func (a *App) media(ctx context.Context, action string, args any, wait time.Duration) error {
+func (a *App) media(ctx context.Context, command rabbit.Command, wait time.Duration) error {
 	a.stopRadio()
 	queueCtx, cancel := context.WithTimeout(ctx, cmdTTL)
 	err := a.acquireMedia(queueCtx)
@@ -100,19 +146,23 @@ func (a *App) media(ctx context.Context, action string, args any, wait time.Dura
 	defer func() { <-a.mediaGate }()
 	ctx, cancel = context.WithTimeout(ctx, wait)
 	defer cancel()
-	return a.playOwned(ctx, action, args)
+	return a.playOwned(ctx, command)
 }
 
-func (a *App) cancelMedia(id string) {
+func (a *App) cancelMedia(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := a.bus.Do(ctx, "cancel", map[string]any{"target": id}, 3*time.Second)
+	result, err := a.rabbit.Do(ctx, rabbit.Command{Action: rabbit.Cancel, Target: id, Deadline: time.Now().Add(3 * time.Second)})
+	if err == nil {
+		err = result.Err()
+	}
 	if err != nil {
 		slog.Debug("cancel command", "err", err)
 	}
+	return err
 }
 
-func (a *App) playOwned(ctx context.Context, action string, args any) error {
+func (a *App) playOwned(ctx context.Context, command rabbit.Command) error {
 	// Callers hold mediaGate, so this handle belongs to the only active play.
 	ctx, cancel := context.WithCancel(ctx)
 	a.mu.Lock()
@@ -124,10 +174,10 @@ func (a *App) playOwned(ctx context.Context, action string, args any) error {
 		a.mediaCancel = nil
 		a.mu.Unlock()
 	}()
-	id := bus.NewID()
-	r, err := a.bus.DoID(ctx, id, action, args, cmdTTL, nil)
+	command.ID, command.Deadline = rabbit.NewID(), time.Now().Add(cmdTTL)
+	r, err := a.rabbit.Do(ctx, command)
 	if err != nil {
-		a.cancelMedia(id)
+		a.cancelMedia(command.ID)
 		return err
 	}
 	return r.Err()
@@ -144,8 +194,7 @@ func (a *App) servicesLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.servicesTick(a.clockNow().In(a.location()))
-			connected, online := a.bus.Healthy()
-			if !connected || !online {
+			if !a.rabbit.Ready() {
 				a.stopMedia()
 			}
 		}
@@ -181,9 +230,9 @@ func (a *App) servicesTick(now time.Time) {
 			a.serviceError(job.name, err)
 			continue
 		}
-		state, online := a.bus.State()
+		state, initialized := a.rabbit.State()
 		// Expired jobs are not replayed in a burst after sleep or power loss.
-		if !job.next.IsZero() && online && state.State == "idle" && now.Sub(job.next) < time.Minute {
+		if !job.next.IsZero() && initialized && a.rabbit.Ready() && state.State == "idle" && now.Sub(job.next) < time.Minute {
 			a.mu.Lock()
 			busy := a.interaction != nil || a.radioCancel != nil
 			a.mu.Unlock()
@@ -198,22 +247,22 @@ func (a *App) performService(ctx context.Context, name, language, kind string) e
 	s := a.store.Get().Services
 	switch name {
 	case "taichi":
-		return a.media(ctx, "play", map[string]any{"sequence": []any{map[string]any{"choreography": "taichi/taichi.chor"}}}, 5*time.Minute)
+		return a.media(ctx, rabbit.Command{Action: rabbit.Play, Cancelable: true, Sequence: []rabbit.Item{{Choreography: "taichi/taichi.chor"}}}, 5*time.Minute)
 	case "surprise":
-		return a.media(ctx, "message", pynab.Surprise(a.clockNow().In(a.location()), language, kind), 5*time.Minute)
+		return a.media(ctx, pynab.Surprise(a.clockNow().In(a.location()), language, kind), 5*time.Minute)
 	case "eightball":
 		if !s.Eightball {
 			return errors.New("boule magique désactivée")
 		}
-		return a.media(ctx, "message", pynab.Eightball(language), time.Minute)
+		return a.media(ctx, pynab.Eightball(language), time.Minute)
 	case "airquality":
 		return a.announceAirQuality(ctx)
 	}
 	return errors.New("service inconnu")
 }
 
-func (a *App) serviceTag(tag map[string]any) {
-	app, data := str(tag, "app"), str(tag, "data")
+func (a *App) serviceTag(tag productTag) {
+	app, data := tag.App, tag.Data
 	s := a.store.Get()
 	var err error
 	switch app {
@@ -223,12 +272,12 @@ func (a *App) serviceTag(tag map[string]any) {
 	case "book":
 		err = a.startInteraction("book", data)
 	case "radio", "ifttt", "webhook":
-		association, ok := s.Tags[str(tag, "uid")]
+		association, ok := s.Tags[tag.UID]
 		if !ok || association.App != app {
 			err = errors.New("étiquette non configurée sur ce lapin")
 			break
 		}
-		err = a.performTagAction(a.ctx, app, str(tag, "uid"), association.Value)
+		err = a.performTagAction(a.ctx, app, tag.UID, association.Value)
 	default:
 		return
 	}
@@ -253,10 +302,10 @@ func (a *App) interactionEvent(e appEvent) bool {
 	if s == nil {
 		return false
 	}
-	if e.kind == "ears" || e.kind == "ear_moved" && e.received.Before(s.earsAfter) {
+	if e.Kind == "ears" || e.Kind == "ear_moved" && e.received.Before(s.earsAfter) {
 		return true
 	}
-	if e.kind != "button" && e.kind != "ear_moved" {
+	if e.Kind != "button" && e.Kind != "ear_moved" {
 		return false
 	}
 	select {
@@ -290,8 +339,8 @@ func (a *App) startInteraction(kind, data string) error {
 	if err != nil {
 		return errors.New("lapin occupé")
 	}
-	state, online := a.bus.State()
-	if !online || state.State != "idle" {
+	state, initialized := a.rabbit.State()
+	if !initialized || !a.rabbit.Ready() || state.State != "idle" {
 		<-a.mediaGate
 		return errors.New("lapin occupé ou endormi")
 	}
@@ -313,33 +362,31 @@ func (a *App) startInteraction(kind, data string) error {
 		a.interaction = nil
 		a.mu.Unlock()
 		ears := a.store.Get().Ears
-		a.send("ears", map[string]any{"left": ears[0], "right": ears[1]})
+		a.send(earsCommand(ears[0], ears[1]))
 		a.serviceError(kind, err)
 	}()
 	return nil
 }
 
-func sequence(audio, chor string) map[string]any {
-	item := map[string]any{}
+func sequence(audio, chor string) rabbit.Command {
+	item := rabbit.Item{Choreography: chor}
 	if audio != "" {
-		item["audio"] = []string{audio}
+		item.Audio = []string{audio}
 	}
-	if chor != "" {
-		item["choreography"] = chor
-	}
-	return map[string]any{"sequence": []any{item}, "cancelable": false}
+	return rabbit.Command{Action: rabbit.Play, Sequence: []rabbit.Item{item}}
 }
 
 // interactivePlay returns click, left/right, or up (eightball); targeted
 // cancellation waits for the old playback before the caller advances a chapter.
-func (a *App) interactivePlay(s *interaction, args map[string]any, navigate bool) (string, error) {
-	id := bus.NewID()
+func (a *App) interactivePlay(s *interaction, command rabbit.Command, navigate bool) (string, error) {
+	id := rabbit.NewID()
 	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 	done := make(chan error, 1)
 	published := make(chan struct{})
 	go func() {
-		r, err := a.bus.DoID(ctx, id, "play", args, cmdTTL, published)
+		command.ID, command.Deadline = id, time.Now().Add(cmdTTL)
+		r, err := a.rabbit.DoStarted(ctx, command, published)
 		if err == nil {
 			err = r.Err()
 		}
@@ -364,19 +411,27 @@ func (a *App) interactivePlay(s *interaction, args map[string]any, navigate bool
 			a.cancelMedia(id)
 			return "", s.ctx.Err()
 		case e := <-s.events:
+			if !a.rabbit.EventCurrent(e.Event) {
+				continue
+			}
 			control := ""
-			if e.kind == "button" {
-				if str(e.data, "event") == "click" {
+			if e.Kind == "button" {
+				if e.Button == "click" {
 					control = "click"
 				}
-				if s.kind == "eightball" && str(e.data, "event") == "up" {
+				if s.kind == "eightball" && e.Button == "up" {
 					control = "up"
 				}
-			} else if navigate && e.kind == "ear_moved" {
-				control = str(e.data, "ear")
+			} else if navigate && e.Kind == "ear_moved" {
+				control = "left"
+				if e.Ear == 1 {
+					control = "right"
+				}
 			}
 			if control != "" {
-				a.cancelMedia(id)
+				if err := a.cancelMedia(id); err != nil {
+					return "", err
+				}
 				select {
 				case <-done:
 				case <-time.After(3 * time.Second):
@@ -404,7 +459,10 @@ func (a *App) askEightball(s *interaction) error {
 			case <-ctx.Done():
 				break wait
 			case e := <-s.events:
-				if e.kind == "button" && str(e.data, "event") == "up" {
+				if !a.rabbit.EventCurrent(e.Event) {
+					continue
+				}
+				if e.Kind == "button" && e.Button == "up" {
 					break wait
 				}
 			}
@@ -413,10 +471,10 @@ func (a *App) askEightball(s *interaction) error {
 	if s.ctx.Err() != nil {
 		return s.ctx.Err()
 	}
-	if err = a.playOwned(s.ctx, "play", sequence("eightball/acquired.mp3", "")); err != nil {
+	if err = a.playOwned(s.ctx, sequence("eightball/acquired.mp3", "")); err != nil {
 		return err
 	}
-	return a.playOwned(s.ctx, "message", pynab.Eightball("default"))
+	return a.playOwned(s.ctx, pynab.Eightball("default"))
 }
 
 func (a *App) readBook(s *interaction, data string) error {
@@ -433,7 +491,7 @@ func (a *App) readBook(s *interaction, data string) error {
 		return err
 	}
 	if control == "click" {
-		return a.playOwned(s.ctx, "play", sequence("system/abort.wav", ""))
+		return a.playOwned(s.ctx, sequence("system/abort.wav", ""))
 	}
 	chapter := 1
 	for pynab.ChapterExists(a.env.SoundsDirs, voice, isbn, chapter) {
@@ -443,19 +501,19 @@ func (a *App) readBook(s *interaction, data string) error {
 		}
 		switch control {
 		case "click":
-			_, err = a.interactivePlay(s, map[string]any{"cancelable": false, "sequence": []any{
-				map[string]any{"audio": []string{"system/abort.wav"}},
-				map[string]any{"audio": []string{"fr_FR/book/interrupt.mp3"}, "choreography": "fr_FR/book/interrupt.chor"},
+			_, err = a.interactivePlay(s, rabbit.Command{Action: rabbit.Play, Sequence: []rabbit.Item{
+				{Audio: []string{"system/abort.wav"}},
+				{Audio: []string{"fr_FR/book/interrupt.mp3"}, Choreography: "fr_FR/book/interrupt.chor"},
 			}}, false)
 			return err
 		case "left":
 			chapter = max(1, chapter-1)
-			if err = a.playOwned(s.ctx, "play", sequence("book/previous.mp3", "")); err != nil {
+			if err = a.playOwned(s.ctx, sequence("book/previous.mp3", "")); err != nil {
 				return err
 			}
 		case "right":
 			chapter++
-			if err = a.playOwned(s.ctx, "play", sequence("book/next.mp3", "")); err != nil {
+			if err = a.playOwned(s.ctx, sequence("book/next.mp3", "")); err != nil {
 				return err
 			}
 		default:
@@ -463,7 +521,7 @@ func (a *App) readBook(s *interaction, data string) error {
 		}
 		if control == "left" || control == "right" {
 			// PyNab ignores gestures during cancellation/navigation feedback.
-			// Discard both delivered gestures and those still queued by MQTT.
+			// Discard both delivered gestures and those still queued by the hardware event loop.
 			a.mu.Lock()
 			s.earsAfter = time.Now()
 			for len(s.events) > 0 {
@@ -480,7 +538,7 @@ func (a *App) readBook(s *interaction, data string) error {
 	}
 	control, err = a.interactivePlay(s, sequence("fr_FR/book/"+outro+".mp3", "fr_FR/book/"+outro+".chor"), false)
 	if err == nil && control == "click" {
-		return a.playOwned(s.ctx, "play", sequence("system/abort.wav", ""))
+		return a.playOwned(s.ctx, sequence("system/abort.wav", ""))
 	}
 	return err
 }

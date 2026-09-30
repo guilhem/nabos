@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/airquality"
-	"github.com/guilhem/nabos/services/internal/bus"
 	"github.com/guilhem/nabos/services/internal/clock"
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/ha"
 	"github.com/guilhem/nabos/services/internal/network"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 	"github.com/guilhem/nabos/services/internal/triggers"
 	"github.com/guilhem/nabos/services/internal/weather"
 	"github.com/guilhem/nabos/services/internal/web"
@@ -32,7 +32,7 @@ const cmdTTL = time.Minute
 type App struct {
 	env             Env
 	store           *config.Store
-	bus             *bus.Bus
+	rabbit          *rabbit.Engine
 	auth            *web.Auth
 	wx              *weather.Client
 	device          *device.Client
@@ -67,7 +67,7 @@ type App struct {
 	forecast    *weather.Forecast
 	wxErr       string
 	clk         clock.State
-	lastTag     map[string]any
+	lastTag     *productTag
 	network     string
 	nextWeather time.Time
 	wakeupDone  bool
@@ -122,16 +122,16 @@ func NewApp(env Env) (*App, error) {
 		return nil, err
 	}
 	a.ha = &ha.Bridge{Node: node, Model: "Nabaztag", Version: env.Version, OnCommand: a.haCommand}
-	a.bus = bus.New(env.MQTTHost, env.MQTTPort, "nab-service", bus.Handlers{
+	a.rabbit = rabbit.New(rabbit.Options{SoundsDirs: env.SoundsDirs, ChorDirs: env.ChorDirs, Version: env.Version}, rabbit.Handlers{
 		OnState: a.onState,
-		OnEvent: func(kind string, p map[string]any) {
+		OnEvent: func(e rabbit.Event) {
 			select {
-			case a.events <- appEvent{kind: kind, data: p, received: time.Now()}:
+			case a.events <- appEvent{Event: e, received: time.Now()}:
 			default:
-				slog.Warn("event queue full", "event", kind)
+				slog.Warn("event queue full", "event", e.Kind)
 			}
 		},
-		OnCoreOnline: func() { go a.resync() },
+		OnOnline: func() { go a.resync() },
 	})
 	return a, nil
 }
@@ -144,12 +144,21 @@ func kick(ch chan struct{}) {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	ctx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	a.ctx = ctx
 	defer a.device.Close()
 	a.agent.holdRecovery()
 	go a.eventLoop(ctx)
-	defer a.stopMedia()
-	if err := a.bus.Start(ctx); err != nil {
+	defer func() {
+		cancelRun()
+		a.stopMedia()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		a.rabbit.Stop(stopCtx)
+		a.ha.Stop()
+	}()
+	if err := a.rabbit.Start(ctx); err != nil {
 		return err
 	}
 	a.publishSettings(ctx)
@@ -158,13 +167,18 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	go a.deviceLoop(ctx)
 	srv := &http.Server{Addr: a.env.HTTPAddr, Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second}
+	defer func() {
+		shutdown, done := context.WithTimeout(context.Background(), 3*time.Second)
+		defer done()
+		_ = srv.Shutdown(shutdown)
+	}()
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	go a.clockLoop(ctx)
 	go a.weatherLoop(ctx)
 	go a.networkLoop(ctx)
 	go a.servicesLoop(ctx)
-	slog.Info("nab-service started", "version", a.env.Version, "http", a.env.HTTPAddr)
+	slog.Info("nabos started", "version", a.env.Version, "http", a.env.HTTPAddr)
 	select {
 	case <-ctx.Done():
 	case <-a.device.Conn.Context().Done():
@@ -172,38 +186,40 @@ func (a *App) Run(ctx context.Context) error {
 	case err := <-errc:
 		return err
 	}
-	sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	srv.Shutdown(sctx)
-	a.ha.Stop()
-	a.bus.Stop(sctx)
 	return nil
 }
 
-func (a *App) send(action string, args any) {
-	if action == "play" || action == "message" {
-		go func() { a.serviceError(action, a.media(a.ctx, action, args, 10*time.Minute)) }()
+func (a *App) send(command rabbit.Command) {
+	if command.Action == rabbit.Play || command.Action == rabbit.Message {
+		go func() { a.serviceError("media", a.media(a.ctx, command, 10*time.Minute)) }()
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(a.ctx, 3*time.Second)
 	defer cancel()
-	if _, err := a.bus.Send(ctx, action, args, cmdTTL); err != nil {
-		slog.Warn("core command not sent", "action", action, "err", err)
+	command.Deadline = time.Now().Add(cmdTTL)
+	if _, err := a.rabbit.Send(ctx, command); err != nil {
+		slog.Warn("rabbit command not sent", "action", command.Action, "err", err)
 	}
 }
 
 // do sends a command and waits for its result (UI actions).
-func (a *App) do(ctx context.Context, action string, args any, wait time.Duration) error {
-	if action == "play" || action == "message" {
-		return a.media(ctx, action, args, wait)
+func (a *App) do(ctx context.Context, command rabbit.Command, wait time.Duration) error {
+	if command.Action == rabbit.Play || command.Action == rabbit.Message {
+		return a.media(ctx, command, wait)
 	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	r, err := a.bus.Do(ctx, action, args, wait)
+	command.Deadline = time.Now().Add(wait)
+	r, err := a.rabbit.Do(ctx, command)
 	if err != nil {
 		return err
 	}
 	return r.Err()
+}
+
+func earsCommand(left, right int) rabbit.Command {
+	l, r := uint8(left), uint8(right)
+	return rabbit.Command{Action: rabbit.Ears, Left: &l, Right: &r}
 }
 
 func (a *App) systemSettings(ctx context.Context) (device.Settings, error) {
@@ -255,23 +271,34 @@ func (a *App) publishSettings(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	a.bus.PublishSettings(ctx, map[string]any{"v": 1, "locale": settings.Locale, "network": n})
+	a.rabbit.SetSettings(settings.Locale, n)
 }
 
-// resync sends what the core keeps in memory after it (re)starts.
+// resync restores product settings after hardware reconnects.
 func (a *App) resync() {
+	a.agent.mu.Lock()
+	blocked := a.agent.recovering || a.agent.held
+	a.agent.mu.Unlock()
+	if blocked {
+		return
+	}
 	a.stopMedia()
+	a.restoreRabbit()
+}
+
+func (a *App) restoreRabbit() {
 	st := a.store.Get()
-	a.send("ears", map[string]any{"left": st.Ears[0], "right": st.Ears[1]})
+	a.send(earsCommand(st.Ears[0], st.Ears[1]))
 	a.mu.Lock()
-	a.indicator = ""
+	indicator := a.indicator
 	a.mu.Unlock()
+	a.send(rabbit.Command{Action: rabbit.Indicator, Animation: indicators[indicator]})
 	a.pushInfos()
 	kick(a.airKick)
 	kick(a.clockKick)
 }
 
-func (a *App) onState(s bus.CoreState) {
+func (a *App) onState(s rabbit.State) {
 	a.mu.Lock()
 	if s.State != "playing" {
 		asleep := s.State == "asleep"
@@ -295,15 +322,15 @@ func (a *App) setOverride(sleep bool) {
 }
 
 func (a *App) onEvent(e appEvent) {
-	kind, p := e.kind, e.data
-	if kind == "button" {
-		a.ha.Button(str(p, "event"))
-		if str(p, "event") == "down" {
-			if edge, err := strconv.ParseUint(str(p, "edge_monotonic_ns"), 10, 64); err == nil {
-				a.auth.MarkPresence(edge)
-			}
+	if !a.rabbit.EventCurrent(e.Event) {
+		return
+	}
+	if e.Kind == "button" {
+		a.ha.Button(e.Button)
+		if e.Button == "down" {
+			a.auth.MarkPresence(e.EdgeMonotonicNS)
 		}
-		if str(p, "event") == "double_click_and_hold" {
+		if e.Button == "double_click_and_hold" {
 			a.stopInteraction()
 			a.serviceError("admin", a.auth.Reset())
 			return
@@ -312,15 +339,14 @@ func (a *App) onEvent(e appEvent) {
 	if a.interactionEvent(e) {
 		return
 	}
-	switch kind {
+	switch e.Kind {
 	case "button":
-		ev := str(p, "event")
-		switch ev {
+		switch e.Button {
 		case "click":
 			if a.voiceCommandForClick() {
 				return
 			}
-			a.setOverride(false) // a click wakes the rabbit up
+			a.setOverride(false)
 		case "hold":
 			a.device.VoiceCommand(a.ctx, "start_listening")
 		case "triple_click":
@@ -333,38 +359,42 @@ func (a *App) onEvent(e appEvent) {
 			}
 		}
 	case "ears":
-		l, lok := p["left"].(float64)
-		r, rok := p["right"].(float64)
 		a.store.Update(func(s *config.Settings) error {
-			if lok {
-				s.Ears[0] = int(l)
+			if e.Left != nil {
+				s.Ears[0] = int(*e.Left)
 			}
-			if rok {
-				s.Ears[1] = int(r)
+			if e.Right != nil {
+				s.Ears[1] = int(*e.Right)
 			}
 			return nil
 		})
-		a.mastodonEars(p)
+		a.mastodonEars(e.Left, e.Right)
 	case "rfid":
-		a.mu.Lock()
-		a.lastTag = p
-		a.mu.Unlock()
-		a.ha.Tag(p)
-		if str(p, "event") != "detected" {
+		if e.Tag == nil {
 			return
 		}
-		data := str(p, "data")
-		switch str(p, "app") {
+		tag := tagFromHardware(*e.Tag)
+		if !e.received.IsZero() {
+			tag.Received = e.received
+		}
+		a.mu.Lock()
+		a.lastTag = &tag
+		a.mu.Unlock()
+		a.ha.Tag(tag.payload())
+		if tag.Removed {
+			return
+		}
+		switch tag.App {
 		case "clock":
-			a.setOverride(!(len(data) > 0 && data[0] == 1))
+			a.setOverride(!(len(tag.Data) > 0 && tag.Data[0] == 1))
 		case "weather":
 			day := 0
-			if len(data) > 0 && data[0] == 2 {
+			if len(tag.Data) > 0 && tag.Data[0] == 2 {
 				day = 1
 			}
 			go a.announceWeather(day)
 		default:
-			go a.serviceTag(p)
+			go a.serviceTag(tag)
 		}
 	}
 }
@@ -408,7 +438,7 @@ func (a *App) haCommand(c ha.Command) {
 			return nil
 		})
 		if err == nil {
-			a.send("ears", map[string]any{"left": st.Ears[0], "right": st.Ears[1]})
+			a.send(earsCommand(st.Ears[0], st.Ears[1]))
 		}
 	}
 }
@@ -416,9 +446,9 @@ func (a *App) haCommand(c ha.Command) {
 // Clock
 
 func (a *App) chime(hour int) {
-	a.send("message", map[string]any{
-		"signature": map[string]any{"audio": []string{"clock/signature.mp3"}},
-		"body":      []any{map[string]any{"audio": []string{fmt.Sprintf("clock/%d/*.mp3", hour)}}},
+	a.send(rabbit.Command{Action: rabbit.Message, Cancelable: true,
+		Signature: &rabbit.Item{Audio: []string{"clock/signature.mp3"}},
+		Body:      []rabbit.Item{{Audio: []string{fmt.Sprintf("clock/%d/*.mp3", hour)}}},
 	})
 }
 
@@ -491,16 +521,16 @@ func (a *App) clockTick(now time.Time) {
 			}
 			if sounds {
 				c, stop := context.WithTimeout(ctx, time.Minute)
-				a.playOwned(c, "play", sequence("sleep/*.mp3", ""))
+				a.playOwned(c, sequence("sleep/*.mp3", ""))
 				stop()
 			}
-			a.send("sleep", nil)
+			a.send(rabbit.Command{Action: rabbit.Sleep})
 		}()
 	}
 	if act.Wakeup {
-		a.send("wakeup", nil)
+		a.send(rabbit.Command{Action: rabbit.Wakeup})
 		if sounds {
-			a.send("play", map[string]any{"sequence": []any{map[string]any{"audio": []string{"wakeup/*.mp3"}}}})
+			a.send(rabbit.Command{Action: rabbit.Play, Cancelable: true, Sequence: []rabbit.Item{{Audio: []string{"wakeup/*.mp3"}}}})
 		}
 	}
 	if act.Chime {
@@ -546,8 +576,8 @@ func (a *App) pushInfos() {
 	f := a.forecast
 	a.mu.Unlock()
 	wi, ri := weather.Infos(cfg, f)
-	a.send("info", map[string]any{"info_id": "weather", "animation": wi})
-	a.send("info", map[string]any{"info_id": "weather_rain", "animation": ri})
+	a.send(rabbit.Command{Action: rabbit.Info, InfoID: "weather", Animation: wi})
+	a.send(rabbit.Command{Action: rabbit.Info, InfoID: "weather_rain", Animation: ri})
 }
 
 func (a *App) weatherLoop(ctx context.Context) {
@@ -574,7 +604,7 @@ func (a *App) announceWeather(day int) {
 	a.mu.Lock()
 	f := a.forecast
 	a.mu.Unlock()
-	a.send("message", weather.Message(a.store.Get().Weather, f, day))
+	a.send(weather.Message(a.store.Get().Weather, f, day))
 }
 
 func (a *App) weatherSchedule(now time.Time, st config.Settings) {
@@ -671,12 +701,12 @@ func (a *App) voiceEnabled() bool {
 }
 func (a *App) SetVoice(on bool) error { return a.device.EnableVoice(a.ctx, on) }
 
-var indicators = map[string]*weather.Animation{
-	"listening": {Tempo: 50, Colors: []map[string]string{{"left": "0000ff", "center": "0000ff", "right": "0000ff"}}},
-	"thinking":  {Tempo: 25, Colors: []map[string]string{{"left": "8000ff", "center": "000000", "right": "8000ff"}, {"left": "000000", "center": "8000ff", "right": "000000"}}},
-	"speaking":  {Tempo: 20, Colors: []map[string]string{{"left": "000000", "center": "00ff00", "right": "000000"}, {"left": "00ff00", "center": "00ff00", "right": "00ff00"}}},
-	"error":     {Tempo: 15, Colors: []map[string]string{{"left": "ff0000", "center": "ff0000", "right": "ff0000"}, {"left": "000000", "center": "000000", "right": "000000"}}},
-	"timer":     {Tempo: 25, Colors: []map[string]string{{"left": "ff8000", "center": "000000", "right": "ff8000"}, {"left": "000000", "center": "ff8000", "right": "000000"}}},
+var indicators = map[string]*rabbit.Animation{
+	"listening": {Tempo: 50, Frames: [][3]rabbit.RGB{{{0, 0, 255}, {0, 0, 255}, {0, 0, 255}}}},
+	"thinking":  {Tempo: 25, Frames: [][3]rabbit.RGB{{{128, 0, 255}, {}, {128, 0, 255}}, {{}, {128, 0, 255}, {}}}},
+	"speaking":  {Tempo: 20, Frames: [][3]rabbit.RGB{{{}, {0, 255, 0}, {}}, {{0, 255, 0}, {0, 255, 0}, {0, 255, 0}}}},
+	"error":     {Tempo: 15, Frames: [][3]rabbit.RGB{{{255, 0, 0}, {255, 0, 0}, {255, 0, 0}}, {}}},
+	"timer":     {Tempo: 25, Frames: [][3]rabbit.RGB{{{255, 128, 0}, {}, {255, 128, 0}}, {{}, {255, 128, 0}, {}}}},
 }
 
 func (a *App) setIndicator(name string) {
@@ -685,7 +715,7 @@ func (a *App) setIndicator(name string) {
 	a.indicator = name
 	a.mu.Unlock()
 	if !same {
-		a.send("indicator", map[string]any{"animation": indicators[name]})
+		a.send(rabbit.Command{Action: rabbit.Indicator, Animation: indicators[name]})
 	}
 }
 

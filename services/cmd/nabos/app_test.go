@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,7 +22,7 @@ func testApp(t *testing.T) *App {
 	if wifiFixtures[os.Getenv("DBUS_SYSTEM_BUS_ADDRESS")] == nil {
 		wifiTestBus(t)
 	}
-	a, err := NewApp(Env{MQTTHost: "127.0.0.1", MQTTPort: 1, DataDir: t.TempDir()})
+	a, err := NewApp(Env{DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,5 +169,113 @@ func TestOldConfigIsNotMigrated(t *testing.T) {
 	preserved, err := os.ReadFile(oldPath)
 	if err != nil || string(preserved) != string(raw) {
 		t.Fatal("old file changed", err)
+	}
+}
+
+func TestHealthRequiresEngineHardwareAndDeviceOnly(t *testing.T) {
+	a := testApp(t)
+	check := func(remote string, want int) map[string]any {
+		t.Helper()
+		r := httptest.NewRequest("GET", "/healthz", nil)
+		r.RemoteAddr = remote
+		w := httptest.NewRecorder()
+		a.healthz(w, r)
+		if w.Code != want {
+			t.Fatalf("health: %d %s", w.Code, w.Body.String())
+		}
+		var data map[string]any
+		if want != 404 {
+			if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+				t.Fatal(err)
+			}
+			if len(data) != 4 {
+				t.Fatal("health shape", data)
+			}
+		}
+		return data
+	}
+	data := check("127.0.0.1:1234", 503)
+	if data["engine"] != false || data["device"] != true {
+		t.Fatal(data)
+	}
+	startNative(t, a)
+	data = check("127.0.0.1:1234", 200)
+	if data["hardware"] != true || data["engine"] != true || a.ha.Connected() {
+		t.Fatal("HA gates health", data)
+	}
+	check("192.0.2.1:1234", 404)
+	f := appFixture(t, a)
+	f.Mu.Lock()
+	f.ManagerReady = false
+	f.Mu.Unlock()
+	data = check("[::1]:1234", 503)
+	if data["device"] != false {
+		t.Fatal(data)
+	}
+}
+
+func TestVersionAndHelpReturnBeforeStartup(t *testing.T) {
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/missing/system/bus")
+	data := filepath.Join(t.TempDir(), "missing")
+	t.Setenv("NABOS_DATA_DIR", data)
+	for _, arg := range []string{"--version", "--help"} {
+		args, stdout := os.Args, os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Args, os.Stdout = []string{"nabos", arg}, w
+		main()
+		os.Args, os.Stdout = args, stdout
+		w.Close()
+		out, err := io.ReadAll(r)
+		r.Close()
+		if err != nil || !strings.Contains(string(out), "nabos") {
+			t.Fatal(string(out), err)
+		}
+	}
+	if _, err := os.Stat(data); !os.IsNotExist(err) {
+		t.Fatal("early option touched application data", err)
+	}
+}
+
+func TestProductMediaPreservesAbsentAndEmptyAudio(t *testing.T) {
+	a := testApp(t)
+	f := startNative(t, a)
+	root := a.env.SoundsDirs[0]
+	path := filepath.Join(root, "taichi", "taichi.chor")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Wait 100 ms, then change LED 4; an explicit empty audio item cancels it.
+	if err := os.WriteFile(path, []byte{0, 1, 1, 10, 7, 0, 1, 2, 3, 0, 0, 0, 255}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	colored := func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, v := range f.frames {
+			if v.Red == 1 && v.Green == 2 && v.Blue == 3 {
+				return true
+			}
+		}
+		return false
+	}
+	command := sequence("", "taichi/taichi.chor")
+	if err := a.media(a.ctx, command, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if !colored() {
+		t.Fatal("choreography-only item did not complete")
+	}
+	f.mu.Lock()
+	f.frames = nil
+	f.mu.Unlock()
+	command.Sequence[0].Audio = []string{}
+	if err := a.media(a.ctx, command, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if colored() {
+		t.Fatal("explicit empty audio behaved as absent audio")
 	}
 }

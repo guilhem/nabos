@@ -12,8 +12,9 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=DEVICE_CORE_DATA_DIR=/data/device-core
 Environment=DEVICE_CORE_NETWORK_GUARD=/run/lock/device-core/network
 Environment=DEVICE_CORE_AUDIO_ROOTS=/usr/share/nabos/sounds:/data/nabos/media/sounds
-Environment=DEVICE_CORE_PRESENCE_UNIT=nab-core.service
-Environment=DEVICE_CORE_MAINTENANCE_UNITS=nab-core.service:nab-service.service
+Environment=DEVICE_CORE_PRESENCE_UNIT=nab-hardware.service
+# Refuse busy application activity before pausing hardware.
+Environment=DEVICE_CORE_MAINTENANCE_UNITS=nabos.service:nab-hardware.service
 Environment=DEVICE_CORE_HOTSPOT_PREFIX=Nabaztag-
 Environment=DEVICE_CORE_HOTSPOT_UUID=4e61624f-5300-4000-8000-000000000001
 Environment=DEVICE_CORE_BOOT_HEALTH=/run/nabos-boot-health

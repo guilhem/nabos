@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/guilhem/nabos/services/internal/hardware"
 	"path/filepath"
 	"testing"
 	"time"
@@ -87,5 +88,39 @@ func TestDisabledServicesRejectEveryEntryPoint(t *testing.T) {
 	}
 	if len(a.mediaGate) != 0 || a.interaction != nil || a.radioCancel != nil {
 		t.Fatal("disabled service reserved playback")
+	}
+}
+
+func TestHardwareTagsPreserveProductPayload(t *testing.T) {
+	raw := hardware.Tag{Tech: "st25tb", UID: []byte{0xd0, 2, 0x18, 1, 2, 3, 4, 5}, Support: "formatted", Formatted: true, Picture: 7, App: 4, Data: append([]byte("default/9782092512593"), 0xff, 0xff)}
+	tag := tagFromHardware(raw)
+	if tag.UID != "d0:02:18:01:02:03:04:05" || tag.App != "book" || tag.Data != "default/9782092512593" {
+		t.Fatal(tag)
+	}
+	if _, _, err := pynab.ParseBook(tag.Data); err != nil {
+		t.Fatal("RFID padding broke book", err)
+	}
+	payload := tag.payload()
+	for _, key := range []string{"v", "time", "event", "tech", "uid", "support", "locked", "picture", "app", "data"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatal("HA tag field lost", key)
+		}
+	}
+	raw.Removed = true
+	payload = tagFromHardware(raw).payload()
+	if len(payload) != 5 || payload["event"] != "removed" {
+		t.Fatal("removed tag format changed", payload)
+	}
+	raw.Removed = false
+	raw.Formatted = false
+	payload = tagFromHardware(raw).payload()
+	if _, ok := payload["app"]; ok {
+		t.Fatal("unformatted app invented", payload)
+	}
+	raw.Formatted = true
+	raw.App = 255
+	payload = tagFromHardware(raw).payload()
+	if _, ok := payload["app"]; ok {
+		t.Fatal("empty tag app invented", payload)
 	}
 }

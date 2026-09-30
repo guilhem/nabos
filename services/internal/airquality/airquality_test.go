@@ -2,7 +2,7 @@ package airquality
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -86,7 +86,7 @@ func TestInfoAndMessage(t *testing.T) {
 	for _, c := range []struct {
 		visual string
 		r      *Result
-		tempo  int
+		tempo  uint32
 	}{
 		{"always", &Result{Level: Good}, 42},
 		{"always", &Result{Level: Moderate}, 14},
@@ -100,15 +100,14 @@ func TestInfoAndMessage(t *testing.T) {
 			t.Errorf("%s %+v: %+v", c.visual, c.r, a)
 		}
 	}
-	if n := [3]int{len(animations[Bad].Colors), len(animations[Moderate].Colors), len(animations[Good].Colors)}; n != [3]int{16, 17, 4} {
+	if n := [3]int{len(animations[Bad].Frames), len(animations[Moderate].Frames), len(animations[Good].Frames)}; n != [3]int{16, 17, 4} {
 		t.Errorf("frames %v", n)
 	}
-	got, _ := json.Marshal(Message(&Result{Level: Moderate}))
-	want := `{"body":[{"audio":["airquality/moderate.mp3"]}],"signature":{"audio":["airquality/signature.mp3"]}}`
-	if string(got) != want {
-		t.Errorf("message %s", got)
+	m := Message(&Result{Level: Moderate})
+	if m.Action != rabbit.Message || m.Signature == nil || !reflect.DeepEqual(m.Signature.Audio, []string{"airquality/signature.mp3"}) || !reflect.DeepEqual(m.Body, []rabbit.Item{{Audio: []string{"airquality/moderate.mp3"}}}) {
+		t.Fatalf("message %+v", m)
 	}
-	if m := Message(nil); !reflect.DeepEqual(m["body"], []any{map[string]any{"audio": []string{"airquality/no-data-error.mp3;system/abort.wav"}}}) {
+	if m := Message(nil); !reflect.DeepEqual(m.Body, []rabbit.Item{{Audio: []string{"airquality/no-data-error.mp3;system/abort.wav"}}}) {
 		t.Errorf("no data %v", m)
 	}
 	// The fallback must exist in the shipped assets.

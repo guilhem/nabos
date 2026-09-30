@@ -2,20 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
-	"sync/atomic"
+	"github.com/godbus/dbus/v5"
+	"github.com/guilhem/nabos/services/internal/device"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 	"testing"
 	"time"
-
-	"github.com/godbus/dbus/v5"
-	"github.com/guilhem/nabos/services/internal/bus"
-	"github.com/guilhem/nabos/services/internal/device"
 )
 
 func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
@@ -26,9 +17,9 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	if _, err := a.device.Call(ctx, "Manager", "RegisterAgent", device.Path("Agent")); err != nil {
 		t.Fatal(err)
 	}
-	// Before MQTT is online, even the authenticated daemon cannot acquire.
+	// An uninitialized engine cannot admit maintenance.
 	if f.Agent(ctx, "Acquire", "updates-1").Err == nil {
-		t.Fatal("maintenance admitted offline MQTT")
+		t.Fatal("maintenance admitted uninitialized engine")
 	}
 	outsider, err := dbus.ConnectSystemBus()
 	if err != nil {
@@ -42,46 +33,11 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 		t.Fatal("untrusted sender acquired maintenance")
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+	native := startNative(t, a)
+	if err := a.do(ctx, rabbit.Command{Action: rabbit.Info, InfoID: "maintenance-test", Animation: &rabbit.Animation{Tempo: 1, Frames: [][3]rabbit.RGB{{{1, 2, 3}, {}, {}}}}}, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "mosquitto.conf")
-	os.WriteFile(configPath, fmt.Appendf(nil, "listener %d 127.0.0.1\nallow_anonymous true\npersistence false\n", port), 0600)
-	broker := exec.Command(pynabTool(t, "MOSQUITTO", "mosquitto", "../../../build/tools/root/usr/sbin/mosquitto"), "-c", configPath)
-	if err := broker.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { broker.Process.Kill(); broker.Wait() })
-	a.bus = bus.New("127.0.0.1", port, "agent-check", bus.Handlers{OnState: a.onState})
-	if err := a.bus.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		cancel()
-		stop, done := context.WithTimeout(context.Background(), time.Second)
-		defer done()
-		a.bus.Stop(stop)
-	})
-	pub := pynabTool(t, "MOSQUITTO_PUB", "mosquitto_pub", "../../../build/tools/root/usr/bin/mosquitto_pub")
-	publish := func(topic, body string) {
-		t.Helper()
-		cmd := exec.Command(pub, "-h", "127.0.0.1", "-p", strconv.Itoa(port), "-q", "1", "-r", "-t", topic, "-m", body)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("publish: %v %s", err, out)
-		}
-	}
-	pynabWait(t, "MQTT connected", 5*time.Second, func() bool { connected, _ := a.bus.Healthy(); return connected })
-	publish(bus.TopicState, `{"v":1,"state":"idle","ears":{"left":0,"right":0}}`)
-	publish(bus.TopicCoreAvail, "online")
-	pynabWait(t, "core online", 5*time.Second, func() bool {
-		connected, online := a.bus.Healthy()
-		state, _ := a.bus.State()
-		return connected && online && state.State == "idle"
-	})
+	pynabWait(t, "idle animation active", time.Second, func() bool { native.mu.Lock(); defer native.mu.Unlock(); return native.leds > 3 })
 	// A book's silence still owns this gate even when core state is idle.
 	a.mediaGate <- struct{}{}
 	if f.Agent(ctx, "Acquire", "updates-1").Err == nil {
@@ -95,6 +51,17 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	if err := f.Agent(ctx, "Acquire", "updates-1").Store(&renewed); err != nil || renewed != token {
 		t.Fatal("Acquire not idempotent", err)
 	}
+	native.mu.Lock()
+	frozen := native.leds
+	native.mu.Unlock()
+	time.Sleep(40 * time.Millisecond)
+	native.mu.Lock()
+	after := native.leds
+	native.mu.Unlock()
+	if after != frozen {
+		t.Fatal("engine background ran after maintenance acceptance", frozen, after)
+	}
+
 	wait, done := context.WithTimeout(ctx, 20*time.Millisecond)
 	if err := a.acquireMedia(wait); err == nil {
 		t.Fatal("maintenance did not retain media gate")
@@ -108,6 +75,7 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	}
 	f.Mu.Lock()
 	f.UpdateState.State = "reboot"
+	f.Maintenance = true
 	f.Mu.Unlock()
 	if err := f.Agent(ctx, "Release", token).Err; err != nil {
 		t.Fatal("terminal release", err)
@@ -115,8 +83,15 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	if err := f.Agent(ctx, "Release", token).Err; err != nil {
 		t.Fatal("lost reply retry", err)
 	}
+	if len(a.mediaGate) != 1 || a.rabbit.Ready() {
+		t.Fatal("release resumed before all daemon agents")
+	}
+	f.Mu.Lock()
+	f.Maintenance = false
+	f.Mu.Unlock()
+	a.agent.recover(ctx)
 	if len(a.mediaGate) != 0 {
-		t.Fatal("release retained media gate")
+		t.Fatal("safe daemon retained media gate")
 	}
 	if err := f.Agent(ctx, "Acquire", "updates-2").Store(&token); err != nil {
 		t.Fatal(err)
@@ -130,6 +105,7 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	if err := f.Agent(ctx, "Abort", "updates-2").Err; err != nil {
 		t.Fatal("Abort retry", err)
 	}
+	a.agent.recover(ctx)
 
 	// A restarted client queries updater state before reopening its local gate.
 	a.agent.holdRecovery()
@@ -162,76 +138,7 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	if len(a.mediaGate) != 0 {
 		t.Fatal("optional absent updater stranded product services")
 	}
-	t.Run("HA state stays current after a delayed device read", func(t *testing.T) {
-		cfg := a.store.Get().HomeAssistant
-		cfg.Enabled, cfg.Host, cfg.Port = true, "127.0.0.1", port
-		if err := a.ha.Start(cfg); err != nil {
-			t.Fatal(err)
-		}
-		defer a.ha.Stop()
-		pynabWait(t, "HA broker connected", 5*time.Second, a.ha.Connected)
-		revision, settings, err := a.device.ReadConfig(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		entered, resume, overlap := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
-		var blockNext, inFlight atomic.Bool
-		blockNext.Store(true)
-		read := func() (string, device.Settings, *dbus.Error) {
-			if blockNext.CompareAndSwap(true, false) {
-				inFlight.Store(true)
-				close(entered)
-				<-resume
-				inFlight.Store(false)
-			} else if inFlight.Load() {
-				select {
-				case overlap <- struct{}{}:
-				default:
-				}
-			}
-			return revision, settings, nil
-		}
-		if err := f.Conn.ExportMethodTable(map[string]interface{}{"Read": read}, device.Path("Config"), device.Interface("Config")); err != nil {
-			t.Fatal(err)
-		}
-		worker, stop := context.WithCancel(ctx)
-		done := make(chan struct{})
-		go func() { defer close(done); a.deviceLoop(worker) }()
-		released := false
-		defer func() {
-			if !released {
-				close(resume)
-			}
-			stop()
-			<-done
-		}()
-		publish(bus.TopicState, `{"v":1,"state":"playing","ears":{"left":1,"right":2}}`)
-		select {
-		case <-entered:
-		case <-time.After(5 * time.Second):
-			t.Fatal("device read did not start")
-		}
-		publish(bus.TopicState, `{"v":1,"state":"idle","ears":{"left":4,"right":5}}`)
-		pynabWait(t, "new core state received", time.Second, func() bool { state, _ := a.bus.State(); return state.State == "idle" && state.Ears.Left == 4 })
-		select {
-		case <-overlap:
-			t.Fatal("state forwarding started concurrent device reads")
-		case <-time.After(250 * time.Millisecond):
-		}
-		close(resume)
-		released = true
-		sub := pynabTool(t, "MOSQUITTO_SUB", "mosquitto_sub", "../../../build/tools/root/usr/bin/mosquitto_sub")
-		out, err := exec.Command(sub, "-h", "127.0.0.1", "-p", strconv.Itoa(port), "-q", "1", "-t", "nabos/"+a.ha.Node+"/state", "-C", "1", "-W", "5").CombinedOutput()
-		var payload struct {
-			State  string `json:"state"`
-			Volume int    `json:"volume"`
-			Left   int    `json:"left_ear"`
-			Right  int    `json:"right_ear"`
-		}
-		if err != nil || json.Unmarshal(out, &payload) != nil || payload.State != "idle" || payload.Volume != int(settings.Volume) || payload.Left != 4 || payload.Right != 5 {
-			t.Fatalf("retained HA state after delayed reply: %s (%v)", out, err)
-		}
-	})
+
 }
 
 func TestDeviceLoopRegistersOnlyWhenRequired(t *testing.T) {
@@ -245,6 +152,7 @@ func TestDeviceLoopRegistersOnlyWhenRequired(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := testApp(t)
+			startNative(t, a)
 			f := appFixture(t, a)
 			f.Mu.Lock()
 			f.MaintenanceAgents, f.RejectAgent = tc.required, tc.denied
@@ -273,7 +181,9 @@ func TestVoiceSignalsRelayOnlyFromDaemon(t *testing.T) {
 	f := appFixture(t, a)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go a.deviceLoop(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); a.deviceLoop(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
 	pynabWait(t, "agent registered", time.Second, func() bool { f.Mu.Lock(); defer f.Mu.Unlock(); return f.AgentSender != "" })
 	if err := f.Conn.Emit(device.Path("Voice"), device.Interface("Voice")+".Event", "listening", `{}`); err != nil {
 		t.Fatal(err)
@@ -298,4 +208,68 @@ func TestVoiceSignalsRelayOnlyFromDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	pynabWait(t, "disabled LEDs", time.Second, func() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.indicator == "" })
+}
+
+func TestMaintenanceRecoveryAfterDaemonLoss(t *testing.T) {
+	a := testApp(t)
+	startNative(t, a)
+	f := appFixture(t, a)
+	ctx, cancel := context.WithCancel(a.ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); a.deviceLoop(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	pynabWait(t, "registered safe daemon", time.Second, func() bool {
+		f.Mu.Lock()
+		registered := f.AgentSender != ""
+		f.Mu.Unlock()
+		return registered && len(a.mediaGate) == 0 && a.rabbit.Ready()
+	})
+	var token string
+	if err := f.Agent(ctx, "Acquire", "lost-operation").Store(&token); err != nil {
+		t.Fatal(err)
+	}
+	f.Mu.Lock()
+	f.ManagerReady = false
+	f.Mu.Unlock()
+	if _, err := f.Conn.ReleaseName(device.Destination); err != nil {
+		t.Fatal(err)
+	}
+	pynabWait(t, "daemon loss blocked app", time.Second, func() bool {
+		a.agent.mu.Lock()
+		defer a.agent.mu.Unlock()
+		return a.agent.recovering && a.agent.token == ""
+	})
+	if len(a.mediaGate) != 1 || a.rabbit.Ready() {
+		t.Fatal("daemon loss reopened product")
+	}
+	if _, err := f.Conn.RequestName(device.Destination, dbus.NameFlagDoNotQueue); err != nil {
+		t.Fatal(err)
+	}
+	if f.Agent(ctx, "Release", token).Err == nil {
+		t.Fatal("stale token reopened product")
+	}
+	pynabWait(t, "daemon registered after name recovery", time.Second, func() bool {
+		f.Mu.Lock()
+		defer f.Mu.Unlock()
+		return f.AgentRegistrations >= 2
+	})
+	for _, state := range []string{"uncertain", "installing", "downloading"} {
+		f.Mu.Lock()
+		f.ManagerReady = true
+		f.UpdateState.State = state
+		f.Mu.Unlock()
+		a.agent.recover(ctx)
+		if len(a.mediaGate) != 1 || a.rabbit.Ready() {
+			t.Fatal("unsafe updater reopened product", state)
+		}
+	}
+	f.Mu.Lock()
+	f.UpdateState.State = "idle"
+	f.Mu.Unlock()
+	a.agent.recover(ctx)
+	pynabWait(t, "safe daemon recovery", time.Second, func() bool { return len(a.mediaGate) == 0 && a.rabbit.Ready() })
+	if err := a.media(ctx, sequence("system/abort.wav", ""), time.Second); err != nil {
+		t.Fatal("product did not resume", err)
+	}
 }

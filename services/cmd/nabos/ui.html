@@ -41,7 +41,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{if .Data.Recovered}}<p class="err">Le fichier de réglages était illisible : réglages par défaut restaurés (copie : {{.Data.Recovered}}).</p>{{end}}
 {{if .Data.Update}}<p class="ok">Nouvelle version {{.Data.Update}} disponible. <a href="/updates">Voir les mises à jour</a></p>{{end}}
 <section><h2>État</h2><table>
-<tr><td>Lapin</td><td>{{if .Data.Online}}{{with .Data.Core}}{{if eq .State "idle"}}réveillé{{else if eq .State "asleep"}}endormi{{else}}occupé{{end}}{{end}}{{else}}cœur arrêté{{end}}</td></tr>
+<tr><td>Lapin</td><td>{{if .Data.Online}}{{with .Data.Rabbit}}{{if eq .State "idle"}}réveillé{{else if eq .State "asleep"}}endormi{{else}}occupé{{end}}{{end}}{{else}}moteur indisponible{{end}}</td></tr>
 <tr><td>Réseau</td><td>{{if eq .Data.Network "ok"}}Internet{{else if eq .Data.Network "lan"}}réseau local sans Internet{{else}}hors ligne{{end}}</td></tr>
 <tr><td>Heure</td><td>{{.Data.Now}} — {{template "clock" .Data.Clock}}</td></tr>
 <tr><td>Météo</td><td>{{if .S.Weather.Location}}{{.S.Weather.Location}}{{if .Data.WeatherError}} — indisponible{{end}}{{else}}lieu non configuré{{end}}</td></tr>
@@ -59,7 +59,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <section class="actions"><h2>Diagnostic</h2>
 <form method="post" action="/action"><input type="hidden" name="name" value="test_ears"><button>Tester les oreilles</button></form>
 <form method="post" action="/action"><input type="hidden" name="name" value="test_leds"><button>Tester les LED</button></form>
-<details><summary>Matériel</summary><pre>{{json .Data.Core.Hardware}}</pre></details>
+<details><summary>Matériel</summary><pre>{{json .Data.Rabbit.Hardware}}</pre></details>
 <form method="post" action="/action"><input type="hidden" name="name" value="reboot"><button>Redémarrer</button></form>
 <form method="post" action="/action"><input type="hidden" name="name" value="poweroff"><button>Éteindre</button></form>
 </section>

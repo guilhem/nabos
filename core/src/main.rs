@@ -1,4 +1,4 @@
-//! nab-core: NabOS hardware core, driven over MQTT 5 (see docs/protocol-v1.md).
+//! NabOS physical hardware service (see docs/hardware-dbus.md).
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -21,27 +21,13 @@ macro_rules! info { ($($a:tt)*) => { $crate::logline(2, format!($($a)*)) } }
 macro_rules! debug { ($($a:tt)*) => { $crate::logline(3, format!($($a)*)) } }
 
 mod bus;
-mod chor;
-#[cfg(test)]
-mod client_tests;
 mod device;
-mod engine;
 mod hw;
 mod maintenance;
 mod network;
-mod playback;
-mod protocol;
-mod resources;
-
-use std::path::PathBuf;
-use std::sync::Arc;
 
 pub struct Config {
     pub simulate: bool,
-    pub mqtt_host: String,
-    pub mqtt_port: u16,
-    pub sounds_dirs: Vec<PathBuf>,
-    pub chor_dirs: Vec<PathBuf>,
     pub gpio_chip: String,
     pub button_gpio: u32,
     pub ws2811_lib: String,
@@ -66,28 +52,10 @@ fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
     }
 }
 
-fn dirs(name: &str, default: &str) -> Vec<PathBuf> {
-    env_or(name, default)
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect()
-}
-
 impl Config {
     fn from_env(simulate: bool) -> Config {
         Config {
             simulate,
-            mqtt_host: env_or("NABOS_MQTT_HOST", "127.0.0.1"),
-            mqtt_port: env_parse("NABOS_MQTT_PORT", 1883),
-            sounds_dirs: dirs(
-                "NABOS_SOUNDS_DIRS",
-                "/usr/share/nabos/sounds:/data/nabos/media/sounds",
-            ),
-            chor_dirs: dirs(
-                "NABOS_CHOREOGRAPHIES_DIRS",
-                "/usr/share/nabos/choreographies:/data/nabos/media/choreographies",
-            ),
             gpio_chip: env_or("NABOS_GPIO_CHIP", "/dev/gpiochip0"),
             button_gpio: env_parse("NABOS_BUTTON_GPIO", 17),
             ws2811_lib: env_or("NABOS_WS2811_LIB", "libws2811.so"),
@@ -100,11 +68,11 @@ impl Config {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage: nab-core [--simulate] [--version]\nConfiguration via NABOS_* variables, see docs/protocol-v1.md");
+        println!("usage: nab-hardware [--simulate] [--version]\nConfiguration via NABOS_* variables, see docs/hardware-dbus.md");
         return;
     }
     if args.iter().any(|a| a == "--version") {
-        println!("nab-core {}", env!("CARGO_PKG_VERSION"));
+        println!("nab-hardware {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     let level = match env_or("NABOS_LOG", "info").as_str() {
@@ -129,33 +97,14 @@ fn main() {
             }
         };
         let presence = network::start(device.clone());
-        maintenance::start(device.clone(), tx.clone());
-        let player = Arc::new(hw::player::Player::new(device));
-        let hardware_tx = tx.clone();
-        let (cfg, hw) = tokio::task::spawn_blocking(move || {
-            let hw = hw::Hw::open(&cfg, hardware_tx, Some(presence), player);
-            (cfg, Arc::new(hw))
+        let hw = tokio::task::spawn_blocking(move || {
+            std::sync::Arc::new(hw::Hw::open(&cfg, tx, Some(presence)))
         })
         .await
         .expect("hardware initialization thread");
-        let bus = bus::Bus::start(&cfg, tx.clone());
-        let shutdown = tx.clone();
-        tokio::spawn(async move {
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("signal");
-            tokio::select! {
-                _ = term.recv() => {}
-                _ = tokio::signal::ctrl_c() => {}
-            }
-            let _ = shutdown.send(engine::Input::Shutdown);
-        });
-        info!(
-            "nab-core {} starting (simulate={})",
-            env!("CARGO_PKG_VERSION"),
-            cfg.simulate
-        );
-        engine::Engine::new(hw, bus.clone(), tx).run(rx).await;
-        bus.goodbye().await;
+        if let Err(e) = bus::run(device, bus::Hardware::new(hw), rx).await {
+            error!("hardware service: {e}");
+            std::process::exit(1);
+        }
     });
 }

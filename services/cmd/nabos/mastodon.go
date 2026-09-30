@@ -12,6 +12,7 @@ import (
 
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/mastodon"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 )
 
 type oauthLogin struct {
@@ -52,7 +53,7 @@ func (a *App) mastodonLoop(ctx context.Context) {
 							a.serviceError("mastodon", err)
 							return
 						}
-						a.send("ears", map[string]any{"left": l, "right": r})
+						a.send(earsCommand(l, r))
 					},
 					a.mastodonSound,
 					func(err error) { a.serviceError("mastodon", err) })
@@ -73,23 +74,18 @@ func (a *App) mastodonLoop(ctx context.Context) {
 }
 
 func (a *App) mastodonSound(sound string) {
-	action, args := "play", sequence(sound, "")
+	command := sequence(sound, "")
 	if sound != "mastodon/communion.wav" {
-		action = "message"
-		args = map[string]any{
-			"signature": map[string]any{"audio": []string{"mastodon/respirations/*.mp3"}},
-			"body":      []any{map[string]any{"audio": []string{sound + ";fr_FR/" + sound}}},
-		}
+		command = rabbit.Command{Action: rabbit.Message, Cancelable: true, Signature: &rabbit.Item{Audio: []string{"mastodon/respirations/*.mp3"}}, Body: []rabbit.Item{{Audio: []string{sound + ";fr_FR/" + sound}}}}
 	}
-	go func() { a.serviceError("mastodon", a.media(a.ctx, action, args, time.Minute)) }()
+	go func() { a.serviceError("mastodon", a.media(a.ctx, command, time.Minute)) }()
 }
 
-func (a *App) mastodonEars(p map[string]any) {
-	l, lok := p["left"].(float64)
-	r, rok := p["right"].(float64)
-	if !lok || !rok || a.store.Get().Mastodon.PairingState != "married" {
+func (a *App) mastodonEars(left, right *uint8) {
+	if left == nil || right == nil || a.store.Get().Mastodon.PairingState != "married" {
 		return
 	}
+	l, r := int(*left), int(*right)
 	go func() {
 		ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
 		defer cancel()
@@ -101,7 +97,7 @@ func (a *App) mastodonEars(p map[string]any) {
 			if err != nil {
 				return err
 			}
-			return c.SendEars(ctx, s, int(l), int(r))
+			return c.SendEars(ctx, s, l, r)
 		})
 		a.serviceError("mastodon", err)
 		if err == nil {

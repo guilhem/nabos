@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/guilhem/nabos/services/internal/rabbit"
 	"github.com/guilhem/nabos/services/internal/triggers"
-	"github.com/guilhem/nabos/services/internal/weather"
 )
 
 const FeedURL = "https://api.waqi.info/feed/"
@@ -113,61 +113,15 @@ func (c *Client) Fetch(ctx context.Context, q Query) (*Result, error) {
 	return res, nil
 }
 
-func mustAnim(s string) *weather.Animation {
-	a := new(weather.Animation)
-	if err := json.Unmarshal([]byte(s), a); err != nil {
-		panic(err)
-	}
-	return a
-}
-
 // PyNab animations, indexed by level.
-var animations = [3]*weather.Animation{
-	mustAnim(`{"tempo":14,"colors":[
-		{"left":"000000","center":"00ffff","right":"000000"},
-		{"left":"000000","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"000000","right":"000000"},
-		{"left":"000000","center":"000000","right":"000000"},
-		{"left":"000000","center":"00ffff","right":"000000"},
-		{"left":"000000","center":"00ffff","right":"00ffff"},
-		{"left":"000000","center":"000000","right":"000000"},
-		{"left":"00ffff","center":"00ffff","right":"000000"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"000000","center":"000000","right":"00ffff"},
-		{"left":"00ffff","center":"000000","right":"000000"},
-		{"left":"000000","center":"00ffff","right":"000000"},
-		{"left":"000000","center":"000000","right":"000000"},
-		{"left":"00ffff","center":"000000","right":"00ffff"},
-		{"left":"000000","center":"00ffff","right":"000000"}]}`),
-	mustAnim(`{"tempo":14,"colors":[
-		{"left":"000000","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"000000"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"000000","right":"00ffff"},
-		{"left":"000000","center":"000000","right":"00ffff"},
-		{"left":"000000","center":"000000","right":"000000"},
-		{"left":"000000","center":"00ffff","right":"000000"},
-		{"left":"000000","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"000000"},
-		{"left":"00ffff","center":"000000","right":"00ffff"},
-		{"left":"000000","center":"00ffff","right":"00ffff"}]}`),
-	mustAnim(`{"tempo":42,"colors":[
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"00ffff","center":"00ffff","right":"00ffff"},
-		{"left":"000000","center":"000000","right":"000000"}]}`),
+var animations = [3]*rabbit.Animation{{Tempo: 14, Frames: [][3]rabbit.RGB{{{0, 0, 0}, {0, 255, 255}, {0, 0, 0}}, {{0, 0, 0}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 0, 0}, {0, 0, 0}}, {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, {{0, 0, 0}, {0, 255, 255}, {0, 0, 0}}, {{0, 0, 0}, {0, 255, 255}, {0, 255, 255}}, {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, {{0, 255, 255}, {0, 255, 255}, {0, 0, 0}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 0, 0}, {0, 0, 0}, {0, 255, 255}}, {{0, 255, 255}, {0, 0, 0}, {0, 0, 0}}, {{0, 0, 0}, {0, 255, 255}, {0, 0, 0}}, {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, {{0, 255, 255}, {0, 0, 0}, {0, 255, 255}}, {{0, 0, 0}, {0, 255, 255}, {0, 0, 0}}}},
+	{Tempo: 14, Frames: [][3]rabbit.RGB{{{0, 0, 0}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 0, 0}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 0, 0}, {0, 255, 255}}, {{0, 0, 0}, {0, 0, 0}, {0, 255, 255}}, {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, {{0, 0, 0}, {0, 255, 255}, {0, 0, 0}}, {{0, 0, 0}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 0, 0}}, {{0, 255, 255}, {0, 0, 0}, {0, 255, 255}}, {{0, 0, 0}, {0, 255, 255}, {0, 255, 255}}}},
+	{Tempo: 42, Frames: [][3]rabbit.RGB{{{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 255, 255}, {0, 255, 255}, {0, 255, 255}}, {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}}},
 }
 
 // Info returns the idle animation (nil removes it). visual: "always",
 // "alert" (hide when good) or "nothing".
-func Info(visual string, r *Result) *weather.Animation {
+func Info(visual string, r *Result) *rabbit.Animation {
 	if r == nil || visual == "nothing" || visual == "alert" && r.Level == Good {
 		return nil
 	}
@@ -177,13 +131,10 @@ func Info(visual string, r *Result) *weather.Animation {
 // Message builds the spoken report (core "message" args); nil r = no data.
 // PyNab ships no airquality/no-data-error.mp3, so the core falls back to the
 // system error sound.
-func Message(r *Result) map[string]any {
+func Message(r *Result) rabbit.Command {
 	audio := "airquality/no-data-error.mp3;system/abort.wav"
 	if r != nil {
 		audio = "airquality/" + [3]string{"bad", "moderate", "good"}[r.Level] + ".mp3"
 	}
-	return map[string]any{
-		"signature": map[string]any{"audio": []string{"airquality/signature.mp3"}},
-		"body":      []any{map[string]any{"audio": []string{audio}}},
-	}
+	return rabbit.Command{Action: rabbit.Message, Cancelable: true, Signature: &rabbit.Item{Audio: []string{"airquality/signature.mp3"}}, Body: []rabbit.Item{{Audio: []string{audio}}}}
 }
