@@ -66,22 +66,26 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 			t.Errorf("detach %s: %s", loop, r.stderr)
 		}
 	})
-	settlePartitions := func() {
-		t.Helper()
-		// Udev may remove/recreate loop nodes after the MBR changes.
-		run(t, "", "udevadm", "settle", "--timeout=10")
-		for _, n := range []string{"p2", "p3"} {
-			if _, err := os.Stat(loop + n); err != nil {
-				t.Fatalf("settled loop partition %s: %v", loop+n, err)
-			}
+	run(t, "", "udevadm", "settle", "--timeout=10")
+	// Host udev can remove/recreate /dev loop nodes while probing the changed MBR.
+	// Private nodes address the same kernel partitions throughout this test.
+	slotDevices := make(map[string]string)
+	for _, n := range []string{"p2", "p3"} {
+		var stat syscall.Stat_t
+		if err := syscall.Stat(loop+n, &stat); err != nil {
+			t.Fatalf("loop partition %s: %v", loop+n, err)
 		}
+		node := filepath.Join(dir, "slot-"+n)
+		if err := syscall.Mknod(node, syscall.S_IFBLK|0o600, int(stat.Rdev)); err != nil {
+			t.Fatal(err)
+		}
+		slotDevices[n] = node
 	}
-	settlePartitions()
 
 	config := read(t, filepath.Join(rootfsDir, "etc/rauc/system.conf"))
 	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-rauc-integration")
-	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", loop+"p2")
-	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", loop+"p3")
+	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", slotDevices["p2"])
+	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", slotDevices["p3"])
 	config = strings.ReplaceAll(config, "/dev/mmcblk0", loop)
 	config = strings.ReplaceAll(config, "/run/rauc", filepath.Join(dir, "mount"))
 	config = strings.ReplaceAll(config, "/data/rauc", filepath.Join(dir, "data"))
@@ -155,9 +159,6 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 		r := execute(t, "", []string{busEnv, pathEnv}, "rauc", "--conf="+conf, "install", bundle)
 		if (r.code == 0) != wantSuccess {
 			t.Fatalf("rauc install %s: exit %d\n%s%s\nservice:\n%s", bundle, r.code, r.stdout, r.stderr, read(t, serviceLog))
-		}
-		if wantSuccess {
-			settlePartitions()
 		}
 		return r
 	}
