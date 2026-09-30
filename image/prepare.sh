@@ -25,10 +25,9 @@ stage=/nabos-build/runtime
 case "$phase" in
 build-packages|packages)
   # dpkg post-install scripts must not start daemons in the build chroot.
-  printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
-  chmod 755 /usr/sbin/policy-rc.d
+  install -m755 /nabos-build/image/build-config/policy-rc.d /usr/sbin/policy-rc.d
   mkdir -p "$inputs/debs"
-  printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99nabos-build
+  install -m644 /nabos-build/image/build-config/99nabos-build /etc/apt/apt.conf.d/99nabos-build
   if [[ $target == zero-armv6 ]]; then
     # Use the official archive directly: the stock redirector can select a
     # mirror unreachable from standard GitHub runners. Keep its signing key.
