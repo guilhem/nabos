@@ -70,6 +70,12 @@ func TestImageIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			copyFile(t, filepath.Join(imageDir, "test.sh"), filepath.Join(checkout, "image/test.sh"))
+			write(t, filepath.Join(checkout, "image/test-bus.sh"), `set -eu
+[ "$1" = "$TEST_PAYLOAD/inputs/test-bus" ]
+[ "$2" = "$(dirname "$(cat "$STATE/copy")")/test-bus" ]
+mkdir -p "$1" "$2"
+printf '%s\n' "$2"
+`)
 			write(t, filepath.Join(checkout, "build/iot/keep"), "another build")
 			for name, script := range map[string]string{
 				filepath.Join(payload, "src/uboot/scripts/config"):                        "exit 0",
@@ -178,6 +184,7 @@ touch "$out/u-boot"
 chmod 755 "$out/u-boot"`,
 				"go": `set -eu
 work=$(dirname "$(cat "$STATE/copy")")
+case "$PATH" in "$work/test-bus":*) ;; *) exit 1 ;; esac
 [ "$GOCACHE" = "$work/go-cache" ]
 [ "$GOMODCACHE" = "$work/go-modcache" ]
 [ "$TMPDIR" = "$work/tmp" ]
@@ -197,7 +204,7 @@ case "$*" in
 esac`,
 			})
 			r := execute(t, "", fake.env("GO=go", "NABOS_BUILD_NAMESPACE=", "ORIGINAL="+original, "STATE="+tmp,
-				"BOOT_FIXTURE="+boot, "ROOT_FIXTURE="+fixture, "KERNEL="+kernel,
+				"BOOT_FIXTURE="+boot, "ROOT_FIXTURE="+fixture, "KERNEL="+kernel, "TEST_PAYLOAD="+payload,
 				fmt.Sprintf("FAIL_TEST=%t", scenario.fail), fmt.Sprintf("CORRUPT=%t", scenario.corrupt)),
 				"bash", filepath.Join(checkout, "image/test.sh"), scenario.target, original, payload, expected)
 			calls := strings.Join(fake.calls(t), "\n")

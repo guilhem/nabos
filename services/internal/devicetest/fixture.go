@@ -35,6 +35,7 @@ type Fixture struct {
 	Configured                     bool
 	Catalog                        []device.Release
 	Checked                        int
+	CheckDelay                     time.Duration
 	InstallTag, InstallChannel     string
 	InstallAutomatic, InstallRetry bool
 	AgentSender                    string
@@ -166,6 +167,10 @@ func (f *Fixture) Releases(channel string) ([]device.Release, *dbus.Error) {
 	return f.Catalog, nil
 }
 func (f *Fixture) Check() ([]device.Release, *dbus.Error) {
+	f.Mu.Lock()
+	delay := f.CheckDelay
+	f.Mu.Unlock()
+	time.Sleep(delay)
 	f.Mu.Lock()
 	defer f.Mu.Unlock()
 	f.Checked++

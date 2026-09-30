@@ -38,11 +38,15 @@ func Interface(domain string) string { return Destination + "." + domain }
 
 // Call bounds roundtrips and discards remote error bodies, which can contain secrets.
 func (c *Client) Call(ctx context.Context, domain, method string, args ...any) (*dbus.Call, error) {
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
-	defer cancel()
 	if !strings.Contains(method, ".") {
 		method = Interface(domain) + "." + method
 	}
+	timeout := Timeout
+	if domain == "Updates" && method == Interface(domain)+".Check" {
+		timeout = time.Minute // Catalogue HTTP requests can take longer than a local roundtrip.
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	call := c.Conn.Object(Destination, Path(domain)).CallWithContext(ctx, method, 0, args...)
 	if call.Err != nil {
 		var e dbus.Error

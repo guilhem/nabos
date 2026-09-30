@@ -159,3 +159,27 @@ func TestTypedDomainsOnOnePrivateConnection(t *testing.T) {
 		t.Fatal("restart refusal changed SSH keys", revision, keys, err)
 	}
 }
+
+func TestCatalogueChecksAllowSlowRepliesAndHonorCallerCancellation(t *testing.T) {
+	fixture := devicetest.New(t)
+	client, err := device.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	fixture.Mu.Lock()
+	fixture.CheckDelay = device.Timeout + time.Second
+	fixture.Mu.Unlock()
+	if _, err := client.CheckUpdates(context.Background()); err != nil {
+		t.Fatal("valid slow catalogue rejected", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, err := client.CheckUpdates(ctx); !errors.Is(err, device.ErrUnavailable) {
+		t.Fatal("caller cancellation ignored", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("cancelled check waited for catalogue")
+	}
+}

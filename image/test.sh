@@ -389,6 +389,8 @@ export NABOS_TEST_ASSETS="$root/usr/share/nabos" NABOS_UBOOT_SANDBOX="$work/uboo
 export NABOS_VENDOR_DTBS="$root/boot/dtb" NABOS_IMAGE_OVERLAYS="$root/boot/overlays"
 export NABOS_IMAGE_BOOT="$boot" NABOS_IMAGE_ENV="$work/uboot.env" NABOS_IMAGE_TARGET="$target"
 export NABOS_IMAGE_DISK="$work/sdcard.img"
+test_bus=$(bash "$repo/image/test-bus.sh" "$payload/inputs/test-bus" "$work/test-bus")
+export PATH="$test_bus:$PATH"
 cd "$repo/services"
 setsid "$GO" test -count=1 -timeout 20m -v ./tests/integration ./tests/image &
 tests_pid=$!
