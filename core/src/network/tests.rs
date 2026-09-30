@@ -84,6 +84,7 @@ enum Outcome {
 struct FakeProfile {
     settings: Settings,
     unsaved: bool,
+    version: u64,
 }
 struct Checkpoint {
     profiles: HashSet<String>,
@@ -100,8 +101,10 @@ struct FakeState {
     address: String,
     reason: u32,
     checkpoint: Option<Checkpoint>,
+    checkpoint_generation: usize,
     outcome: Outcome,
     activation_count: usize,
+    activation_paths: Vec<String>,
     saved_count: usize,
     scan_count: usize,
     reject_scan: bool,
@@ -110,6 +113,20 @@ struct FakeState {
     final_snapshot_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
     save_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
     destroy_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    promotion_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    promotion_reply_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    fence_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    delete_gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    deleted_profiles: Vec<(String, String)>,
+    fence_count: usize,
+    fence_attempts: usize,
+    cas_rejections: usize,
+    reject_destroy: bool,
+    ambiguous_destroy: bool,
+    reject_promotion: bool,
+    client_snapshots: usize,
+    update_paths: Vec<String>,
+    secrets_count: usize,
 }
 impl FakeState {
     fn new(outcome: Outcome) -> Self {
@@ -136,6 +153,7 @@ impl FakeState {
                     FakeProfile {
                         settings: old,
                         unsaved: false,
+                        version: 1,
                     },
                 ),
                 (
@@ -143,6 +161,7 @@ impl FakeState {
                     FakeProfile {
                         settings: recovery,
                         unsaved: false,
+                        version: 1,
                     },
                 ),
             ]),
@@ -152,8 +171,10 @@ impl FakeState {
             address: HOTSPOT_ADDRESS.into(),
             reason: 0,
             checkpoint: None,
+            checkpoint_generation: 0,
             outcome,
             activation_count: 0,
+            activation_paths: Vec::new(),
             saved_count: 0,
             scan_count: 0,
             reject_scan: false,
@@ -162,6 +183,20 @@ impl FakeState {
             final_snapshot_gate: None,
             save_gate: None,
             destroy_gate: None,
+            promotion_gate: None,
+            promotion_reply_gate: None,
+            fence_gate: None,
+            delete_gate: None,
+            deleted_profiles: Vec::new(),
+            fence_count: 0,
+            fence_attempts: 0,
+            cas_rejections: 0,
+            reject_destroy: false,
+            ambiguous_destroy: false,
+            reject_promotion: false,
+            client_snapshots: 0,
+            update_paths: Vec::new(),
+            secrets_count: 0,
         }
     }
     fn rollback(&mut self) {
@@ -177,6 +212,19 @@ impl FakeState {
             };
             self.reason = 0;
         }
+    }
+    fn expire_checkpoint(&mut self, generation: usize) {
+        if self.checkpoint_generation == generation {
+            self.rollback();
+        }
+    }
+    fn restart(&mut self) {
+        self.checkpoint = None;
+        self.profiles.retain(|_, p| !p.unsaved);
+        self.active.clear();
+        self.state = 30;
+        self.mode = 0;
+        self.address.clear();
     }
 }
 type Fake = Arc<Mutex<FakeState>>;
@@ -215,26 +263,47 @@ impl Manager {
             mode: s.mode,
             address: s.address.clone(),
         });
+        s.client_snapshots = 0;
+        s.checkpoint_generation += 1;
+        let generation = s.checkpoint_generation;
         let state = self.0.clone();
         tokio::spawn(async move {
             tokio::time::sleep(GRACE).await;
-            state.lock().unwrap().rollback();
+            state.lock().unwrap().expire_checkpoint(generation);
         });
         Ok(path(CP))
     }
-    fn checkpoint_rollback(&self, checkpoint: OwnedObjectPath) -> HashMap<String, u32> {
+    fn checkpoint_rollback(
+        &self,
+        checkpoint: OwnedObjectPath,
+    ) -> fdo::Result<HashMap<String, u32>> {
         assert_eq!(checkpoint.as_str(), CP);
-        self.0.lock().unwrap().rollback();
-        HashMap::from([(DEV.into(), 0)])
+        let mut s = self.0.lock().unwrap();
+        if s.checkpoint.is_none() {
+            return Err(fdo::Error::Failed("checkpoint does not exist".into()));
+        }
+        // NM's checkpoint manager destroys the checkpoint after rollback.
+        s.rollback();
+        Ok(HashMap::from([(DEV.into(), 0)]))
     }
-    async fn checkpoint_destroy(&self, checkpoint: OwnedObjectPath) {
+    async fn checkpoint_destroy(&self, checkpoint: OwnedObjectPath) -> fdo::Result<()> {
         assert_eq!(checkpoint.as_str(), CP);
         let gate = self.0.lock().unwrap().destroy_gate.take();
         if let Some((entered, resume)) = gate {
             entered.send(()).unwrap();
-            resume.await.unwrap();
+            resume
+                .await
+                .map_err(|_| fdo::Error::Failed("lost destroy reply".into()))?;
         }
-        self.0.lock().unwrap().checkpoint = None;
+        let mut s = self.0.lock().unwrap();
+        if s.reject_destroy || s.checkpoint.is_none() {
+            return Err(fdo::Error::Failed("destroy rejected".into()));
+        }
+        s.checkpoint = None;
+        if s.ambiguous_destroy {
+            return Err(fdo::Error::Failed("destroy reply lost".into()));
+        }
+        Ok(())
     }
     async fn activate_connection(
         &self,
@@ -246,6 +315,7 @@ impl Manager {
         assert_eq!(specific.as_str(), "/");
         let outcome = {
             let mut s = self.0.lock().unwrap();
+            s.activation_paths.push(connection.to_string());
             let uuid = nm::text(
                 &s.profiles
                     .get(connection.as_str())
@@ -330,6 +400,7 @@ impl SettingsApi {
                 FakeProfile {
                     settings,
                     unsaved: flags == 2,
+                    version: 1,
                 },
             );
             p
@@ -368,7 +439,8 @@ impl ProfileApi {
         Ok(settings)
     }
     fn get_secrets(&self, _setting: &str) -> fdo::Result<Settings> {
-        let s = self.state.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
+        s.secrets_count += 1;
         let settings = &s
             .profiles
             .get(&self.path)
@@ -386,6 +458,16 @@ impl ProfileApi {
         Ok(secrets)
     }
     #[zbus(property)]
+    fn version_id(&self) -> fdo::Result<u64> {
+        self.state
+            .lock()
+            .unwrap()
+            .profiles
+            .get(&self.path)
+            .map(|p| p.version)
+            .ok_or_else(|| fdo::Error::UnknownObject("deleted profile".into()))
+    }
+    #[zbus(property)]
     fn unsaved(&self) -> bool {
         self.state
             .lock()
@@ -394,9 +476,19 @@ impl ProfileApi {
             .get(&self.path)
             .is_some_and(|p| p.unsaved)
     }
-    fn delete(&self) {
+    async fn delete(&self) {
+        let gate = self.state.lock().unwrap().delete_gate.take();
+        if let Some((entered, resume)) = gate {
+            entered.send(()).unwrap();
+            let _ = resume.await;
+        }
         let mut s = self.state.lock().unwrap();
-        s.profiles.remove(&self.path);
+        if let Some(profile) = s.profiles.remove(&self.path) {
+            s.deleted_profiles.push((
+                nm::text(&profile.settings, "connection", "uuid").into(),
+                nm::text(&profile.settings, "connection", "id").into(),
+            ));
+        }
         if s.active == self.path {
             s.active.clear();
             s.state = 30;
@@ -404,31 +496,89 @@ impl ProfileApi {
             s.address.clear();
         }
     }
-    async fn update2(&self, settings: Settings, flags: u32, args: Dict) -> Dict {
+    async fn update2(&self, settings: Settings, flags: u32, args: Dict) -> fdo::Result<Dict> {
         assert_eq!(flags, 1);
-        assert!(args.is_empty());
-        assert_eq!(
-            settings
-                .get("connection")
-                .unwrap()
-                .get("autoconnect")
-                .and_then(|v| bool::try_from(v).ok()),
-            Some(true)
-        );
-        let gate = self.state.lock().unwrap().save_gate.take();
+        assert_eq!(args.len(), 1);
+        let version = u64::try_from(&args["version-id"]).unwrap();
+        let fencing = settings.is_empty();
+        let promoting = nm::text(&settings, "connection", "id") == nm::COMMITTED_ID;
+        if !fencing {
+            assert_eq!(
+                bool::try_from(&settings["connection"]["autoconnect"]).unwrap(),
+                promoting
+            );
+        }
+        let gate = {
+            let mut s = self.state.lock().unwrap();
+            if fencing {
+                assert_ne!(version, 0, "unfenced cleanup");
+                s.fence_attempts += 1;
+                s.fence_gate.take()
+            } else if promoting {
+                s.update_paths.push(self.path.clone());
+                assert_ne!(version, 0, "unfenced promotion");
+                assert!(s.checkpoint.is_none(), "promotion before destroy");
+                s.promotion_gate.take()
+            } else {
+                s.update_paths.push(self.path.clone());
+                assert_eq!(version, 0, "preparation must be unconditional");
+                assert_eq!(
+                    nm::text(&settings, "connection", "id"),
+                    format!(
+                        "{}{}",
+                        nm::CANDIDATE_PREFIX,
+                        nm::text(&settings, "connection", "uuid")
+                    )
+                );
+                s.save_gate.take()
+            }
+        };
         if let Some((entered, resume)) = gate {
             entered.send(()).unwrap();
-            resume.await.unwrap();
+            resume
+                .await
+                .map_err(|_| fdo::Error::Failed("update interrupted".into()))?;
         }
-        let mut s = self.state.lock().unwrap();
-        let p = s
-            .profiles
-            .get_mut(&self.path)
-            .expect("candidate still exists when saved");
-        p.settings = settings;
-        p.unsaved = false;
-        s.saved_count += 1;
-        Dict::new()
+        let reply_gate = {
+            let mut s = self.state.lock().unwrap();
+            // NM checks the supplied version after asynchronous authorization.
+            if s.profiles
+                .get(&self.path)
+                .is_some_and(|p| version != 0 && version != p.version)
+            {
+                s.cas_rejections += 1;
+                return Err(fdo::Error::Failed("version mismatch".into()));
+            }
+            if promoting && s.reject_promotion {
+                return Err(fdo::Error::Failed("promotion rejected".into()));
+            }
+            let p = s
+                .profiles
+                .get_mut(&self.path)
+                .ok_or_else(|| fdo::Error::UnknownObject("deleted profile".into()))?;
+            if !fencing {
+                p.settings = settings;
+            }
+            p.unsaved = false;
+            p.version += 1;
+            if fencing {
+                s.fence_count += 1;
+            } else {
+                s.saved_count += 1;
+            }
+            if promoting {
+                s.promotion_reply_gate.take()
+            } else {
+                None
+            }
+        };
+        if let Some((entered, resume)) = reply_gate {
+            entered.send(()).unwrap();
+            resume
+                .await
+                .map_err(|_| fdo::Error::Failed("promotion reply lost".into()))?;
+        }
+        Ok(Dict::new())
     }
 }
 
@@ -519,7 +669,10 @@ impl IpApi {
     async fn address_data(&self) -> Vec<Dict> {
         let gate = {
             let mut s = self.0.lock().unwrap();
-            if s.saved_count > 0 {
+            if s.checkpoint.is_some() && s.mode == 2 {
+                s.client_snapshots += 1;
+            }
+            if s.client_snapshots >= 2 {
                 s.final_snapshot_gate.take()
             } else {
                 None
@@ -527,7 +680,7 @@ impl IpApi {
         };
         if let Some((entered, resume)) = gate {
             entered.send(()).unwrap();
-            resume.await.unwrap();
+            let _ = resume.await;
         }
         let s = self.0.lock().unwrap();
         if s.address.is_empty() {
@@ -648,6 +801,563 @@ fn request(uuid: &str) -> Request {
     }
 }
 
+fn assert_candidate(profile: &FakeProfile) {
+    let uuid = nm::text(&profile.settings, "connection", "uuid");
+    assert_eq!(
+        nm::text(&profile.settings, "connection", "id"),
+        format!("{}{uuid}", nm::CANDIDATE_PREFIX)
+    );
+    assert!(!bool::try_from(&profile.settings["connection"]["autoconnect"]).unwrap());
+}
+
+async fn reached_gate(waiting: oneshot::Receiver<()>) {
+    tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .expect("operation did not reach gate")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn private_bus_reused_profiles_are_wholly_untouched() {
+    for autoconnect in [false, true] {
+        for stage in [
+            "success",
+            "cancel",
+            "loss",
+            "reject-destroy",
+            "ambiguous-destroy",
+        ] {
+            let bus = PrivateBus::start();
+            let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
+            let (entered, waiting) = oneshot::channel();
+            let (resume, paused) = oneshot::channel();
+            let original = {
+                let mut s = state.lock().unwrap();
+                let old = s.profiles.get_mut(OLD).unwrap();
+                old.settings
+                    .get_mut("connection")
+                    .unwrap()
+                    .insert("autoconnect".into(), autoconnect.into());
+                // Include native settings that the request cannot reconstruct.
+                old.settings
+                    .get_mut("connection")
+                    .unwrap()
+                    .insert("autoconnect-priority".into(), 37i32.into());
+                let original = copy_settings(&old.settings);
+                s.final_snapshot_gate = Some((entered, paused));
+                s.reject_destroy = stage == "reject-destroy";
+                s.ambiguous_destroy = stage == "ambiguous-destroy";
+                original
+            };
+            let _nm = fake_nm(&bus, state.clone()).await;
+            let (mut core, _) = controller(&bus).await;
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let flag = cancelled.clone();
+            let task = tokio::spawn(async move {
+                let result = core.attempt(&request(OLD_UUID), &flag).await;
+                (core, result)
+            });
+            reached_gate(waiting).await;
+            if stage == "cancel" {
+                cancelled.store(true, Ordering::SeqCst);
+            } else if stage == "loss" {
+                state.lock().unwrap().address.clear();
+            }
+            resume.send(()).unwrap();
+            let (core, result) = tokio::time::timeout(Duration::from_secs(3), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                result,
+                match stage {
+                    "success" => Ok(()),
+                    "cancel" => Err("cancelled"),
+                    "loss" => Err("connection-lost"),
+                    _ => Err("nm-unavailable"),
+                },
+                "autoconnect={autoconnect}, stage={stage}"
+            );
+            let s = state.lock().unwrap();
+            assert!(
+                s.profiles[OLD].settings == original,
+                "native settings/secrets changed"
+            );
+            assert!(!s.profiles[OLD].unsaved);
+            assert_eq!(s.profiles[OLD].version, 1);
+            assert_eq!(s.profiles.len(), 2);
+            assert!(s.update_paths.is_empty(), "native Update2 called");
+            assert_eq!(s.fence_attempts, 0, "native cleanup fence called");
+            assert_eq!(s.saved_count, 0);
+            assert_eq!(s.secrets_count, 0);
+            assert!(s.checkpoint.is_none());
+            if stage == "success" {
+                assert_eq!(s.active, OLD);
+                assert_eq!(core.shared.lock().unwrap().status.mode, "client");
+            } else if stage != "ambiguous-destroy" {
+                assert_eq!(s.active, RECOVERY);
+                assert_eq!(core.shared.lock().unwrap().status.mode, "hotspot");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn private_bus_prepared_candidate_survives_crash_until_reconciliation() {
+    for stage in ["snapshot", "promotion"] {
+        for restart_nm in [false, true] {
+            let bus = PrivateBus::start();
+            let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
+            let (entered, waiting) = oneshot::channel();
+            let (resume, paused) = oneshot::channel();
+            {
+                let mut s = state.lock().unwrap();
+                if stage == "snapshot" {
+                    s.final_snapshot_gate = Some((entered, paused));
+                } else {
+                    s.promotion_gate = Some((entered, paused));
+                }
+            }
+            let conn = fake_nm(&bus, state.clone()).await;
+            let (mut core, _) = controller(&bus).await;
+            let core_bus = core.bus.clone();
+            let task =
+                tokio::spawn(
+                    async move { core.attempt(&request(""), &AtomicBool::new(false)).await },
+                );
+            reached_gate(waiting).await;
+            let candidate = {
+                let s = state.lock().unwrap();
+                let candidate = s.active.clone();
+                assert_candidate(&s.profiles[&candidate]);
+                assert!(
+                    !s.profiles[&candidate].unsaved,
+                    "TO_DISK did not persist preparation"
+                );
+                assert_eq!(s.saved_count, 1);
+                assert_eq!(s.checkpoint.is_some(), stage == "snapshot");
+                candidate
+            };
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            // Keep the server call paused while the dead core is replaced.
+            let _replacement = if restart_nm {
+                conn.close().await.unwrap();
+                state.lock().unwrap().restart();
+                Some(fake_nm(&bus, state.clone()).await)
+            } else {
+                None
+            };
+            assert!(state.lock().unwrap().profiles.contains_key(&candidate));
+            let mut fresh = Controller::new(
+                core_bus,
+                Arc::new(Mutex::new(Shared::default())),
+                mpsc::channel(8).1,
+            );
+            fresh.reconcile_inner().await.unwrap();
+            assert_eq!(fresh.shared.lock().unwrap().profiles.len(), 1);
+            if stage == "snapshot" && !restart_nm {
+                // A core restart alone must leave NM's rollback timer in charge.
+                assert!(state.lock().unwrap().profiles.contains_key(&candidate));
+                let nm = Nm::discover(&fresh.bus).await.unwrap();
+                let generation = state.lock().unwrap().checkpoint_generation;
+                state.lock().unwrap().expire_checkpoint(generation);
+                assert!(nm.rollback(&path(CP)).await.is_err());
+                assert!(nm.destroy(&path(CP)).await.is_err());
+                fresh.reconcile_inner().await.unwrap();
+            }
+            let s = state.lock().unwrap();
+            assert!(!s.profiles.contains_key(&candidate));
+            assert_eq!(s.profiles.len(), 2);
+            assert_eq!(s.saved_count, 1, "crashed transaction promoted candidate");
+            drop(s);
+            drop(resume);
+        }
+    }
+}
+
+#[tokio::test]
+async fn private_bus_markers_are_private_and_never_retried_regardless_of_unsaved() {
+    for persisted in [false, true] {
+        let bus = PrivateBus::start();
+        let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
+        // No native client profile: any attempted retry must be a bug.
+        state.lock().unwrap().profiles.remove(OLD);
+        let _conn = fake_nm(&bus, state.clone()).await;
+        let (mut core, _) = controller(&bus).await;
+        let nm = Nm::discover(&core.bus).await.unwrap();
+        let cp = nm.checkpoint().await.unwrap();
+        let uuid = new_uuid().unwrap();
+        let settings = nm::wifi_settings(
+            &uuid,
+            &format!("{}{uuid}", nm::CANDIDATE_PREFIX),
+            &[255, 1, 2],
+            "open",
+            "",
+        );
+        let candidate = nm.add(&settings, persisted).await.unwrap();
+        core.reconcile_inner().await.unwrap();
+        assert!(core.shared.lock().unwrap().profiles.is_empty());
+        assert!(state
+            .lock()
+            .unwrap()
+            .profiles
+            .contains_key(candidate.as_str()));
+        nm.destroy(&cp).await.unwrap();
+        assert_eq!(
+            core.attempt(&request(&uuid), &AtomicBool::new(false)).await,
+            Err("unknown-profile")
+        );
+        core.retry = Instant::now();
+        core.reconcile_inner().await.unwrap();
+        assert!(!state
+            .lock()
+            .unwrap()
+            .profiles
+            .contains_key(candidate.as_str()));
+        assert!(core.shared.lock().unwrap().profiles.is_empty());
+        assert!(
+            state.lock().unwrap().activation_paths.is_empty(),
+            "candidate retried"
+        );
+        assert!(state.lock().unwrap().update_paths.is_empty());
+        assert_eq!(state.lock().unwrap().secrets_count, 0);
+    }
+}
+
+#[tokio::test]
+async fn private_bus_failed_destroy_never_promotes_candidate() {
+    for ambiguous in [false, true] {
+        let bus = PrivateBus::start();
+        let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
+        {
+            let mut s = state.lock().unwrap();
+            s.reject_destroy = !ambiguous;
+            s.ambiguous_destroy = ambiguous;
+        }
+        let _nm = fake_nm(&bus, state.clone()).await;
+        let (mut core, _) = controller(&bus).await;
+        assert_eq!(
+            core.attempt(&request(""), &AtomicBool::new(false)).await,
+            Err("nm-unavailable")
+        );
+        let s = state.lock().unwrap();
+        assert_eq!(s.saved_count, 1);
+        assert_eq!(
+            s.update_paths.len(),
+            1,
+            "promotion attempted after failed destroy"
+        );
+        assert_eq!(s.profiles.len(), 2);
+        assert!(s.profiles.contains_key(OLD));
+        assert_eq!(s.secrets_count, 0);
+        assert!(s.checkpoint.is_none());
+        if !ambiguous {
+            assert_eq!(s.active, RECOVERY);
+            assert_eq!(core.shared.lock().unwrap().status.mode, "hotspot");
+        }
+    }
+}
+
+#[tokio::test]
+async fn private_bus_promotion_errors_resolve_by_uuid_with_fresh_owner() {
+    for prior_hotspot in [false, true] {
+        for reply in ["reject", "lost-before-write", "lost-after-write"] {
+            for restart_nm in [false, true] {
+                let bus = PrivateBus::start();
+                let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
+                let (entered, waiting) = oneshot::channel();
+                let (resume, paused) = oneshot::channel();
+                let original = {
+                    let mut s = state.lock().unwrap();
+                    if !prior_hotspot {
+                        s.active = OLD.into();
+                        s.mode = 2;
+                        s.address = "192.168.5.7".into();
+                    }
+                    s.reject_promotion = reply == "reject";
+                    if reply == "lost-after-write" {
+                        s.promotion_reply_gate = Some((entered, paused));
+                    } else {
+                        s.promotion_gate = Some((entered, paused));
+                    }
+                    copy_settings(&s.profiles[OLD].settings)
+                };
+                let conn = fake_nm(&bus, state.clone()).await;
+                let (mut core, _) = controller(&bus).await;
+                let task = tokio::spawn(async move {
+                    let result = core.attempt(&request(""), &AtomicBool::new(false)).await;
+                    (core, result)
+                });
+                reached_gate(waiting).await;
+                let uuid = {
+                    let s = state.lock().unwrap();
+                    assert!(s.checkpoint.is_none());
+                    assert_eq!(s.update_paths.len(), 2);
+                    let candidate = &s.profiles[&s.active];
+                    assert!(!candidate.unsaved);
+                    if reply == "lost-after-write" {
+                        assert_eq!(
+                            nm::text(&candidate.settings, "connection", "id"),
+                            nm::COMMITTED_ID
+                        );
+                        assert!(
+                            bool::try_from(&candidate.settings["connection"]["autoconnect"])
+                                .unwrap()
+                        );
+                        assert_eq!(s.saved_count, 2);
+                    } else {
+                        assert_candidate(candidate);
+                        assert_eq!(s.saved_count, 1);
+                    }
+                    nm::text(&candidate.settings, "connection", "uuid").to_owned()
+                };
+                let _replacement = if restart_nm {
+                    // Retain the old unique owner just long enough to deliver the
+                    // ambiguous reply, while discovery sees a replacement NM.
+                    conn.release_name(NM).await.unwrap();
+                    {
+                        let mut s = state.lock().unwrap();
+                        s.restart();
+                        let profiles = std::mem::take(&mut s.profiles);
+                        for (i, (_, profile)) in profiles.into_iter().enumerate() {
+                            s.profiles
+                                .insert(format!("{SETTINGS}/{}", 101 + i), profile);
+                        }
+                    }
+                    Some(fake_nm(&bus, state.clone()).await)
+                } else {
+                    None
+                };
+                if reply == "reject" {
+                    resume.send(()).unwrap();
+                } else {
+                    drop(resume); // The server reports failure before/after persistence.
+                }
+                let (mut core, result) = tokio::time::timeout(Duration::from_secs(3), task)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    result,
+                    if reply == "lost-after-write" {
+                        Ok(())
+                    } else {
+                        Err("nm-unavailable")
+                    },
+                    "prior_hotspot={prior_hotspot}, reply={reply}, restart_nm={restart_nm}"
+                );
+                {
+                    let s = state.lock().unwrap();
+                    let native = s
+                        .profiles
+                        .values()
+                        .find(|p| nm::text(&p.settings, "connection", "uuid") == OLD_UUID)
+                        .unwrap();
+                    assert!(native.settings == original);
+                    assert!(!native.unsaved);
+                    assert_eq!(s.secrets_count, 0);
+                    assert_eq!(
+                        s.update_paths.len(),
+                        2,
+                        "unexpected settings write during resolution"
+                    );
+                    let committed = s
+                        .profiles
+                        .values()
+                        .find(|p| nm::text(&p.settings, "connection", "uuid") == uuid);
+                    if reply == "lost-after-write" {
+                        let profile =
+                            committed.expect("committed profile deleted after lost reply");
+                        assert_eq!(
+                            nm::text(&profile.settings, "connection", "id"),
+                            nm::COMMITTED_ID
+                        );
+                        assert!(
+                            bool::try_from(&profile.settings["connection"]["autoconnect"]).unwrap()
+                        );
+                        assert!(!profile.unsaved);
+                        assert_eq!(
+                            nm::text(&profile.settings, "802-11-wireless-security", "psk"),
+                            "newpassword"
+                        );
+                        assert_eq!(s.saved_count, 2);
+                    } else {
+                        assert!(committed.is_none(), "uncommitted marker was retained");
+                        assert_eq!(s.profiles.len(), 2);
+                        assert_eq!(s.saved_count, 1);
+                        let restored =
+                            nm::text(&s.profiles[&s.active].settings, "connection", "uuid");
+                        assert_eq!(
+                            restored,
+                            if prior_hotspot {
+                                HOTSPOT_UUID
+                            } else {
+                                OLD_UUID
+                            }
+                        );
+                        assert_eq!(
+                            core.shared.lock().unwrap().status.mode,
+                            if prior_hotspot { "hotspot" } else { "client" }
+                        );
+                    }
+                }
+                // A later reconciliation must retain a promotion confirmed on disk.
+                core.reconcile_inner().await.unwrap();
+                assert_eq!(
+                    core.shared
+                        .lock()
+                        .unwrap()
+                        .profiles
+                        .iter()
+                        .any(|p| p.uuid == uuid),
+                    reply == "lost-after-write"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn private_bus_timed_out_promotion_and_cleanup_have_one_cas_winner() {
+    for promotion_wins in [false, true] {
+        let bus = PrivateBus::start();
+        let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
+        let (promoting, promotion_waiting) = oneshot::channel();
+        let (promote, promotion_paused) = oneshot::channel();
+        let (cleaning, cleanup_waiting) = oneshot::channel();
+        let (cleanup, cleanup_paused) = oneshot::channel();
+        {
+            let mut s = state.lock().unwrap();
+            s.promotion_gate = Some((promoting, promotion_paused));
+            if promotion_wins {
+                // Cleanup has read VersionId and the marker, but its conditional
+                // Update2 is still waiting for NM authorization.
+                s.fence_gate = Some((cleaning, cleanup_paused));
+            } else {
+                // The fence succeeds first; hold Delete while the original
+                // promotion finishes authorization and checks its stale version.
+                s.delete_gate = Some((cleaning, cleanup_paused));
+            }
+        }
+        let _nm = fake_nm(&bus, state.clone()).await;
+        let (mut core, _) = controller(&bus).await;
+        let task = tokio::spawn(async move {
+            let result = core.attempt(&request(""), &AtomicBool::new(false)).await;
+            (core, result)
+        });
+        reached_gate(promotion_waiting).await;
+        let (candidate, uuid, original) = {
+            let s = state.lock().unwrap();
+            assert_candidate(&s.profiles[&s.active]);
+            assert!(!s.profiles[&s.active].unsaved);
+            assert_eq!(s.profiles[&s.active].version, 2);
+            assert!(s.checkpoint.is_none());
+            (
+                s.active.clone(),
+                nm::text(&s.profiles[&s.active].settings, "connection", "uuid").to_owned(),
+                copy_settings(&s.profiles[&s.active].settings),
+            )
+        };
+        // Exercise the actual five-second client deadline, not a fake error.
+        tokio::time::timeout(Duration::from_secs(7), cleanup_waiting)
+            .await
+            .expect("timed-out promotion did not reach cleanup")
+            .unwrap();
+        {
+            let s = state.lock().unwrap();
+            assert!(
+                s.profiles[&candidate].settings == original,
+                "empty fence changed settings/secrets"
+            );
+            assert_eq!(s.fence_count, usize::from(!promotion_wins));
+            assert_eq!(
+                s.profiles[&candidate].version,
+                if promotion_wins { 2 } else { 3 }
+            );
+        }
+        promote.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let settled = {
+                    let s = state.lock().unwrap();
+                    if promotion_wins {
+                        s.saved_count == 2
+                    } else {
+                        s.cas_rejections == 1
+                    }
+                };
+                if settled {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("late promotion did not settle");
+        cleanup.send(()).unwrap();
+        let (core, result) = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result,
+            Err(if promotion_wins {
+                "commit-unconfirmed"
+            } else {
+                "nm-timeout"
+            })
+        );
+        {
+            let s = state.lock().unwrap();
+            assert_eq!(s.cas_rejections, 1);
+            assert_eq!(s.saved_count, if promotion_wins { 2 } else { 1 });
+            assert_eq!(s.fence_count, usize::from(!promotion_wins));
+            assert_eq!(s.secrets_count, 0);
+            assert!(
+                !s.deleted_profiles
+                    .iter()
+                    .any(|(deleted, id)| deleted == &uuid && id == nm::COMMITTED_ID),
+                "cleanup deleted the committed UUID after a late promotion"
+            );
+            if promotion_wins {
+                let committed = &s.profiles[&candidate];
+                assert_eq!(
+                    nm::text(&committed.settings, "connection", "id"),
+                    nm::COMMITTED_ID
+                );
+                assert!(bool::try_from(&committed.settings["connection"]["autoconnect"]).unwrap());
+                assert!(!committed.unsaved);
+                assert_eq!(
+                    nm::text(&committed.settings, "802-11-wireless-security", "psk"),
+                    "newpassword"
+                );
+            } else {
+                assert!(!s.profiles.contains_key(&candidate));
+                assert_eq!(s.active, RECOVERY);
+                assert_eq!(core.shared.lock().unwrap().status.mode, "hotspot");
+            }
+        }
+        // A new core observes the winner without needing the dead attempt's RAM.
+        let mut fresh = Controller::new(
+            core.bus.clone(),
+            Arc::new(Mutex::new(Shared::default())),
+            mpsc::channel(8).1,
+        );
+        fresh.reconcile_inner().await.unwrap();
+        assert_eq!(
+            fresh
+                .shared
+                .lock()
+                .unwrap()
+                .profiles
+                .iter()
+                .any(|p| p.uuid == uuid),
+            promotion_wins
+        );
+    }
+}
+
 #[tokio::test]
 async fn private_bus_success_reuses_native_profiles_and_keeps_secrets_private() {
     let bus = PrivateBus::start();
@@ -667,7 +1377,7 @@ async fn private_bus_success_reuses_native_profiles_and_keeps_secrets_private() 
         let s = state.lock().unwrap();
         assert_eq!(s.profiles.len(), 3);
         assert!(s.profiles.contains_key(OLD));
-        assert_eq!(s.saved_count, 1);
+        assert_eq!(s.saved_count, 2);
         assert!(s.checkpoint.is_none());
         assert_eq!(
             nm::text(
@@ -819,7 +1529,7 @@ async fn private_bus_delayed_rollback_preserves_client_grace_and_bounds_hotspot_
 
 #[tokio::test]
 async fn private_bus_cancel_has_atomic_commit_boundary_and_keeps_attempt_active() {
-    for stage in ["save", "snapshot", "destroy"] {
+    for stage in ["save", "snapshot", "destroy", "promotion"] {
         let bus = PrivateBus::start();
         let state = Arc::new(Mutex::new(FakeState::new(Outcome::Success)));
         let (entered, waiting) = oneshot::channel();
@@ -831,6 +1541,7 @@ async fn private_bus_cancel_has_atomic_commit_boundary_and_keeps_attempt_active(
                 "save" => s.save_gate = gate,
                 "snapshot" => s.final_snapshot_gate = gate,
                 "destroy" => s.destroy_gate = gate,
+                "promotion" => s.promotion_gate = gate,
                 _ => unreachable!(),
             }
         }
@@ -852,9 +1563,19 @@ async fn private_bus_cancel_has_atomic_commit_boundary_and_keeps_attempt_active(
             .unwrap()
             .unwrap();
         assert!(api.shared.lock().unwrap().active.is_some());
-        assert!(state.lock().unwrap().checkpoint.is_some());
+        assert_eq!(
+            state.lock().unwrap().checkpoint.is_some(),
+            stage != "promotion"
+        );
+        {
+            let s = state.lock().unwrap();
+            assert_candidate(&s.profiles[&s.active]);
+            assert_eq!(s.profiles[&s.active].unsaved, stage == "save");
+            assert_eq!(s.saved_count, usize::from(stage != "save"));
+            assert_eq!(s.secrets_count, 0);
+        }
         let cancel = proxy.call::<_, _, ()>("Cancel", &(id,)).await;
-        if stage == "destroy" {
+        if stage == "destroy" || stage == "promotion" {
             assert!(cancel
                 .unwrap_err()
                 .to_string()
@@ -876,10 +1597,18 @@ async fn private_bus_cancel_has_atomic_commit_boundary_and_keeps_attempt_active(
         })
         .await
         .unwrap();
-        if stage == "destroy" {
+        if stage == "destroy" || stage == "promotion" {
             assert_eq!(api.shared.lock().unwrap().status.phase, "succeeded");
             assert_eq!(api.shared.lock().unwrap().status.mode, "client");
             assert_eq!(state.lock().unwrap().profiles.len(), 3);
+            let s = state.lock().unwrap();
+            let committed = &s.profiles[&s.active];
+            assert_eq!(
+                nm::text(&committed.settings, "connection", "id"),
+                nm::COMMITTED_ID
+            );
+            assert!(bool::try_from(&committed.settings["connection"]["autoconnect"]).unwrap());
+            assert!(!committed.unsaved);
         } else {
             assert_eq!(api.shared.lock().unwrap().status.phase, "cancelled");
             assert_eq!(api.shared.lock().unwrap().status.mode, "hotspot");
@@ -887,7 +1616,14 @@ async fn private_bus_cancel_has_atomic_commit_boundary_and_keeps_attempt_active(
             assert_eq!(state.lock().unwrap().profiles.len(), 2);
         }
         assert!(state.lock().unwrap().profiles.contains_key(OLD));
-        assert_eq!(state.lock().unwrap().saved_count, 1);
+        assert_eq!(
+            state.lock().unwrap().saved_count,
+            if stage == "destroy" || stage == "promotion" {
+                2
+            } else {
+                1
+            }
+        );
         assert!(state.lock().unwrap().checkpoint.is_none());
         assert!(proxy.call::<_, _, ()>("Cancel", &(id,)).await.is_err());
         core_task.abort();

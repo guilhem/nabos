@@ -14,6 +14,23 @@ Networks contain `ssid` (byte array), `strength` (0–100), `security` (open,
 wpa-psk, sae, unsupported). Profiles contain `uuid` and `ssid` (byte array).
 No property or signal contains a secret or a setup reservation token.
 
+Reusing a saved profile leaves its settings, secrets and autoconnect preference
+unchanged. New profiles start in memory with autoconnect disabled. Once the
+candidate has a usable client address, it is saved with its candidate marker;
+only a successful checkpoint commit permits its promotion to an ordinary saved
+profile with autoconnect enabled. Reconciliation removes orphaned candidates
+when no checkpoint protects them, including candidates saved before a restart.
+Candidates are excluded from the saved-profile list and automatic retries.
+
+If the final save reply is lost, the core rediscovers NetworkManager and checks
+the profile by UUID before reporting success or cleaning up. Promotion and
+cleanup use NetworkManager's `VersionId` and conditional `Update2` so a late
+promotion cannot race with candidate deletion, even after a core restart. An
+empty successful update also [increments the version in NetworkManager 1.52](https://github.com/NetworkManager/NetworkManager/blob/1.52.0/src/core/settings/nm-settings.c#L1161-L1183).
+An unavailable or inconclusive result reports `commit-unconfirmed` and leaves
+recovery to reconciliation. A crash between checkpoint destruction and promotion can discard
+the candidate; the existing reconnection grace and hotspot recovery still apply.
+
 Methods (D-Bus signatures):
 
 - `Scan()`: request an explicit scan; retain cached results on temporary failure.

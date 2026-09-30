@@ -616,10 +616,12 @@ impl Controller {
         let checkpoints = nm.checkpoints().await?;
         let profiles = nm.profiles().await?;
         // An interrupted transaction remains protected by NM's own timer. Only
-        // orphaned, unsaved profiles created by this core are cleaned up.
+        // orphaned marked profiles created by this core are cleaned up, even
+        // when preparation persisted them before NM lost its checkpoint.
         if checkpoints.is_empty() {
             for candidate in profiles.iter().filter(|p| p.candidate) {
-                nm.delete(&candidate.path).await?;
+                nm.discard_candidate(&candidate.path, &candidate.public.uuid)
+                    .await?;
             }
         }
         self.shared.lock().unwrap().profiles = profiles
@@ -742,6 +744,7 @@ impl Controller {
         let started = Instant::now();
         let checkpoint = nm.checkpoint().await?;
         let mut candidate = None;
+        let mut promoting = false;
         let operation = async {
             let path = match existing {
                 Some(ref saved) => saved.path.clone(),
@@ -780,20 +783,16 @@ impl Controller {
                     if cancelled.load(Ordering::SeqCst) {
                         return Err("cancelled");
                     }
+                    let version = if candidate.is_some() {
+                        // Prepare durably, still marked and with autoconnect off.
+                        // Native profiles are activated without any settings write.
+                        nm.save(&path, &settings, 0).await?;
+                        nm.version(&path).await?
+                    } else {
+                        0
+                    };
                     if !nm.checkpoints().await?.contains(&checkpoint) {
                         return Err("checkpoint-expired");
-                    }
-                    if candidate.is_some() {
-                        settings
-                            .get_mut("connection")
-                            .unwrap()
-                            .insert("id".into(), nm::string("NabOS Wi-Fi"));
-                        nm.save(&path, &mut settings).await?;
-                    } else {
-                        nm.save_existing(&path).await?;
-                    }
-                    if cancelled.load(Ordering::SeqCst) {
-                        return Err("cancelled");
                     }
                     // Re-read after persistence; a concurrent loss/foreign
                     // activation must not commit a previously good snapshot.
@@ -811,6 +810,13 @@ impl Controller {
                         s.committing = true;
                     }
                     nm.destroy(&checkpoint).await?;
+                    if candidate.is_some() {
+                        let connection = settings.get_mut("connection").unwrap();
+                        connection.insert("id".into(), nm::string(nm::COMMITTED_ID));
+                        connection.insert("autoconnect".into(), true.into());
+                        promoting = true;
+                        nm.save(&path, &settings, version).await?;
+                    }
                     self.shared.lock().unwrap().observe(current.status);
                     self.grace = None;
                     self.retry = Instant::now() + RETRY;
@@ -819,10 +825,74 @@ impl Controller {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         };
-        let result = tokio::time::timeout_at(started + GRACE - Duration::from_secs(2), operation)
-            .await
-            .unwrap_or(Err("connection-timeout"));
-        if result.is_err() {
+        let mut result =
+            tokio::time::timeout_at(started + GRACE - Duration::from_secs(2), operation)
+                .await
+                .unwrap_or(Err("connection-timeout"));
+        if result.is_err() && promoting {
+            // A lost promotion reply may have committed. Resolve by UUID with a
+            // fresh owner; never send an old object's path to a replacement NM.
+            let resolution = async {
+                let current_nm = Nm::discover(&self.bus).await?;
+                let profiles = current_nm.profiles().await?;
+                if let Some(profile) = profiles.iter().find(|p| p.public.uuid == uuid) {
+                    if !profile.candidate {
+                        let saved: nm::Settings = current_nm
+                            .call(profile.path.as_str(), nm::CONNECTION, "GetSettings", &())
+                            .await?;
+                        let autoconnect = saved
+                            .get("connection")
+                            .and_then(|s| s.get("autoconnect"))
+                            .and_then(|v| bool::try_from(v).ok());
+                        if nm::text(&saved, "connection", "id") != nm::COMMITTED_ID
+                            || autoconnect != Some(true)
+                            || current_nm
+                                .property::<bool>(profile.path.as_str(), nm::CONNECTION, "Unsaved")
+                                .await?
+                        {
+                            return Err("commit-unconfirmed");
+                        }
+                        let status = current_nm
+                            .snapshot()
+                            .await
+                            .map(|s| s.status)
+                            .unwrap_or_else(|_| Status::unavailable());
+                        self.shared.lock().unwrap().observe(status);
+                        return Ok(true);
+                    }
+                }
+                if !current_nm.checkpoints().await?.is_empty() {
+                    return Err("commit-unconfirmed");
+                }
+                if let Some(profile) = profiles.iter().find(|p| p.public.uuid == uuid) {
+                    current_nm.discard_candidate(&profile.path, &uuid).await?;
+                }
+                // Destroy succeeded, so native rollback is no longer available.
+                // Recover the prior radio mode without rewriting its profile.
+                if before.status.mode == "hotspot" {
+                    current_nm.hotspot().await?;
+                } else if let Some(previous) = profiles
+                    .iter()
+                    .find(|p| !p.candidate && p.public.uuid == before.status.profile_uuid)
+                {
+                    current_nm.activate(&previous.path).await?;
+                }
+                let status = current_nm.snapshot().await?.status;
+                self.shared.lock().unwrap().observe(status);
+                Ok(false)
+            }
+            .await;
+            match resolution {
+                Ok(true) => result = Ok(()),
+                Ok(false) => {}
+                Err(_) => {
+                    result = Err("commit-unconfirmed");
+                    self.shared.lock().unwrap().observe(Status::unavailable());
+                }
+            }
+            self.grace = Some(Instant::now() + GRACE);
+            self.retry = Instant::now() + RETRY;
+        } else if result.is_err() {
             // A failed rollback keeps the native timer armed. Never destroy a
             // checkpoint whose restoration was not confirmed.
             let restored = nm.rollback(&checkpoint).await.is_ok();
@@ -830,7 +900,7 @@ impl Controller {
                 let _ = nm.destroy(&checkpoint).await;
             }
             if let Some(path) = candidate {
-                let _ = nm.delete(&path).await;
+                let _ = nm.discard_candidate(&path, &uuid).await;
             }
             // Client rollback starts asynchronous reactivation/DHCP. Let the
             // existing grace below finish that recovery before opening an AP.

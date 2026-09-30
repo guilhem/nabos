@@ -18,6 +18,7 @@ pub const WIFI: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 pub const CONNECTION: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 pub const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 pub const CANDIDATE_PREFIX: &str = "nab-core candidate ";
+pub const COMMITTED_ID: &str = "NabOS Wi-Fi";
 pub type Dict = HashMap<String, OwnedValue>;
 pub type Settings = HashMap<String, Dict>;
 pub type Result<T> = std::result::Result<T, &'static str>;
@@ -90,7 +91,7 @@ impl Nm {
         .await
     }
 
-    async fn property<T>(&self, path: &str, interface: &str, name: &str) -> Result<T>
+    pub async fn property<T>(&self, path: &str, interface: &str, name: &str) -> Result<T>
     where
         T: TryFrom<OwnedValue>,
         T::Error: Into<zbus::Error>,
@@ -134,11 +135,9 @@ impl Nm {
                 .and_then(|v| v.get("ssid"))
                 .and_then(|v| Vec::<u8>::try_from(v.try_clone().ok()?).ok())
                 .unwrap_or_default();
-            let candidate = text(&settings, "connection", "id")
-                == format!("{CANDIDATE_PREFIX}{uuid}")
-                && self
-                    .property::<bool>(path.as_str(), CONNECTION, "Unsaved")
-                    .await?;
+            // The marker survives TO_DISK and NM/core restarts until promotion.
+            let candidate =
+                text(&settings, "connection", "id") == format!("{CANDIDATE_PREFIX}{uuid}");
             if !uuid.is_empty() && !ssid.is_empty() {
                 profiles.push(Saved {
                     public: Profile { uuid, ssid },
@@ -346,6 +345,34 @@ impl Nm {
         self.call(path.as_str(), CONNECTION, "Delete", &()).await
     }
 
+    pub async fn version(&self, path: &OwnedObjectPath) -> Result<u64> {
+        let version = self
+            .property(path.as_str(), CONNECTION, "VersionId")
+            .await?;
+        if version == 0 {
+            return Err("invalid-profile-version");
+        }
+        Ok(version)
+    }
+
+    pub async fn discard_candidate(&self, path: &OwnedObjectPath, uuid: &str) -> Result<()> {
+        // Read version before settings. A late promotion must invalidate this
+        // cleanup, including after the core restarts while NM authorizes it.
+        let version = self.version(path).await?;
+        let settings: Settings = self
+            .call(path.as_str(), CONNECTION, "GetSettings", &())
+            .await?;
+        if text(&settings, "connection", "uuid") != uuid
+            || text(&settings, "connection", "id") != format!("{CANDIDATE_PREFIX}{uuid}")
+        {
+            return Err("profile-changed");
+        }
+        // NM increments VersionId even for an empty successful Update2. Fence
+        // any pending promotion; an ambiguous reply must never permit Delete.
+        self.save(path, &Settings::new(), version).await?;
+        self.delete(path).await
+    }
+
     pub async fn add(&self, settings: &Settings, persist: bool) -> Result<OwnedObjectPath> {
         let (path, _): (OwnedObjectPath, Dict) = self
             .call(
@@ -358,43 +385,25 @@ impl Nm {
         Ok(path)
     }
 
-    pub async fn save(&self, path: &OwnedObjectPath, settings: &mut Settings) -> Result<()> {
-        settings
-            .get_mut("connection")
-            .ok_or("invalid-profile")?
-            .insert("autoconnect".into(), true.into());
+    pub async fn save(
+        &self,
+        path: &OwnedObjectPath,
+        settings: &Settings,
+        version: u64,
+    ) -> Result<()> {
         let _: Dict = self
             .call(
                 path.as_str(),
                 CONNECTION,
                 "Update2",
-                &(settings, 1u32, Dict::new()),
+                &(
+                    settings,
+                    1u32,
+                    Dict::from([("version-id".into(), version.into())]),
+                ),
             )
             .await?;
         Ok(())
-    }
-
-    pub async fn save_existing(&self, path: &OwnedObjectPath) -> Result<()> {
-        let mut settings: Settings = self
-            .call(path.as_str(), CONNECTION, "GetSettings", &())
-            .await?;
-        if settings
-            .get("connection")
-            .and_then(|s| s.get("autoconnect"))
-            .and_then(|v| bool::try_from(v).ok())
-            == Some(true)
-        {
-            return Ok(());
-        }
-        // Updating a native profile must preserve its existing secrets. They
-        // remain internal to this call; none reaches the public state or logs.
-        let secrets: Settings = self
-            .call(path.as_str(), CONNECTION, "GetSecrets", &("",))
-            .await?;
-        for (section, secrets) in secrets {
-            settings.entry(section).or_default().extend(secrets);
-        }
-        self.save(path, &mut settings).await
     }
 
     pub async fn hotspot(&self) -> Result<()> {
