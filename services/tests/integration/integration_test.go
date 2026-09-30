@@ -1,5 +1,5 @@
 // Package integration is the end-to-end test: real Mosquitto +
-// nab-core --simulate + nab-service.
+// device-core --simulate + nab-core --simulate + nab-service.
 //
 // It covers the MQTT contract (docs/protocol-v1.md): execution, results,
 // deduplication/replay, expiration (on arrival and while queued), cancel,
@@ -8,7 +8,8 @@
 // CSRF, authenticated actions, settings persistence, /healthz).
 //
 // Run from services/: NABOS_INTEGRATION=1 go test -count=1 ./tests/integration
-// Requirements: mosquitto, mosquitto_pub, mosquitto_sub, dbus-daemon, cargo, go.
+// Requirements: mosquitto, mosquitto_pub, mosquitto_sub, dbus-daemon, go.
+// The parent supplies current Rust binaries through NAB_CORE_BIN / DEVICE_CORE_BIN.
 // Overrides: an existing path is used as is (spaces allowed); anything else
 // is split on spaces, so emulator command lines work:
 //
@@ -17,11 +18,12 @@
 //	MOSQUITTO=/usr/sbin/mosquitto
 //	NABOS_TEST_ASSETS=/sysroot/usr/share/nabos
 //
-// Without overrides, native debug builds of core/ and services/ are made.
+// Without overrides, use parent-built Rust debug binaries and build nab-service.
 package integration
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -37,6 +39,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guilhem/nabos/services/internal/config"
+	"github.com/guilhem/nabos/services/internal/device"
 	"golang.org/x/sys/unix"
 )
 
@@ -52,14 +56,17 @@ type message struct {
 }
 
 type harness struct {
-	t                   *testing.T
-	tmp                 string
-	mqttPort, httpPort  int
-	procs               map[string]*exec.Cmd
-	mu                  sync.Mutex
-	log                 []message
-	mosquitto, pub, sub string
-	core, service       []string
+	t                     *testing.T
+	tmp                   string
+	mqttPort, httpPort    int
+	procs                 map[string]*exec.Cmd
+	mu                    sync.Mutex
+	log                   []message
+	units                 map[uint32]string
+	requireAgents         bool
+	mosquitto, pub, sub   string
+	core, service, device []string
+	deviceAPI             *device.Client
 }
 
 func freePort(t *testing.T) int {
@@ -100,17 +107,12 @@ func (h *harness) build() {
 	t := h.t
 	core := os.Getenv("NAB_CORE_BIN")
 	if core == "" {
-		cmd := exec.Command("cargo", "build", "--quiet", "--manifest-path", filepath.Join(repo, "core/Cargo.toml"))
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("cargo build: %v", err)
+		core = filepath.Join(repo, "core/target/debug/nab-core")
+		if _, err := os.Stat(core); err != nil {
+			t.Fatalf("nab-core binary missing; parent builds the core, set NAB_CORE_BIN: %v", err)
 		}
-		target := os.Getenv("CARGO_TARGET_DIR")
-		if target == "" {
-			target = filepath.Join(repo, "core/target")
-		}
-		core = filepath.Join(target, "debug/nab-core")
 	}
+
 	service := os.Getenv("NAB_SERVICE_BIN")
 	if service == "" {
 		service = filepath.Join(h.tmp, "nab-service")
@@ -120,8 +122,15 @@ func (h *harness) build() {
 			t.Fatalf("go build: %v\n%s", err, out)
 		}
 	}
-	h.core, h.service = commandLine(core), commandLine(service)
-	for _, c := range [][]string{h.core, h.service} {
+	deviceBin := os.Getenv("DEVICE_CORE_BIN")
+	if deviceBin == "" {
+		deviceBin = filepath.Join(repo, "build/device-core/target/debug/device-core")
+	}
+	if _, err := os.Stat(deviceBin); err != nil && os.Getenv("DEVICE_CORE_BIN") == "" {
+		t.Fatalf("device-core binary missing; parent builds the daemon, set DEVICE_CORE_BIN: %v", err)
+	}
+	h.core, h.service, h.device = commandLine(core), commandLine(service), commandLine(deviceBin)
+	for _, c := range [][]string{h.core, h.service, h.device} {
 		out, err := exec.Command(c[0], append(c[1:], "--version")...).Output()
 		if err != nil {
 			t.Fatalf("%s --version failed: %v", c, err)
@@ -138,7 +147,13 @@ func (h *harness) spawn(name string, args []string, env ...string) {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout, cmd.Stderr = logf, logf
-	if err := cmd.Start(); err != nil {
+	h.mu.Lock()
+	err = cmd.Start()
+	if err == nil && (name == "core" || name == "service") {
+		h.units[uint32(cmd.Process.Pid)] = "nab-" + name + ".service"
+	}
+	h.mu.Unlock()
+	if err != nil {
 		h.fatalf("%s: %v", name, err)
 	}
 	logf.Close()
@@ -160,6 +175,9 @@ func (h *harness) stop(name string, sig os.Signal) {
 		cmd.Process.Kill()
 		<-done
 	}
+	h.mu.Lock()
+	delete(h.units, uint32(cmd.Process.Pid))
+	h.mu.Unlock()
 }
 
 func portOpen(port int) bool {
@@ -225,30 +243,54 @@ func (h *harness) startCore() {
 		assets = filepath.Join(repo, "assets")
 	}
 	h.spawn("core", append(h.core, "--simulate"),
+		"NABOS_DEVICE_BUS_ADDRESS="+os.Getenv("DBUS_SYSTEM_BUS_ADDRESS"),
 		"NABOS_MQTT_PORT="+strconv.Itoa(h.mqttPort), "NABOS_SOUNDS_DIRS="+filepath.Join(assets, "sounds"),
-		"NABOS_CHOREOGRAPHIES_DIRS="+filepath.Join(assets, "choreographies"), "NABOS_SIM_AUDIO_MS=200", "NABOS_LOG=debug")
+		"NABOS_CHOREOGRAPHIES_DIRS="+filepath.Join(assets, "choreographies"), "NABOS_LOG=debug")
+}
+
+func (h *harness) waitCoreAdmission() {
+	idPrefix := "integration-ready-" + strconv.FormatInt(time.Now().UnixNano(), 10) + "-"
+	id, attempt := "", 0
+	h.waitFor(15*time.Second, "core maintenance recovery", func() bool {
+		if id != "" {
+			results := h.results(id)
+			if len(results) == 0 {
+				return false
+			}
+			if results[0]["status"] == "ok" {
+				return true
+			}
+			if results[0]["error"] != "maintenance" {
+				h.fatalf("core admission probe: %v", results[0])
+			}
+		}
+		attempt++
+		id = idPrefix + strconv.Itoa(attempt)
+		h.command(id, "info", map[string]any{"info_id": "integration-ready"}, in(time.Minute), false)
+		return false
+	})
 }
 
 func (h *harness) startService() {
 	data := filepath.Join(h.tmp, "data")
 	os.MkdirAll(data, 0o755)
-	cfg := filepath.Join(data, "config.json")
+	cfg := filepath.Join(data, "application.json")
 	if _, err := os.Stat(cfg); err != nil {
-		// Never asleep, no chime: time-of-day independent test.
-		midnight := map[string]int{"hour": 0, "min": 0}
-		day := map[string]any{"wakeup": midnight, "sleep": midnight}
-		b, _ := json.Marshal(map[string]any{"version": 1, "locale": "fr_FR", "timezone": "Europe/Paris", "volume": 70,
-			"clock": map[string]any{"chime": false, "sleep_sounds": false, "wakeup": midnight, "sleep": midnight,
-				"days": []any{day, day, day, day, day, day, day}},
-			"weather":        map[string]any{"unit": "celsius", "animation": "weather_and_rain", "frequency": 0},
-			"home_assistant": map[string]any{"port": 1883, "discovery_prefix": "homeassistant"}})
+		settings := config.Defaults()
+		settings.Clock.Chime, settings.Clock.SleepSounds = false, false
+		settings.Clock.Wakeup, settings.Clock.Sleep = config.HM{}, config.HM{}
+		for i := range settings.Clock.Days {
+			settings.Clock.Days[i] = config.Day{}
+		}
+		settings.Services.TaichiFrequency, settings.Services.SurpriseFrequency = 0, 0
+		b, _ := json.Marshal(settings)
 		os.WriteFile(cfg, b, 0o600)
 	}
 	h.spawn("service", h.service,
 		"NABOS_MQTT_PORT="+strconv.Itoa(h.mqttPort), "NABOS_HTTP_ADDR=127.0.0.1:"+strconv.Itoa(h.httpPort),
-		"NABOS_DATA_DIR="+data, "NABOS_LVA_UNIT=", "NABOS_TIMESYNC_FILE=none",
+		"NABOS_DATA_DIR="+data,
 		"NABOS_WEATHER_URL=http://127.0.0.1:9/forecast", "NABOS_GEOCODING_URL=http://127.0.0.1:9/search",
-		"NABOS_NET_PROBE=127.0.0.1:9", "NABOS_LOG=debug", "NABOS_VERSION=v0.0.1")
+		"NABOS_LOG=debug", "NABOS_VERSION=v0.0.1")
 	h.waitFor(15*time.Second, "service listening", func() bool { return portOpen(h.httpPort) })
 }
 
@@ -393,7 +435,7 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, tmp: tmp, mqttPort: freePort(t), httpPort: freePort(t), procs: map[string]*exec.Cmd{}}
+	h := &harness{t: t, tmp: tmp, mqttPort: freePort(t), httpPort: freePort(t), procs: map[string]*exec.Cmd{}, requireAgents: true}
 	h.mosquitto = os.Getenv("MOSQUITTO")
 	if h.mosquitto == "" {
 		h.mosquitto = which(t, "mosquitto", "/usr/sbin/mosquitto")
@@ -401,7 +443,7 @@ func TestEndToEnd(t *testing.T) {
 	h.pub, h.sub = which(t, "mosquitto_pub"), which(t, "mosquitto_sub")
 	h.build()
 	t.Cleanup(func() {
-		for _, name := range []string{"service", "core", "sub", "mosquitto"} {
+		for _, name := range []string{"service", "core", "device", "sub", "mosquitto", "dbus"} {
 			h.stop(name, syscall.SIGTERM)
 		}
 		t.Logf("core: %s\nservice: %s\nbroker: %s", strings.Join(h.core, " "), strings.Join(h.service, " "), h.mosquitto)
@@ -409,7 +451,7 @@ func TestEndToEnd(t *testing.T) {
 			os.RemoveAll(tmp)
 			return
 		}
-		for _, name := range []string{"core", "service", "mosquitto"} {
+		for _, name := range []string{"core", "service", "device", "mosquitto"} {
 			if data, err := os.ReadFile(filepath.Join(tmp, name+".log")); err == nil {
 				lines := strings.Split(string(data), "\n")
 				t.Logf("--- %s.log (tail)\n%s", name, strings.Join(lines[max(0, len(lines)-40):], "\n"))
@@ -418,11 +460,13 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	h.startBroker()
+	h.startDeviceCore(t)
 	h.startSubReader()
 	t0 := time.Now()
 	h.startCore()
 	h.onlineSince(t0, "online", 15*time.Second)
 	h.stateSince(t0, "idle", 10*time.Second)
+	h.waitCoreAdmission()
 	abort := map[string]any{"sequence": []any{map[string]any{"audio": []string{"system/abort.wav"}}}}
 	expect := func(got, want any, context ...any) {
 		h.t.Helper()
@@ -503,7 +547,6 @@ func TestEndToEnd(t *testing.T) {
 		expect(h.status("blocker"), "ok")
 	})
 
-	readyNetworkBus(t)
 	h.startService()
 	var cookie string
 	post := func(path string, form url.Values, cookie string, origin bool) (int, http.Header) {
@@ -597,18 +640,30 @@ func TestEndToEnd(t *testing.T) {
 			form.Set(fmt.Sprintf("wakeup_%d", i), "00:00")
 			form.Set(fmt.Sprintf("sleep_%d", i), "00:00")
 		}
-		if _, header := post("/settings", form, cookie, true); !strings.Contains(header.Get("Location"), "ok=") {
+		if _, header := post("/settings/application", form, cookie, true); !strings.Contains(header.Get("Location"), "ok=") {
 			h.fatalf("%v", header)
 		}
-		var saved struct {
-			Volume float64
-			Locale string
-			Admin  struct{ Hash string }
+		revision, _, err := h.deviceAPI.ReadConfig(context.Background())
+		if err != nil {
+			h.fatalf("system snapshot: %v", err)
 		}
-		data, _ := os.ReadFile(filepath.Join(tmp, "data/config.json"))
-		if json.Unmarshal(data, &saved) != nil || saved.Volume != 50 || saved.Locale != "en_US" || saved.Admin.Hash == "" {
+		system := url.Values{"revision": {revision}, "locale": {"en_US"}, "timezone": {"Europe/Paris"}, "volume": {"50"}}
+		if _, header := post("/settings/system", system, cookie, true); !strings.Contains(header.Get("Location"), "ok=") {
+			h.fatalf("system save: %v", header)
+		}
+		var saved struct{ Admin struct{ Hash string } }
+		data, _ := os.ReadFile(filepath.Join(tmp, "data/application.json"))
+		if json.Unmarshal(data, &saved) != nil || saved.Admin.Hash == "" || strings.Contains(string(data), `"locale"`) || strings.Contains(string(data), `"volume"`) {
 			h.fatalf("saved %s", data)
 		}
+		_, remote, err := h.deviceAPI.ReadConfig(context.Background())
+		if err != nil || remote.Volume != 50 || remote.Locale != "en_US" {
+			h.fatalf("remote settings: %+v %v", remote, err)
+		}
+		h.waitFor(5*time.Second, "published system settings", func() bool {
+			settings := h.objects(prefix+"/service/settings", time.Time{})
+			return len(settings) > 0 && settings[len(settings)-1]["locale"] == "en_US"
+		})
 		settings := h.objects(prefix+"/service/settings", time.Time{})
 		if len(settings) == 0 || settings[len(settings)-1]["locale"] != "en_US" {
 			h.fatalf("published %v", settings)
@@ -667,6 +722,7 @@ func TestEndToEnd(t *testing.T) {
 		t = time.Now()
 		h.startCore()
 		h.onlineSince(t, "online", 15*time.Second)
+		h.waitCoreAdmission()
 		h.waitFor(15*time.Second, "healthz 200", func() bool { return h.healthz() == 200 })
 		h.waitFor(10*time.Second, "service resync commands", func() bool {
 			for _, m := range h.objects(prefix+"/core/result", t) {

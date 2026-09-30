@@ -1,13 +1,13 @@
-// Package config stores the rabbit settings in one versioned JSON file,
+// Package config stores application settings in application.json,
 // written atomically (temp file, fsync, rename, fsync directory).
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guilhem/nabos/services/internal/mastodon"
-	"github.com/guilhem/nabos/services/internal/triggers"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -15,7 +15,9 @@ import (
 	"regexp"
 	"sync"
 	"time"
-	_ "time/tzdata" // timezones without system tzdata
+
+	"github.com/guilhem/nabos/services/internal/mastodon"
+	"github.com/guilhem/nabos/services/internal/triggers"
 )
 
 const Version = 1
@@ -59,13 +61,6 @@ type HomeAssistant struct {
 	Prefix   string `json:"discovery_prefix"`
 }
 
-type Updates struct {
-	Automatic bool   `json:"automatic"`
-	Channel   string `json:"channel"` // stable | test
-	Start     HM     `json:"start"`
-	End       HM     `json:"end"`
-}
-
 type Admin struct {
 	Salt       string `json:"salt"`
 	Hash       string `json:"hash"`
@@ -101,16 +96,11 @@ type Services struct {
 
 type Settings struct {
 	Version       int                  `json:"version"`
-	Locale        string               `json:"locale"`
-	Timezone      string               `json:"timezone"`
-	Volume        int                  `json:"volume"`
 	Ears          [2]int               `json:"ears"`
 	Admin         Admin                `json:"admin"`
 	Clock         Clock                `json:"clock"`
 	Weather       Weather              `json:"weather"`
 	HomeAssistant HomeAssistant        `json:"home_assistant"`
-	AutoCheck     bool                 `json:"auto_check_updates"`
-	Updates       Updates              `json:"updates"`
 	Services      Services             `json:"services"`
 	Tags          map[string]TagAction `json:"tags"`
 	Mastodon      mastodon.State       `json:"mastodon"`
@@ -118,14 +108,9 @@ type Settings struct {
 
 func Defaults() Settings {
 	s := Settings{
-		Version:   Version,
-		Locale:    "fr_FR",
-		Timezone:  "Europe/Paris",
-		Volume:    70,
-		Clock:     Clock{Chime: true, SleepSounds: true, Wakeup: HM{7, 0}, Sleep: HM{22, 0}},
-		Weather:   Weather{Unit: "celsius", Animation: "weather_and_rain", Frequency: 0},
-		AutoCheck: true,
-		Updates:   Updates{Channel: "stable", Start: HM{3, 0}, End: HM{5, 0}},
+		Version: Version,
+		Clock:   Clock{Chime: true, SleepSounds: true, Wakeup: HM{7, 0}, Sleep: HM{22, 0}},
+		Weather: Weather{Unit: "celsius", Animation: "weather_and_rain", Frequency: 0},
 		Services: Services{TaichiFrequency: 30, SurpriseFrequency: 30, Eightball: true, Books: true, Radio: true, Webhooks: true, IFTTT: true,
 			AirQuality: AirQuality{Index: "aqi", Visual: "always"}},
 		Tags: map[string]TagAction{},
@@ -139,30 +124,22 @@ func Defaults() Settings {
 }
 
 var (
-	localeRe = regexp.MustCompile(`^[a-z]{2}_[A-Z]{2}$`)
-	hostRe   = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}$`)
-	uidRe    = regexp.MustCompile(`^(?:[0-9a-f]{2}:){3,9}[0-9a-f]{2}$`)
-	eventRe  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	hostRe  = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}$`)
+	uidRe   = regexp.MustCompile(`^(?:[0-9a-f]{2}:){3,9}[0-9a-f]{2}$`)
+	eventRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 )
 
 func (h HM) valid() bool { return h.Hour >= 0 && h.Hour < 24 && h.Min >= 0 && h.Min < 60 }
 
 // Validate rejects values the rest of the program cannot handle.
 func (s *Settings) Validate() error {
+	if s.Version != Version {
+		return errors.New("unsupported application settings version")
+	}
 	if err := s.validateServices(); err != nil {
 		return err
 	}
 	switch {
-	case s.Updates.Channel != "stable" && s.Updates.Channel != "test":
-		return errors.New("invalid update channel")
-	case !s.Updates.Start.valid() || !s.Updates.End.valid() || s.Updates.Start == s.Updates.End:
-		return errors.New("invalid update window")
-	case s.Updates.Automatic && !s.AutoCheck:
-		return errors.New("automatic installation requires update checks")
-	case !localeRe.MatchString(s.Locale):
-		return fmt.Errorf("invalid locale %q", s.Locale)
-	case s.Volume < 0 || s.Volume > 100:
-		return errors.New("volume must be 0-100")
 	case s.Ears[0] < 0 || s.Ears[0] > 16 || s.Ears[1] < 0 || s.Ears[1] > 16:
 		return errors.New("ears must be 0-16")
 	case !s.Clock.Wakeup.valid() || !s.Clock.Sleep.valid():
@@ -187,9 +164,6 @@ func (s *Settings) Validate() error {
 		if !d.Wakeup.valid() || !d.Sleep.valid() {
 			return errors.New("invalid clock time")
 		}
-	}
-	if _, err := time.LoadLocation(s.Timezone); err != nil {
-		return fmt.Errorf("invalid timezone %q", s.Timezone)
 	}
 	return nil
 }
@@ -278,12 +252,14 @@ func Open(path string) (*Store, error) {
 	}
 	if err == nil {
 		s := Defaults()
-		if err = json.Unmarshal(raw, &s); err == nil {
-			if s.Version > Version {
-				// Written by a newer release (rollback): keep known fields.
-				s.Version = Version
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err = decoder.Decode(&s); err == nil {
+			if decoder.Decode(new(any)) != io.EOF {
+				err = errors.New("trailing application settings data")
+			} else {
+				err = s.Validate()
 			}
-			err = s.Validate()
 		}
 		if err == nil {
 			st.cur = s
@@ -316,11 +292,22 @@ func (st *Store) Update(fn func(*Settings) error) (Settings, error) {
 	if err := next.Validate(); err != nil {
 		return clone(st.cur), err
 	}
-	if err := writeAtomic(st.path, next); err != nil {
-		return clone(st.cur), err
+	return st.commit(next, writeAtomic)
+}
+
+// Called with mu held. An uncertain reply must not erase a visible commit later.
+func (st *Store) commit(next Settings, write func(string, Settings) error) (Settings, error) {
+	err := write(st.path, next)
+	visible := err == nil
+	if !visible {
+		raw, readErr := os.ReadFile(st.path)
+		expected, encodeErr := json.MarshalIndent(next, "", "  ")
+		visible = readErr == nil && encodeErr == nil && bytes.Equal(bytes.TrimSpace(raw), expected)
 	}
-	st.cur = clone(next)
-	return clone(next), nil
+	if visible {
+		st.cur = clone(next)
+	}
+	return clone(st.cur), err
 }
 
 func writeAtomic(path string, s Settings) error {

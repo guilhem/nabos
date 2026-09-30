@@ -1,18 +1,20 @@
 [Unit]
-Description=Nabaztag service (HTTP :80, settings, updates)
-Wants=mosquitto.service user@1000.service
-After=mosquitto.service user@1000.service
+Description=Nabaztag application service (HTTP :80, MQTT)
+Wants=mosquitto.service user@1000.service device-core.service
+After=mosquitto.service user@1000.service device-core.service
 
 [Service]
 Type=exec
 User=nabos
 Group=nabos
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=/var/lib/nabos
 Environment=NABOS_HTTP_ADDR=:80
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-# NABOS_VERSION, NABOS_UPDATE_REPO, NABOS_UPDATE_ASSET and, on ARMv6, an empty NABOS_LVA_UNIT.
 EnvironmentFile=/etc/nabos/release.env
+RuntimeDirectory=nab-service
+WorkingDirectory=/run/nab-service
 ExecStart=/usr/bin/nab-service
 Restart=always
 RestartSec=2

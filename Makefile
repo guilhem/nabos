@@ -9,17 +9,22 @@ unexport MAKEFLAGS MFLAGS MAKEOVERRIDES MAKEFILES
 TARGET ?= zero-armv6
 VERSION ?= dev-local
 INPUTS ?=
-export TARGET VERSION INPUTS
+GO ?= go
+export TARGET VERSION INPUTS GO
 
 go package-go: export GOTOOLCHAIN = local
 go package-go: export OUT ?= $(CURDIR)/build/go/$(TARGET)
 rust package-rust: export OUT ?= $(CURDIR)/build/rust/$(TARGET)
+device-core package-device-core: export OUT ?= $(CURDIR)/build/device-core-build/$(TARGET)
+device-core-source: export OUT ?= $(CURDIR)/build/device-core-source
+rust package-rust: export RUST_COMPONENT = nab-core
+device-core package-device-core: export RUST_COMPONENT = device-core
 uboot package-uboot: export OUT ?= $(CURDIR)/build/uboot/$(TARGET)
 
-.PHONY: help go rust uboot package-go package-rust package-uboot
+.PHONY: help go rust device-core device-core-source uboot package-go package-rust package-device-core package-uboot
 help:
-	@echo 'make {go,rust,uboot} TARGET={zero-armv6,zero2-arm64} [VERSION=dev-local]'
-	echo 'make package-{go,rust,uboot} adds build/components/<component>-<target>.tar'
+	@echo 'make {go,rust,device-core,uboot} TARGET={zero-armv6,zero2-arm64} [VERSION=dev-local]'
+	echo 'make package-{go,rust,device-core,uboot} adds build/components/<component>-<target>.tar'
 	echo 'Optional: OUT=<output-directory> INPUTS=<archived-replay-inputs>'
 
 # Always invoke the language build systems; they own dependency tracking/caching.
@@ -33,7 +38,7 @@ go:
 	[[ $$target == zero-armv6 || $$target == zero2-arm64 ]] || exit 2
 	[[ $$version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,63}$$ ]] || exit 2
 	lock=$$repo/image/sources.lock.json
-	[[ $$(go env GOVERSION) == "go$$(jq -r .tools.go "$$lock")" ]] || { echo 'Go toolchain mismatch' >&2; exit 1; }
+	[[ $$($$GO env GOVERSION) == "go$$(jq -r .tools.go "$$lock")" ]] || { echo 'Go toolchain mismatch' >&2; exit 1; }
 	mkdir -p "$$out/inputs/go-modcache/cache"
 	if [[ -n $$inputs ]]; then
 	  inputs=$$(realpath "$$inputs")
@@ -41,21 +46,47 @@ go:
 	  export GOMODCACHE="$$inputs/go-modcache" GOPROXY=off
 	fi
 	cd "$$repo/services"
-	go mod download
+	$$GO mod download
 	CGO_ENABLED=0 GOOS=linux GOARCH=$$(jq -r --arg t "$$target" '.targets[$$t].goarch' "$$lock") \
 	  GOARM=$$(jq -r --arg t "$$target" '.targets[$$t].goarm' "$$lock") \
-	  go build -trimpath -ldflags="-s -w -X main.version=$$version" -o "$$out/nab-service" ./cmd/nab-service
+	  $$GO build -trimpath -ldflags="-s -w -X main.version=$$version" -o "$$out/nab-service" ./cmd/nab-service
 	# Keep setup-go's module cache in place; archive the inputs needed for replay.
-	cp -a "$$(go env GOMODCACHE)/cache/download" "$$out/inputs/go-modcache/cache/"
+	cp -a "$$($$GO env GOMODCACHE)/cache/download" "$$out/inputs/go-modcache/cache/"
 	cp go.sum "$$out/inputs/go.sum"
 	printf '%s\n' "$$target" "$$(git rev-parse HEAD)" > "$$out/build-info"
 	printf '%s\n' "$$version" > "$$out/version"
 
-rust:
+# Fetch only the pinned external archive; never compile the worker checkout.
+device-core-source:
+	repo=$$PWD
+	out=$$(realpath -m "$$OUT")
+	inputs=$${INPUTS:-}
+	lock=$$repo/image/sources.lock.json
+	mkdir -p "$$repo/build/iot" "$$out/inputs/device-core"
+	(cd "$$repo/services" && GOTOOLCHAIN=local CGO_ENABLED=0 $$GO build -o "$$repo/build/iot/nab-image" ./cmd/nab-image)
+	if [[ -n $$inputs ]]; then
+	  inputs=$$(realpath "$$inputs")
+	  cp "$$inputs/device-core/device_core.tar.gz" "$$out/inputs/device-core/"
+	  digest=$$(jq -er .sources.device_core.sha256 "$$lock")
+	  printf '%s  %s\n' "$$digest" "$$out/inputs/device-core/device_core.tar.gz" | sha256sum --check --strict
+	  jq -S .sources.device_core "$$lock" | cmp - "$$inputs/device-core/source-identity.json"
+	fi
+	rm -rf "$$out/.source"
+	"$$repo/build/iot/nab-image" source "$$lock" device_core "$$out/inputs/device-core" "$$out/.source" > "$$out/source-path"
+	jq -S .sources.device_core "$$lock" > "$$out/inputs/device-core/source-identity.json"
+
+rust device-core:
 	repo=$$PWD
 	target=$${TARGET:?TARGET required}
 	out=$$(realpath -m "$$OUT")
 	inputs=$${INPUTS:-}
+	component=$$RUST_COMPONENT
+	source=$$repo/core
+	if [[ $$component == device-core ]]; then
+	  make -C "$$repo" device-core-source OUT="$$out" INPUTS="$$inputs"
+	  source=$$(cat "$$out/source-path")
+	fi
+	component_inputs=$$out/inputs/$$component
 	case $$target in
 	  zero-armv6) triple=arm-linux-gnueabihf; cpu=(-mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=hard) ;;
 	  zero2-arm64) triple=aarch64-linux-gnu; cpu=(-mcpu=cortex-a53) ;;
@@ -64,17 +95,18 @@ rust:
 	lock=$$repo/image/sources.lock.json
 	[[ $$(rustc --version | cut -d' ' -f2) == "$$(jq -r .tools.rust "$$lock")" ]] || { echo 'Rust toolchain mismatch' >&2; exit 1; }
 	rust_target=$$(jq -r --arg t "$$target" '.targets[$$t].rust_target' "$$lock")
-	mkdir -p "$$out/inputs/rust-sysroot"
+	mkdir -p "$$out/inputs/rust-sysroot" "$$component_inputs"
 	if [[ -n $$inputs ]]; then
 	  inputs=$$(realpath "$$inputs")
-	  cmp "$$repo/core/Cargo.lock" "$$inputs/Cargo.lock"
+	  cmp "$$source/Cargo.lock" "$$inputs/$$component/Cargo.lock"
 	  cmp "$$repo/image/rust-sysroots.lock.json" "$$inputs/rust-sysroots.lock.json"
 	  cp -a "$$inputs/rust-sysroot/." "$$out/inputs/rust-sysroot/"
-	  cp -a "$$inputs/cargo-vendor" "$$out/inputs/"
+	  rm -rf "$$component_inputs/cargo-vendor"
+	  cp -a "$$inputs/$$component/cargo-vendor" "$$component_inputs/"
 	else
-	  cargo vendor --locked --manifest-path "$$repo/core/Cargo.toml" "$$out/inputs/cargo-vendor" > /dev/null
+	  cargo vendor --locked --manifest-path "$$source/Cargo.toml" "$$component_inputs/cargo-vendor" > /dev/null
 	fi
-	sysroot=$$repo/build/sysroot/$$target
+	sysroot=$$repo/build/sysroot/$$component/$$target
 	rm -rf "$$sysroot"
 	mkdir -p "$$sysroot/usr/lib"
 	ln -s usr/lib "$$sysroot/lib"
@@ -94,16 +126,26 @@ rust:
 	  ln -sfn "$$(realpath -m --relative-to="$$(dirname "$$link")" "$$sysroot$$destination")" "$$link"
 	done < <(find "$$sysroot" -type l -lname '/*' -print0)
 	linker=$$sysroot/target-cc-$$(sha256sum "$$repo/image/rust-sysroots.lock.json" | cut -c1-16)
-	printf '#!/bin/bash\nexec %s"$$@"\n' "$$(printf '%q ' clang "--target=$$triple" "--sysroot=$$sysroot" "--gcc-toolchain=$$sysroot/usr" -fuse-ld=lld "$${cpu[@]}")" > "$$linker"
+	printf '#!/bin/bash\nexec %s"$$@"\n' "$$(printf '%q ' clang "--target=$$triple" "--sysroot=$$sysroot" "--gcc-toolchain=$$sysroot/usr" -fuse-ld=lld -Wno-unused-command-line-argument "$${cpu[@]}")" > "$$linker"
 	chmod 755 "$$linker"
+	cc_key=CC_$${rust_target//-/_}
+	ar_key=AR_$${rust_target//-/_}
 	linker_key=CARGO_TARGET_$$(tr '[:lower:]-' '[:upper:]_' <<< "$$rust_target")_LINKER
-	export CARGO_TARGET_DIR=$${CARGO_TARGET_DIR:-$$repo/core/target}
-	env "$$linker_key=$$linker" cargo --config 'source.crates-io.replace-with="vendored-sources"' \
-	  --config "source.vendored-sources.directory=\"$$out/inputs/cargo-vendor\"" \
-	  build --locked --offline --release --manifest-path "$$repo/core/Cargo.toml" --target "$$rust_target"
-	install -m755 "$$CARGO_TARGET_DIR/$$rust_target/release/nab-core" "$$out/nab-core"
-	cp "$$repo/core/Cargo.lock" "$$repo/image/rust-sysroots.lock.json" "$$out/inputs/"
+	export CARGO_TARGET_DIR=$${CARGO_TARGET_DIR:-$$repo/build/cargo/$$component}
+	# ring and other cc-rs builds need the same target CPU, headers and libc.
+	env "$$cc_key=$$linker" "$$ar_key=llvm-ar" "$$linker_key=$$linker" cargo --config 'source.crates-io.replace-with="vendored-sources"' \
+	  --config "source.vendored-sources.directory=\"$$component_inputs/cargo-vendor\"" \
+	  build --locked --offline --release --manifest-path "$$source/Cargo.toml" --target "$$rust_target"
+	install -m755 "$$CARGO_TARGET_DIR/$$rust_target/release/$$component" "$$out/$$component"
+	cp "$$source/Cargo.lock" "$$component_inputs/"
+	if [[ $$component == nab-core ]]; then git -C "$$repo" rev-parse HEAD > "$$component_inputs/source-revision"; fi
+	cp "$$repo/image/rust-sysroots.lock.json" "$$out/inputs/"
 	printf '%s\n' "$$target" "$$(git -C "$$repo" rev-parse HEAD)" > "$$out/build-info"
+	if [[ $$component == device-core ]]; then
+	  jq -r .sources.device_core.commit "$$lock" >> "$$out/build-info"
+	  sha256sum "$$out/device-core" | cut -d' ' -f1 > "$$out/binary.sha256"
+	  "$$repo/build/iot/nab-image" verify-device-core "$$lock" "$$out" "$$target" "$$(git -C "$$repo" rev-parse HEAD)"
+	fi
 
 uboot:
 	export LC_ALL=C
@@ -270,7 +312,8 @@ uboot:
 
 package-go: go
 package-rust: rust
+package-device-core: device-core
 package-uboot: uboot
-package-go package-rust package-uboot:
+package-go package-rust package-device-core package-uboot:
 	mkdir -p build/components
-	tar -C "$$OUT" -cf "build/components/$(@:package-%=%)-$$TARGET.tar" .
+	tar -C "$$OUT" --exclude=./.source --exclude=./source-path -cf "build/components/$(@:package-%=%)-$$TARGET.tar" .

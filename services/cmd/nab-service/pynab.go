@@ -53,6 +53,13 @@ func (a *App) serviceError(name string, err error) {
 func (a *App) acquireMedia(ctx context.Context) error {
 	select {
 	case a.mediaGate <- struct{}{}:
+		a.agent.mu.Lock()
+		blocked := a.agent.recovering || a.agent.held
+		a.agent.mu.Unlock()
+		if blocked {
+			<-a.mediaGate
+			return errors.New("maintenance en cours")
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -135,8 +142,8 @@ func (a *App) servicesLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
-			a.servicesTick(now.In(a.location()))
+		case <-ticker.C:
+			a.servicesTick(a.clockNow().In(a.location()))
 			connected, online := a.bus.Healthy()
 			if !connected || !online {
 				a.stopMedia()
@@ -193,7 +200,7 @@ func (a *App) performService(ctx context.Context, name, language, kind string) e
 	case "taichi":
 		return a.media(ctx, "play", map[string]any{"sequence": []any{map[string]any{"choreography": "taichi/taichi.chor"}}}, 5*time.Minute)
 	case "surprise":
-		return a.media(ctx, "message", pynab.Surprise(time.Now().In(a.location()), language, kind), 5*time.Minute)
+		return a.media(ctx, "message", pynab.Surprise(a.clockNow().In(a.location()), language, kind), 5*time.Minute)
 	case "eightball":
 		if !s.Eightball {
 			return errors.New("boule magique désactivée")

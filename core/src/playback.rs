@@ -17,7 +17,7 @@ pub const SLEEP_EARS: u8 = 10;
 /// Background choreography, kept running across items when unchanged.
 pub struct ChorRunner {
     hw: Arc<Hw>,
-    task: Option<JoinHandle<()>>,
+    task: Option<JoinHandle<Result<(), String>>>,
     current: Option<String>,
 }
 
@@ -30,39 +30,62 @@ impl ChorRunner {
         }
     }
 
-    pub async fn start(&mut self, reference: &str) {
+    pub async fn start(&mut self, reference: &str) -> Result<(), String> {
         if self.current.as_deref() == Some(reference)
             && self.task.as_ref().is_some_and(|t| !t.is_finished())
         {
-            return;
+            return Ok(());
         }
-        self.stop().await;
+        self.stop().await?;
         self.task = Some(tokio::spawn(chor::play(
             self.hw.clone(),
             reference.to_string(),
         )));
         self.current = Some(reference.to_string());
+        Ok(())
     }
 
-    pub async fn stop(&mut self) {
+    pub async fn stop(&mut self) -> Result<(), String> {
+        self.current = None;
         if let Some(t) = self.task.take() {
             t.abort();
-            let _ = t.await;
+            match t.await {
+                Ok(result) => result?,
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => return Err(e.to_string()),
+            }
         }
-        self.current = None;
+        Ok(())
     }
 
-    pub async fn wait(&mut self, cancel: &Cancel) {
+    pub async fn wait(&mut self, cancel: &Cancel) -> Result<(), String> {
+        self.current = None;
         if let Some(mut t) = self.task.take() {
             tokio::select! {
-                _ = &mut t => {}
+                result = &mut t => result.map_err(|e| e.to_string())??,
                 _ = cancel.wait() => {
                     t.abort();
                     let _ = t.await;
                 }
             }
         }
-        self.current = None;
+        Ok(())
+    }
+
+    async fn audio(&mut self, files: &[Source], cancel: &Cancel) -> Result<bool, String> {
+        let playback = self.hw.player.play_list(files, cancel);
+        tokio::pin!(playback);
+        if let Some(task) = &mut self.task {
+            tokio::select! {
+                result = &mut playback => return result,
+                result = task => {
+                    self.task = None;
+                    self.current = None;
+                    result.map_err(|e| e.to_string())??;
+                }
+            }
+        }
+        playback.await
     }
 }
 
@@ -103,51 +126,62 @@ fn preload(hw: &Hw, items: &[Item]) -> Vec<Loaded> {
 }
 
 async fn play_loaded(
-    hw: &Arc<Hw>,
     runner: &mut ChorRunner,
     items: &[Loaded],
     default: Option<&str>,
     cancel: &Cancel,
-) {
+) -> Result<(), String> {
     for it in items {
         if cancel.is_cancelled() {
             break;
         }
         let chor = it.choreography.as_deref().or(default);
         match chor {
-            Some(c) => runner.start(c).await,
-            None => runner.stop().await,
+            Some(c) => runner.start(c).await?,
+            None => runner.stop().await?,
         }
         if let Some(files) = &it.audio {
-            hw.player.play_list(files, cancel).await;
+            runner.audio(files, cancel).await?;
             if chor.is_some() {
-                runner.stop().await;
+                runner.stop().await?;
             }
         } else if it.choreography.is_some() {
-            runner.wait(cancel).await;
+            runner.wait(cancel).await?;
         }
     }
+    Ok(())
 }
 
-pub async fn play_sequence(hw: Arc<Hw>, sequence: &[Item], cancel: &Cancel) {
+pub async fn play_sequence(hw: Arc<Hw>, sequence: &[Item], cancel: &Cancel) -> Result<(), String> {
     let items = preload(&hw, sequence);
     let mut runner = ChorRunner::new(hw.clone());
-    play_loaded(&hw, &mut runner, &items, None, cancel).await;
-    runner.stop().await;
-    hw.player.stop().await;
+    let result = play_loaded(&mut runner, &items, None, cancel).await;
+    let choreo = runner.stop().await;
+    let audio = hw.player.stop_current().await;
+    result.and(choreo).and(audio)
 }
 
-pub async fn play_message(hw: Arc<Hw>, signature: Option<&Item>, body: &[Item], cancel: &Cancel) {
+pub async fn play_message(
+    hw: Arc<Hw>,
+    signature: Option<&Item>,
+    body: &[Item],
+    cancel: &Cancel,
+) -> Result<(), String> {
     move_ears_with_leds(&hw, [255, 0, 0], 0, 0).await;
     let sig = preload(&hw, &[signature.cloned().unwrap_or_default()]);
     let body = preload(&hw, body);
     let mut runner = ChorRunner::new(hw.clone());
-    for part in [&sig, &body, &sig] {
-        play_loaded(&hw, &mut runner, part, Some(STREAMING_URN), cancel).await;
+    let result = async {
+        for part in [&sig, &body, &sig] {
+            play_loaded(&mut runner, part, Some(STREAMING_URN), cancel).await?;
+        }
+        Ok(())
     }
-    runner.stop().await;
-    hw.player.stop().await;
+    .await;
+    let choreo = runner.stop().await;
+    let audio = hw.player.stop_current().await;
     hw.leds.set_all([0, 0, 0]);
+    result.and(choreo).and(audio)
 }
 
 /// If ears are not in position: LEDs to color, move, LEDs off.
@@ -184,24 +218,29 @@ pub async fn play_animation(hw: &Hw, anim: &Animation, duration: Option<Duration
     clear_info(hw);
 }
 
-pub async fn rfid_feedback(hw: Arc<Hw>) {
+pub async fn rfid_feedback(hw: Arc<Hw>) -> Result<(), String> {
     let mut runner = ChorRunner::new(hw.clone());
-    runner.start("system/rfid.chor").await;
-    if let Some(f) = hw.res.find(Kind::Sound, "rfid/rfid.wav") {
-        hw.player
-            .play_list(&[Source::File(f)], &Cancel::never())
-            .await;
-    }
-    runner.stop().await;
+    runner.start("system/rfid.chor").await?;
+    let result = match hw.res.find(Kind::Sound, "rfid/rfid.wav") {
+        Some(f) => runner
+            .audio(&[Source::File(f)], &Cancel::never())
+            .await
+            .map(|_| ()),
+        None => Ok(()),
+    };
+    let choreo = runner.stop().await;
+    let audio = hw.player.stop_current().await;
     hw.leds.set_all([0, 0, 0]);
+    result.and(choreo).and(audio)
 }
 
-pub async fn abort_feedback(hw: &Arc<Hw>) {
+pub async fn abort_feedback(hw: &Arc<Hw>) -> Result<(), String> {
     if let Some(f) = hw.res.find(Kind::Sound, "system/abort.wav") {
         hw.player
             .play_list(&[Source::File(f)], &Cancel::never())
-            .await;
+            .await?;
     }
+    Ok(())
 }
 
 pub async fn sleep_setup(hw: &Hw) {

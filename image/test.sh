@@ -16,6 +16,7 @@ if [[ ${NABOS_BUILD_NAMESPACE:-} != 1 ]]; then
     bash "$0" "$@"
 fi
 repo=$(cd "$(dirname "$0")/.." && pwd)
+GO=${GO:-go}
 sd_image=$(realpath "$2")
 payload=$(realpath "$3")
 expected_uboot=$(realpath "$4")
@@ -61,9 +62,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-for tool in sudo losetup udevadm mount mountpoint umount modinfo make go setsid fdtget; do
+for tool in sudo losetup udevadm mount mountpoint umount modinfo make setsid fdtget; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
+command -v "$GO" >/dev/null || { echo "Missing Go tool: $GO" >&2; exit 1; }
 sudo -n true
 if [[ $target == zero-armv6 ]]; then
   command -v qemu-arm-static >/dev/null
@@ -93,8 +95,13 @@ sudo mount --rbind /dev "$root/dev"
 sudo mount --make-rslave "$root/dev"
 sudo env QEMU_CPU=arm1176 chroot "$root" /usr/bin/python3 -B - <<'PY'
 import configparser
+import ctypes
+import errno
+import fcntl
+import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 os.environ['LC_ALL'] = 'C'
@@ -104,6 +111,25 @@ assert unit['Service']['AmbientCapabilities'] == 'CAP_NET_BIND_SERVICE'
 assert 'NABOS_HTTP_ADDR=:80' in unit['Service']['Environment']
 assert not Path('/etc/comitup.conf').exists()
 assert not Path('/usr/share/comitup').exists()
+device_unit = configparser.ConfigParser(strict=False)
+device_unit.read('/usr/lib/systemd/system/device-core.service')
+assert device_unit['Service']['PrivateDevices'] == 'yes'
+assert device_unit['Service']['CapabilityBoundingSet'] == ''
+release_env = dict(line.split('=', 1) for line in Path('/etc/nabos/release.env').read_text().splitlines())
+has_lva = os.access('/opt/linux-voice-assistant/.venv/bin/python', os.X_OK)
+assert release_env['DEVICE_CORE_LVA_UNIT'] == ('linux-voice-assistant.service' if has_lva else '')
+# Resolve the shipped ALSA configuration, including the package's conf.d links.
+# Both audio clients must reach PipeWire without opening a hardware device.
+alsa = ctypes.CDLL('libasound.so.2')
+assert alsa.snd_config_update() >= 0
+alsa.snd_config_search.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+alsa.snd_config_get_string.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p)]
+config = ctypes.c_void_p.in_dll(alsa, 'snd_config')
+for key in (b'pcm.default.type', b'ctl.default.type'):
+    node, value = ctypes.c_void_p(), ctypes.c_char_p()
+    assert alsa.snd_config_search(config, key, ctypes.byref(node)) == 0, key
+    assert alsa.snd_config_get_string(node, ctypes.byref(value)) == 0, key
+    assert value.value == b'pipewire', (key, value.value)
 # Check the installed packages, including bindings inherited from the Lite base.
 # Jinja2 remains a dependency of cloud-init; Python also serves the voice assistant.
 installed = {
@@ -159,6 +185,81 @@ subprocess.run(['sh', '-c', seed], check=True)
 radio.read(state)
 assert not radio.getboolean('main', 'WirelessEnabled'), 'Saved radio preference must be preserved'
 subprocess.run(['umount', '/var/lib/NetworkManager'], check=True)
+
+# First-boot device state and the unchanged persistent home on a real read-only
+# root. Simulation executes the shipped binary as nabos without capabilities;
+# effective systemd sandboxing and hardware still require device qualification.
+try:
+    Path('/.nabos-readonly-probe').write_text('must fail')
+except OSError as error:
+    assert error.errno == errno.EROFS, error
+else:
+    raise AssertionError('The test root must actually be read-only')
+subprocess.run(['sh', '-c', 'NABOS_BOOT_INIT_LIB=1 . /usr/lib/nabos/boot-init; '
+                'PERSIST=/var/lib/nabos; persist; mountpoint -q /var/lib/nabos'], check=True)
+subprocess.run(['systemd-tmpfiles', '--create', '--prefix=/data/device-core',
+                '--prefix=/var/lib/nabos/lva', '--prefix=/run/lock/device-core'], check=True)
+runtime = Path('/run/device-core')
+runtime.mkdir(mode=0o700)
+os.chown(runtime, 1000, 1000)
+lock = Path('/run/lock/device-core/network')
+assert lock.stat().st_mode & 0o777 == 0o600
+assert lock.parent.stat().st_uid == 0 and lock.parent.stat().st_mode & 0o777 == 0o755
+inode = lock.stat().st_ino
+# A live FD deliberately survives the first daemon and protects the same inode.
+guard = lock.open('r+')
+fcntl.flock(guard, fcntl.LOCK_SH)
+address, pid = subprocess.check_output(['dbus-daemon', '--session', '--fork',
+    '--address=unix:path=/run/device-core/bus', '--print-address', '--print-pid'], text=True).splitlines()
+service = 'io.github.guilhem.DeviceCore1'
+root_path = '/io/github/guilhem/DeviceCore1'
+env = dict(os.environ, HOME='/var/lib/nabos', XDG_RUNTIME_DIR='/run/user/1000',
+    DEVICE_CORE_BUS_ADDRESS=address, DEVICE_CORE_DATA_DIR='/data/device-core',
+    DEVICE_CORE_NETWORK_GUARD=str(lock), DEVICE_CORE_UPDATE_REPO='', DEVICE_CORE_UPDATE_ASSET='')
+env.pop('DEVICE_CORE_HTTP_ADDR', None)
+process = None
+try:
+    for boot in range(2):
+        with (runtime / 'simulation.log').open('w') as log:
+            process = subprocess.Popen(['setpriv', '--reuid=1000', '--regid=1000',
+                '--clear-groups', '--no-new-privs', '--bounding-set=-all',
+                '/usr/bin/device-core', '--simulate'], cwd=runtime, env=env,
+                stdout=log, stderr=subprocess.STDOUT)
+            deadline = time.monotonic() + 60
+            while True:
+                ready = subprocess.run(['busctl', '--address=' + address, '--timeout=2',
+                    'get-property', service, root_path, service + '.Manager', 'Ready'],
+                    capture_output=True, text=True)
+                if ready.returncode == 0 and ready.stdout.strip() == 'b true':
+                    break
+                assert process.poll() is None and time.monotonic() < deadline, (runtime / 'simulation.log').read_text()
+                time.sleep(0.1)
+            call = ['busctl', '--address=' + address, '--timeout=5', '--json=short',
+                    'call', service, root_path + '/Config', service + '.Config']
+            revision = json.loads(subprocess.check_output(call + ['Read'], text=True))['data'][0]
+            if boot == 0:
+                subprocess.run(call + ['Update', 's(ssub(bs(uu)(uu))b)', revision,
+                    'fr_FR', 'Europe/Paris', '35', 'true', 'false', 'stable', '3', '0', '5', '0', 'true'], check=True)
+                assert Path('/data/device-core/voice-enabled').is_file()
+            else:
+                assert revision != first_revision, 'A restart must invalidate old revisions'
+                settings = json.loads(Path('/data/device-core/settings.json').read_text())
+                assert settings['settings']['volume'] == 35 and settings['settings']['voice_enabled']
+            first_revision = revision
+            assert lock.stat().st_ino == inode, 'Restart replaced the network lock'
+            process.terminate()
+            process.wait(timeout=10)
+            process = None
+    subprocess.run(['setpriv', '--reuid=1000', '--regid=1000', '--clear-groups',
+        '--no-new-privs', '--bounding-set=-all', '/bin/sh', '-ec',
+        'touch "$HOME/lva/.image-write-check"; rm "$HOME/lva/.image-write-check"'], env=env, check=True)
+finally:
+    if process is not None:
+        process.kill()
+        process.wait()
+    guard.close()
+    os.kill(int(pid), 15)
+
 for name in ('systemd-growfs-root.service', 'cloud-init-main.service', 'cloud-init-network.service',
              'bluetooth.service'):
     assert os.readlink('/etc/systemd/system/' + name) == '/dev/null', name
@@ -204,14 +305,16 @@ cmp "$expected_uboot" "$boot/u-boot.bin"
 ssh_config=$(sudo env QEMU_CPU=arm1176 chroot "$root" /usr/sbin/sshd -G)
 for setting in 'allowusers nabos' 'permitrootlogin no' 'authenticationmethods publickey' \
   'passwordauthentication no' 'kbdinteractiveauthentication no' 'usepam yes' \
-  'strictmodes yes' 'authorizedkeysfile /data/nabos/ssh/authorized_keys'; do
+  'strictmodes yes' 'authorizedkeysfile /data/device-core/ssh/authorized_keys'; do
   grep -qxF "$setting" <<< "$ssh_config" || { echo "Unexpected SSH configuration: $setting" >&2; exit 1; }
 done
 [[ $(sudo chroot "$root" getent passwd nabos) == 'nabos:x:1000:1000:'*':/var/lib/nabos:/bin/bash' ]] ||
   { echo 'Unexpected SSH account' >&2; exit 1; }
 sudo env QEMU_CPU=arm1176 chroot "$root" /usr/sbin/visudo --check
 for path in /nabos-build /usr/bin/gcc /usr/bin/make /usr/bin/cmake \
-  /usr/sbin/policy-rc.d /etc/apt/apt.conf.d/99nabos-build; do
+  /usr/sbin/policy-rc.d /etc/apt/apt.conf.d/99nabos-build \
+  /usr/bin/cargo /usr/bin/rustc /usr/local/go /root/.cargo /root/.rustup \
+  /root/go /root/.cache /build/device-core; do
   [[ ! -e $root$path && ! -L $root$path ]] || { echo "Build artifact shipped: $path" >&2; exit 1; }
 done
 if [[ $target == zero2-arm64 ]]; then
@@ -268,25 +371,25 @@ done
 fdtget "$root/boot/dtb/$dtb" /__symbols__ i2s /__symbols__ i2c1 /__symbols__ gpio /__symbols__ sound >/dev/null
 
 # Use the shipped loader/libc for the core; the Go service is static.
-for name in nab-core nab-service; do
+for name in nab-core device-core nab-service; do
   prefix=()
   if [[ $target == zero-armv6 ]]; then
     sysroot=/
-    if [[ $name == nab-core ]]; then sysroot=$root; fi
+    if [[ $name != nab-service ]]; then sysroot=$root; fi
     prefix=(qemu-arm-static -cpu arm1176 -L "$sysroot")
-  elif [[ $name == nab-core ]]; then
+  elif [[ $name != nab-service ]]; then
     prefix=("$root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" --library-path "$root/usr/lib/aarch64-linux-gnu")
   fi
   printf '#!/bin/bash\nexec %s"$@"\n' "$(printf '%q ' "${prefix[@]}" "$root/usr/bin/$name")" > "$work/$name-test"
   chmod 755 "$work/$name-test"
 done
 # The sandbox simulates boot decisions; it does not boot a kernel or hardware.
-export NABOS_INTEGRATION=1 NAB_CORE_BIN="$work/nab-core-test" NAB_SERVICE_BIN="$work/nab-service-test"
+export NABOS_INTEGRATION=1 NAB_CORE_BIN="$work/nab-core-test" NAB_SERVICE_BIN="$work/nab-service-test" DEVICE_CORE_BIN="$work/device-core-test"
 export NABOS_TEST_ASSETS="$root/usr/share/nabos" NABOS_UBOOT_SANDBOX="$work/uboot-sandbox" NABOS_SOURCES="$payload/src"
 export NABOS_VENDOR_DTBS="$root/boot/dtb" NABOS_IMAGE_OVERLAYS="$root/boot/overlays"
 export NABOS_IMAGE_BOOT="$boot" NABOS_IMAGE_ENV="$work/uboot.env" NABOS_IMAGE_TARGET="$target"
 export NABOS_IMAGE_DISK="$work/sdcard.img"
 cd "$repo/services"
-setsid go test -count=1 -timeout 20m -v ./tests/integration ./tests/image &
+setsid "$GO" test -count=1 -timeout 20m -v ./tests/integration ./tests/image &
 tests_pid=$!
 wait "$tests_pid"

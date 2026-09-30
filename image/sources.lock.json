@@ -37,6 +37,12 @@
     }
   },
   "sources": {
+    "device_core": {
+      "repository": "guilhem/device-core",
+      "commit": "79eaf52ed3185c6fd75a9de8f334ef85ca2f2d8c",
+      "url": "https://codeload.github.com/guilhem/device-core/tar.gz/79eaf52ed3185c6fd75a9de8f334ef85ca2f2d8c",
+      "sha256": "364278db7536eff4d0765b764243476d6f520758471a122fa23c2fcd72392ab4"
+    },
     "ears": {
       "repository": "pguyot/tagtagtag-ears",
       "commit": "5ad1f1398ec03b28f0abf4df1f6ba60a5c0cec35",

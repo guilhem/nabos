@@ -10,6 +10,8 @@ if [[ ${NABOS_BUILD_NAMESPACE:-} != 1 ]]; then
     bash "$0" "$@"
 fi
 repo=$(cd "$(dirname "$0")/.." && pwd)
+GO=${GO:-go}
+export GO
 target=${1:?Usage: image/build.sh TARGET VERSION [--development] [--replay INPUTS.tar.xz | --components DIR]}
 version=${2:?release version required}
 shift 2
@@ -28,16 +30,17 @@ done
 [[ $target == zero-armv6 || $target == zero2-arm64 ]] || exit 2
 [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,63}$ ]] || { echo 'Invalid version' >&2; exit 2; }
 # python3 is required by the upstream U-Boot build; NabOS host helpers use Go.
-for tool in sudo python3 curl xz tar sfdisk losetup e2fsck resize2fs genimage mkfs.vfat mkfs.ext4 mcopy mkimage mkenvimage rauc openssl go patch jq; do
+for tool in sudo python3 curl xz tar sfdisk losetup e2fsck resize2fs genimage mkfs.vfat mkfs.ext4 mcopy mkimage mkenvimage rauc openssl patch jq; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
+command -v "$GO" >/dev/null || { echo "Missing Go tool: $GO" >&2; exit 1; }
 sudo -n true
 lock=$repo/image/sources.lock.json
 # Host-side helper (locked inputs, safe extraction); standard library only.
 mkdir -p "$repo/build/iot"
 nab_image=$repo/build/iot/nab-image
-(cd "$repo/services" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -o "$nab_image" ./cmd/nab-image)
-[[ $(go env GOVERSION) == "go$("$nab_image" get "$lock" tools.go)" ]] ||
+(cd "$repo/services" && GOTOOLCHAIN=local CGO_ENABLED=0 "$GO" build -o "$nab_image" ./cmd/nab-image)
+[[ $("$GO" env GOVERSION) == "go$("$nab_image" get "$lock" tools.go)" ]] ||
   { echo 'Go toolchain mismatch' >&2; exit 1; }
 keys=()
 for key in arch compatible extract_sha256 kernel_image dtb; do keys+=("targets.$target.$key"); done
@@ -71,7 +74,7 @@ monitor=$!
 if [[ -n $replay ]]; then
   "$nab_image" extract "$replay" "$payload/inputs"
   cmp "$lock" "$payload/inputs/sources.lock.json"
-  cmp "$repo/core/Cargo.lock" "$payload/inputs/Cargo.lock"
+  cmp "$repo/core/Cargo.lock" "$payload/inputs/nab-core/Cargo.lock"
   cmp "$repo/services/go.sum" "$payload/inputs/go.sum"
   cmp "$repo/image/lva-requirements.lock" "$payload/inputs/lva-requirements.lock"
 fi
@@ -79,11 +82,13 @@ fi
 revision=$(git -C "$repo" rev-parse HEAD)
 replay_inputs=
 if [[ -n $replay ]]; then replay_inputs=$payload/inputs; fi
-for component in go rust uboot; do
+for component in go rust device-core uboot; do
   component_out=$work/components/$component
   if [[ -n $components ]]; then
     "$nab_image" extract "$components/$component-$target.tar" "$component_out"
-    printf '%s\n' "$target" "$revision" | cmp - "$component_out/build-info"
+    if [[ $component != device-core ]]; then
+      printf '%s\n' "$target" "$revision" | cmp - "$component_out/build-info"
+    fi
     if [[ $component == go ]]; then
       [[ $(cat "$component_out/version") == "$version" ]] || { echo 'Service version mismatch' >&2; exit 1; }
     fi
@@ -91,11 +96,15 @@ for component in go rust uboot; do
     make -C "$repo" "$component" TARGET="$target" VERSION="$version" \
       OUT="$component_out" INPUTS="$replay_inputs"
   fi
+  if [[ $component == device-core ]]; then
+    "$nab_image" verify-device-core "$lock" "$component_out" "$target" "$revision"
+  fi
   cp -a "$component_out/inputs/." "$payload/inputs/"
 done
 "$nab_image" fetch "$lock" "$target" "$payload/inputs"
 cp "$lock" "$payload/inputs/sources.lock.json"
-cp "$repo/core/Cargo.lock" "$repo/services/go.sum" "$payload/inputs/"
+cp "$repo/core/Cargo.lock" "$payload/inputs/nab-core/"
+cp "$repo/services/go.sum" "$payload/inputs/"
 cp "$repo/image/lva-requirements.lock" "$payload/inputs/"
 "$nab_image" unpack "$payload/inputs/sources.lock.json" "$payload/inputs" "$payload/src"
 cp -a "$repo/image" "$payload/image"
@@ -161,6 +170,9 @@ in_target packages
 sudo cp -a "$payload/runtime/." "$root/"
 sudo rm -rf "$payload/runtime"
 sudo install -m755 "$work/components/rust/nab-core" "$root/usr/bin/nab-core"
+sudo install -m755 "$work/components/device-core/device-core" "$root/usr/bin/device-core"
+sudo install -Dm644 "$payload/src/device_core/LICENSE" "$root/usr/share/doc/device-core/copyright"
+sudo install -Dm644 "$payload/src/device_core/NOTICE" "$root/usr/share/doc/device-core/NOTICE"
 sudo install -m755 "$work/components/go/nab-service" "$root/usr/bin/nab-service"
 # Git checkout ownership/umask must not grant the runner write access to system units.
 tar --create --file=- --directory="$repo/image/rootfs" --owner=0 --group=0 --mode=go-w . |
@@ -172,11 +184,8 @@ for directory in "$repo/assets/sounds" "$repo/assets/choreographies"; do
   sudo cp -a --no-preserve=ownership "$directory/." "$root/usr/share/nabos/$(basename "$directory")/"
 done
 printf '%s\n' "$version" | sudo tee "$root/etc/nabos/release" >/dev/null
-printf 'NABOS_VERSION=%s\nNABOS_UPDATE_REPO=%s\nNABOS_UPDATE_ASSET=nabos-%s.raucb\n' \
-  "$version" "${GITHUB_REPOSITORY:-guilhem/nabos}" "$target" | sudo tee "$root/etc/nabos/release.env" >/dev/null
-if [[ $arch == armhf ]]; then
-  printf 'NABOS_LVA_UNIT=\n' | sudo tee -a "$root/etc/nabos/release.env" >/dev/null
-fi
+printf 'NABOS_VERSION=%s\nDEVICE_CORE_IMAGE_VERSION=%s\nDEVICE_CORE_UPDATE_REPO=%s\nDEVICE_CORE_UPDATE_ASSET=nabos-%s.raucb\n' \
+  "$version" "$version" "${GITHUB_REPOSITORY:-guilhem/nabos}" "$target" | sudo tee "$root/etc/nabos/release.env" >/dev/null
 if $development; then
   mkdir -m700 "$work/signing"
   openssl req -x509 -newkey rsa:3072 -nodes -days 7 -subj '/CN=NabOS development only/' \
@@ -212,8 +221,11 @@ dirty=false
 if [[ -n $status ]]; then dirty=true; fi
 # Every value is validated or generated above; none needs JSON escaping.
 [[ $kernel =~ ^[a-zA-Z0-9.+_-]+$ ]] || { echo "Unexpected kernel release: $kernel" >&2; exit 1; }
-printf '{\n  "version": "%s",\n  "target": "%s",\n  "kernel": "%s",\n  "source_revision": "%s",\n  "source_dirty": %s,\n  "development": %s,\n  "hardware_validated": false\n}\n' \
-  "$version" "$target" "$kernel" "$revision" "$dirty" "$development" > "$out/build-$target.json"
+printf '{\n  "version": "%s",\n  "target": "%s",\n  "kernel": "%s",\n  "source_revision": "%s",\n  "device_core_revision": "%s",\n  "device_core_archive_sha256": "%s",\n  "device_core_binary_sha256": "%s",\n  "source_dirty": %s,\n  "development": %s,\n  "hardware_validated": false\n}\n' \
+  "$version" "$target" "$kernel" "$revision" \
+  "$("$nab_image" get "$lock" sources.device_core.commit)" \
+  "$("$nab_image" get "$lock" sources.device_core.sha256)" \
+  "$(cat "$work/components/device-core/binary.sha256")" "$dirty" "$development" > "$out/build-$target.json"
 sudo sync
 # Remove the build mount point itself, not just its externally stored contents.
 sudo umount "$root/nabos-build"

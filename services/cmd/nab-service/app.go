@@ -19,11 +19,10 @@ import (
 	"github.com/guilhem/nabos/services/internal/bus"
 	"github.com/guilhem/nabos/services/internal/clock"
 	"github.com/guilhem/nabos/services/internal/config"
+	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/ha"
-	"github.com/guilhem/nabos/services/internal/system"
+	"github.com/guilhem/nabos/services/internal/network"
 	"github.com/guilhem/nabos/services/internal/triggers"
-	"github.com/guilhem/nabos/services/internal/update"
-	"github.com/guilhem/nabos/services/internal/voice"
 	"github.com/guilhem/nabos/services/internal/weather"
 	"github.com/guilhem/nabos/services/internal/web"
 )
@@ -31,59 +30,54 @@ import (
 const cmdTTL = time.Minute
 
 type App struct {
-	env           Env
-	store         *config.Store
-	bus           *bus.Bus
-	auth          *web.Auth
-	wx            *weather.Client
-	upd           *update.Updater
-	ha            *ha.Bridge
-	voice         *voice.Client
-	started       time.Time
-	ctx           context.Context
-	events        chan appEvent
-	mediaGate     chan struct{}
-	interaction   *interaction
-	radioCancel   context.CancelFunc
-	mediaCancel   context.CancelFunc
-	serviceErrors map[string]string
-	aq            *airquality.Client
-	triggers      *triggers.Client
-	airKick       chan struct{}
-	aqMu          sync.Mutex
-	airResult     *airquality.Result
-	airFetched    time.Time
-	airQuery      airquality.Query
-	mastodonMu    sync.Mutex
-	sshMu         sync.Mutex
-	wifiMu        sync.Mutex
-	wifi          *wifiSession
-	mastodonKick  chan struct{}
-	oauth         *oauthLogin
+	env             Env
+	store           *config.Store
+	bus             *bus.Bus
+	auth            *web.Auth
+	wx              *weather.Client
+	device          *device.Client
+	net             *network.Client
+	agent           *maintenanceAgent
+	ha              *ha.Bridge
+	started         time.Time
+	ctx             context.Context
+	events          chan appEvent
+	mediaGate       chan struct{}
+	interaction     *interaction
+	radioCancel     context.CancelFunc
+	mediaCancel     context.CancelFunc
+	serviceErrors   map[string]string
+	aq              *airquality.Client
+	triggers        *triggers.Client
+	airKick         chan struct{}
+	aqMu            sync.Mutex
+	airResult       *airquality.Result
+	airFetched      time.Time
+	airQuery        airquality.Query
+	mastodonMu      sync.Mutex
+	wifiMu          sync.Mutex
+	setupGeneration string
+	wifi            *wifiSession
+	mastodonKick    chan struct{}
+	oauth           *oauthLogin
 
 	clockKick, weatherKick chan struct{}
-	updateKick             chan struct{}
-	rebootSystem           func() error
 
-	mu             sync.Mutex
-	forecast       *weather.Forecast
-	wxErr          string
-	clk            clock.State
-	lastTag        map[string]any
-	network        string
-	nextWeather    time.Time
-	wakeupDone     bool
-	bedtimeDone    bool
-	indicator      string
-	voiceCancel    context.CancelFunc
-	haErr          string
-	updateBusy     bool
-	updateError    string
-	updateRebooted bool
+	mu          sync.Mutex
+	forecast    *weather.Forecast
+	wxErr       string
+	clk         clock.State
+	lastTag     map[string]any
+	network     string
+	nextWeather time.Time
+	wakeupDone  bool
+	bedtimeDone bool
+	indicator   string
+	haErr       string
 }
 
 func NewApp(env Env) (*App, error) {
-	store, err := config.Open(filepath.Join(env.DataDir, "config.json"))
+	store, err := config.Open(filepath.Join(env.DataDir, "application.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +96,9 @@ func NewApp(env Env) (*App, error) {
 		store:         store,
 		auth:          web.NewAuth(store),
 		wx:            weather.NewClient(env.WeatherURL, env.GeocodingURL),
-		upd:           update.New(env.UpdateRepo, env.UpdateAsset, env.Version, filepath.Join(env.DataDir, "updates")),
 		started:       time.Now(),
 		clockKick:     make(chan struct{}, 1),
 		weatherKick:   make(chan struct{}, 1),
-		updateKick:    make(chan struct{}, 1),
-		rebootSystem:  system.Reboot,
 		clk:           clock.State{LastChime: -1},
 		network:       "ok",
 		ctx:           context.Background(),
@@ -119,7 +110,16 @@ func NewApp(env Env) (*App, error) {
 		airKick:       make(chan struct{}, 1),
 		mastodonKick:  make(chan struct{}, 1),
 	}
-	a.upd.APIBase, a.upd.DownloadBase = env.GitHubAPI, env.GitHubDownload
+	client, err := device.Open()
+	if err != nil {
+		return nil, err
+	}
+	a.device, a.net = client, &network.Client{Client: client}
+	a.agent = &maintenanceAgent{app: a}
+	if err := a.device.Conn.Export(a.agent, device.Path("Agent"), device.Interface("Agent")); err != nil {
+		client.Close()
+		return nil, err
+	}
 	a.ha = &ha.Bridge{Node: node, Model: "Nabaztag", Version: env.Version, OnCommand: a.haCommand}
 	a.bus = bus.New(env.MQTTHost, env.MQTTPort, "nab-service", bus.Handlers{
 		OnState: a.onState,
@@ -144,38 +144,30 @@ func kick(ch chan struct{}) {
 
 func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
+	defer a.device.Close()
+	a.agent.holdRecovery()
 	go a.eventLoop(ctx)
 	defer a.stopMedia()
 	if err := a.bus.Start(ctx); err != nil {
 		return err
 	}
 	a.publishSettings(ctx)
-	// The wheel owns the hardware level. Start without software attenuation.
-	if a.store.Get().Volume != 100 {
-		if _, err := a.store.Update(func(s *config.Settings) error { s.Volume = 100; return nil }); err != nil {
-			slog.Warn("startup volume not saved", "err", err)
-		}
-	}
-	if err := system.SetVolume(ctx, 100); err != nil {
-		slog.Warn("startup volume not applied", "err", err)
-	}
 	if err := a.ha.Start(a.store.Get().HomeAssistant); err != nil {
 		a.setHAErr(err)
 	}
-	if a.voiceEnabled() {
-		a.startVoice()
-	}
+	go a.deviceLoop(ctx)
 	srv := &http.Server{Addr: a.env.HTTPAddr, Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	go a.clockLoop(ctx)
 	go a.weatherLoop(ctx)
 	go a.networkLoop(ctx)
-	go a.updateLoop(ctx)
 	go a.servicesLoop(ctx)
 	slog.Info("nab-service started", "version", a.env.Version, "http", a.env.HTTPAddr)
 	select {
 	case <-ctx.Done():
+	case <-a.device.Conn.Context().Done():
+		return errors.New("system bus disconnected")
 	case err := <-errc:
 		return err
 	}
@@ -213,42 +205,39 @@ func (a *App) do(ctx context.Context, action string, args any, wait time.Duratio
 	return r.Err()
 }
 
-func (a *App) location() *time.Location {
-	if loc, err := time.LoadLocation(a.store.Get().Timezone); err == nil {
-		return loc
-	}
-	return time.Local
+func (a *App) systemSettings(ctx context.Context) (device.Settings, error) {
+	_, settings, err := a.device.ReadConfig(ctx)
+	return settings, err
 }
-
-// clockQuality: NTP sync, manual setting during this boot, time restored by
-// timesyncd from its saved clock (coarse after a power cut), or unknown.
-func (a *App) clockQuality() (clock.Quality, string) {
-	if a.env.TimesyncFile == "" || a.env.TimesyncFile == "none" {
-		return clock.Exact, "ntp"
-	}
-	if _, err := os.Stat(a.env.TimesyncFile); err == nil {
-		return clock.Exact, "ntp"
-	}
-	if b, err := os.ReadFile(a.manualClockFile()); err == nil {
-		if id := system.BootID(); id != "" && strings.TrimSpace(string(b)) == id {
-			return clock.Exact, "manual"
+func (a *App) location() *time.Location {
+	settings, err := a.systemSettings(a.ctx)
+	if err == nil {
+		if loc, err := time.LoadLocation(settings.Timezone); err == nil {
+			return loc
 		}
 	}
-	// timesyncd sets the clock to at least this file's mtime at boot.
-	if fi, err := os.Stat(a.env.TimesyncClock); err == nil && !time.Now().Before(fi.ModTime().Add(-time.Minute)) {
-		return clock.Coarse, "restored"
-	}
-	return clock.Unknown, "unknown"
+	return time.UTC
 }
-
-func (a *App) manualClockFile() string { return filepath.Join(a.env.DataDir, "clock-manual") }
-
-// SetClock sets the time by hand (offline rabbit); trusted until next boot.
-func (a *App) SetClock(t time.Time) error {
-	if err := system.SetTime(t); err != nil {
-		return err
+func (a *App) clockSnapshot() (clock.Quality, string, time.Time) {
+	source, now, err := a.device.Clock(a.ctx)
+	if err != nil {
+		return clock.Unknown, "unknown", time.Now()
 	}
-	if err := os.WriteFile(a.manualClockFile(), []byte(system.BootID()+"\n"), 0o640); err != nil {
+	switch source {
+	case "ntp", "manual":
+		return clock.Exact, source, now
+	case "restored":
+		return clock.Coarse, source, now
+	default:
+		return clock.Unknown, "unknown", now
+	}
+}
+func (a *App) clockQuality() (clock.Quality, string) {
+	q, source, _ := a.clockSnapshot()
+	return q, source
+}
+func (a *App) SetClock(t time.Time) error {
+	if err := a.device.SetTime(a.ctx, t); err != nil {
 		return err
 	}
 	kick(a.clockKick)
@@ -261,13 +250,11 @@ func (a *App) publishSettings(ctx context.Context) {
 	a.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	a.bus.PublishSettings(ctx, map[string]any{"v": 1, "locale": a.store.Get().Locale, "network": n})
-}
-
-func (a *App) applyVolume(ctx context.Context) {
-	if err := system.SetVolume(ctx, a.store.Get().Volume); err != nil {
-		slog.Warn("volume not applied", "err", err)
+	settings, err := a.systemSettings(ctx)
+	if err != nil {
+		return
 	}
+	a.bus.PublishSettings(ctx, map[string]any{"v": 1, "locale": settings.Locale, "network": n})
 }
 
 // resync sends what the core keeps in memory after it (re)starts.
@@ -290,7 +277,12 @@ func (a *App) onState(s bus.CoreState) {
 		a.clk.Asleep = &asleep
 	}
 	a.mu.Unlock()
-	a.ha.State(s.State, a.store.Get().Volume, s.Ears.Left, s.Ears.Right)
+	go func() {
+		settings, err := a.systemSettings(a.ctx)
+		if err == nil {
+			a.ha.State(s.State, int(settings.Volume), s.Ears.Left, s.Ears.Right)
+		}
+	}()
 }
 
 func str(m map[string]any, k string) string {
@@ -333,15 +325,9 @@ func (a *App) onEvent(e appEvent) {
 			}
 			a.setOverride(false) // a click wakes the rabbit up
 		case "hold":
-			a.mu.Lock()
-			c := a.voice
-			a.mu.Unlock()
-			if c != nil {
-				c.Send(context.Background(), "start_listening")
-			}
+			a.device.VoiceCommand(a.ctx, "start_listening")
 		case "triple_click":
-			slog.Info("triple click: powering off")
-			if err := system.PowerOff(); err != nil {
+			if err := a.device.PowerOff(a.ctx); err != nil {
 				slog.Error("power off", "err", err)
 			}
 		case "click_and_hold":
@@ -407,11 +393,16 @@ func (a *App) haCommand(c ha.Command) {
 			a.serviceError(name, a.performService(a.ctx, name, "default", kind))
 		}()
 	case "volume":
-		var v int
-		fmt.Sscan(c.Value, &v)
-		if _, err := a.store.Update(func(s *config.Settings) error { s.Volume = v; return nil }); err == nil {
-			a.applyVolume(context.Background())
+		v, err := strconv.ParseUint(c.Value, 10, 32)
+		if err != nil || v > 100 {
+			return
 		}
+		revision, settings, err := a.device.ReadConfig(a.ctx)
+		if err == nil {
+			settings.Volume = uint32(v)
+			_, err = a.device.UpdateConfig(a.ctx, revision, settings)
+		}
+		a.serviceError("volume", err)
 	case "left_ear", "right_ear":
 		var v int
 		fmt.Sscan(c.Value, &v)
@@ -438,10 +429,11 @@ var errClockUntrusted = errors.New("l'heure du lapin n'est pas fiable : connecte
 
 // sayTime announces the nearest hour, only when the clock is exact.
 func (a *App) sayTime() error {
-	if q, _ := a.clockQuality(); q != clock.Exact {
+	q, _, now := a.clockSnapshot()
+	if q != clock.Exact {
 		return errClockUntrusted
 	}
-	now := time.Now().In(a.location())
+	now = now.In(a.location())
 	h := now.Hour()
 	if now.Minute() >= 55 {
 		h = (h + 1) % 24
@@ -459,7 +451,8 @@ func (a *App) clockLoop(ctx context.Context) {
 		case <-time.After(wait):
 		case <-a.clockKick:
 		}
-		a.clockTick(time.Now().In(a.location()))
+		_, _, now := a.clockSnapshot()
+		a.clockTick(now.In(a.location()))
 	}
 }
 
@@ -635,7 +628,10 @@ func (a *App) weatherSchedule(now time.Time, st config.Settings) {
 
 func (a *App) networkLoop(ctx context.Context) {
 	for {
-		n := system.Network(ctx, a.env.NetProbe)
+		n, err := a.device.Connectivity(ctx)
+		if err != nil {
+			n = "offline"
+		}
 		a.mu.Lock()
 		changed := n != a.network
 		a.network = n
@@ -667,59 +663,16 @@ func (a *App) setHAErr(err error) {
 	}
 }
 
-// Voice assistant (Linux Voice Assistant peripheral API)
-
-func (a *App) voiceSupported() bool { return a.env.LVAUnit != "" }
-
-func (a *App) voiceFlag() string { return filepath.Join(a.env.DataDir, "voice-enabled") }
-
+// Voice lifecycle belongs to device-core; only product LED/button policy lives here.
+func (a *App) voiceSupported() bool {
+	supported, err := a.device.VoiceSupported(a.ctx)
+	return err == nil && supported
+}
 func (a *App) voiceEnabled() bool {
-	_, err := os.Stat(a.voiceFlag())
-	return a.voiceSupported() && err == nil
+	settings, err := a.systemSettings(a.ctx)
+	return err == nil && settings.VoiceEnabled
 }
-
-func (a *App) startVoice() {
-	ctx, cancel := context.WithCancel(context.Background())
-	c := &voice.Client{URL: a.env.LVAURL, OnEvent: a.voiceEvent}
-	a.mu.Lock()
-	if a.voiceCancel != nil {
-		a.voiceCancel()
-	}
-	a.voice, a.voiceCancel = c, cancel
-	a.mu.Unlock()
-	go c.Run(ctx)
-}
-
-func (a *App) stopVoice() {
-	a.mu.Lock()
-	cancel := a.voiceCancel
-	a.voice, a.voiceCancel = nil, nil
-	a.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	a.setIndicator("")
-}
-
-// SetVoice enables or disables the voice assistant service.
-func (a *App) SetVoice(on bool) error {
-	if !a.voiceSupported() {
-		return errors.New("voice assistant is not available on this board")
-	}
-	if on == a.voiceEnabled() {
-		return nil
-	}
-	if on {
-		if err := os.WriteFile(a.voiceFlag(), nil, 0o640); err != nil {
-			return err
-		}
-		a.startVoice()
-		return system.StartUnit(a.env.LVAUnit)
-	}
-	os.Remove(a.voiceFlag())
-	a.stopVoice()
-	return system.StopUnit(a.env.LVAUnit)
-}
+func (a *App) SetVoice(on bool) error { return a.device.EnableVoice(a.ctx, on) }
 
 var indicators = map[string]*weather.Animation{
 	"listening": {Tempo: 50, Colors: []map[string]string{{"left": "0000ff", "center": "0000ff", "right": "0000ff"}}},
@@ -739,7 +692,10 @@ func (a *App) setIndicator(name string) {
 	}
 }
 
-func (a *App) voiceEvent(event string, _ map[string]any) {
+func (a *App) voiceEvent(event string, data map[string]any) {
+	if event == "status" {
+		event = str(data, "status")
+	}
 	switch event {
 	case "wake_word_detected", "listening":
 		a.setIndicator("listening")
@@ -752,7 +708,7 @@ func (a *App) voiceEvent(event string, _ map[string]any) {
 	case "pipeline_error":
 		a.setIndicator("error")
 		time.AfterFunc(1500*time.Millisecond, func() { a.setIndicator("") })
-	case "idle", "tts_finished", "disconnected", "snapshot":
+	case "idle", "tts_finished", "disconnected", "snapshot", "disabled", "unsupported", "connecting", "muted", "media_player_playing":
 		a.setIndicator("")
 	}
 }
@@ -760,20 +716,18 @@ func (a *App) voiceEvent(event string, _ map[string]any) {
 // voiceCommandForClick sends the context command of LVA's action button and
 // reports whether the click was consumed.
 func (a *App) voiceCommandForClick() bool {
-	a.mu.Lock()
-	c := a.voice
-	a.mu.Unlock()
-	if c == nil {
+	state, err := a.device.VoiceState(a.ctx)
+	if err != nil {
 		return false
 	}
-	cmd := ""
-	switch c.State() {
+	command := ""
+	switch state {
 	case "timer_ringing":
-		cmd = "stop_timer_ringing"
+		command = "stop_timer_ringing"
 	case "wake_word_detected", "listening", "thinking", "tts_speaking":
-		cmd = "stop_pipeline"
+		command = "stop_pipeline"
 	case "media_player_playing":
-		cmd = "stop_media_player"
+		command = "stop_media_player"
 	}
-	return cmd != "" && c.Send(context.Background(), cmd) == nil
+	return command != "" && a.device.VoiceCommand(a.ctx, command) == nil
 }

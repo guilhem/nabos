@@ -1,148 +1,155 @@
-//! Single audio slot. mp3 through mpg123 and wav through aplay, both on the
-//! ALSA device (PipeWire's ALSA plugin by default). Starting a sound stops the
-//! previous one.
+//! Audio client. Processes, ownership cleanup and simulated playback live in device-core.
 
 use super::Cancel;
-use std::ffi::OsStr;
+use crate::device::{bounded, Device, CALL_TIMEOUT};
+use serde::Deserialize;
 use std::path::PathBuf;
-use std::process::Stdio;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::sync::{oneshot, watch};
+use std::sync::Arc;
+use tokio::sync::{oneshot, Mutex};
+use zbus::zvariant::{OwnedValue, Type, Value};
 
-/// What mpg123/aplay reads: a resolved local file, or a loopback stream URL
-/// already validated by the protocol (never an arbitrary remote URL).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     File(PathBuf),
     Stream(String),
 }
 
-impl Source {
-    fn arg(&self) -> &OsStr {
-        match self {
-            Source::File(p) => p.as_os_str(),
-            Source::Stream(u) => OsStr::new(u),
-        }
-    }
+#[derive(Debug, Deserialize, Type, Value, OwnedValue)]
+pub struct Status {
+    pub id: String,
+    pub state: String,
+    pub volume: u32,
 }
 
 pub struct Player {
-    device: String,
-    sim_ms: Option<u64>,
-    state: Mutex<(u64, Option<oneshot::Sender<()>>)>,
-    done: watch::Sender<u64>,
+    device: Device,
+    current: Mutex<Option<String>>,
 }
 
 impl Player {
-    pub fn new(device: String, sim_ms: Option<u64>) -> Player {
-        Player {
+    pub fn new(device: Device) -> Self {
+        Self {
             device,
-            sim_ms,
-            state: Mutex::new((0, None)),
-            done: watch::channel(0).0,
+            current: Mutex::new(None),
         }
     }
 
-    pub fn start(self: &Arc<Self>, source: Source) {
-        let (kill, killed) = oneshot::channel();
-        let gen = {
-            let mut s = self.state.lock().unwrap();
-            if let Some(k) = s.1.take() {
-                let _ = k.send(());
-            }
-            s.0 += 1;
-            s.1 = Some(kill);
-            s.0
-        };
-        let me = self.clone();
+    pub async fn start(self: &Arc<Self>, source: Source) -> Result<String, String> {
+        let (reply, receiver) = oneshot::channel();
+        let (accept, accepted) = oneshot::channel();
+        let player = self.clone();
         tokio::spawn(async move {
-            me.play(source, killed).await;
-            me.done.send_modify(|d| *d = (*d).max(gen));
-        });
-    }
-
-    async fn play(&self, source: Source, killed: oneshot::Receiver<()>) {
-        let name = source.arg().to_string_lossy();
-        debug!("play {name}");
-        if let Some(ms) = self.sim_ms {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
-                _ = killed => {}
-            }
-            return;
-        }
-        let wav = matches!(&source, Source::File(p)
-            if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")));
-        let mut cmd = if wav {
-            let mut c = tokio::process::Command::new("aplay");
-            c.args(["-q", "-D", &self.device]);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("mpg123");
-            c.args(["-q", "-o", "alsa", "-a", &self.device]);
-            c
-        };
-        cmd.arg(source.arg())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .kill_on_drop(true);
-        match cmd.spawn() {
-            Ok(mut child) => tokio::select! {
-                status = child.wait() => {
-                    if let Ok(s) = status {
-                        if !s.success() {
-                            warn!("{name} exited with {s}");
-                        }
+            let result = player.start_inner(source).await;
+            let id = result.as_ref().ok().cloned();
+            // Aborting a choreography cannot discard an accepted but unclaimed ID.
+            if reply.send(result).is_err() || accepted.await.is_err() {
+                if let Some(id) = id {
+                    if let Err(e) = player.stop(&id).await {
+                        warn!("abandoned audio start cleanup failed: {e}");
                     }
                 }
-                _ = killed => {
-                    let _ = child.kill().await;
-                }
-            },
-            Err(e) => error!("cannot start audio player for {name}: {e}"),
-        }
-    }
-
-    fn current(&self) -> u64 {
-        self.state.lock().unwrap().0
-    }
-
-    /// Wait for the current sound. False when cancelled first.
-    pub async fn wait_done(&self, cancel: &Cancel) -> bool {
-        let gen = self.current();
-        let mut rx = self.done.subscribe();
-        tokio::select! {
-            _ = rx.wait_for(|d| *d >= gen) => true,
-            _ = cancel.wait() => false,
-        }
-    }
-
-    pub async fn stop(&self) {
-        let gen = {
-            let mut s = self.state.lock().unwrap();
-            if let Some(k) = s.1.take() {
-                let _ = k.send(());
             }
-            s.0
+        });
+        let result = receiver.await.map_err(|_| "audio start task stopped")?;
+        let _ = accept.send(());
+        result
+    }
+
+    async fn start_inner(&self, source: Source) -> Result<String, String> {
+        let (kind, source) = match source {
+            Source::File(p) => (
+                "file",
+                p.into_os_string()
+                    .into_string()
+                    .map_err(|_| "non-UTF8 audio path")?,
+            ),
+            Source::Stream(u) => ("stream", u),
         };
-        let mut rx = self.done.subscribe();
-        let _ = rx.wait_for(|d| *d >= gen).await;
+        // Serialize starts so their replies cannot reverse the current playback ID.
+        let mut current = self.current.lock().await;
+        let proxy = self.device.proxy("Audio").await?;
+        let id: String =
+            match tokio::time::timeout(CALL_TIMEOUT, proxy.call("Start", &(kind, source))).await {
+                Ok(result) => result.map_err(|e| e.to_string())?,
+                Err(_) => {
+                    // A lost reply may have started audio: disappearance of this owner
+                    // makes the daemon reap it even though the ID is still unknown.
+                    let _ = proxy.connection().clone().close().await;
+                    return Err("device-core audio start timed out".into());
+                }
+            };
+        if id.is_empty() {
+            return Err("device-core returned an empty playback ID".into());
+        }
+        *current = Some(id.clone());
+        Ok(id)
     }
 
-    /// Play sources in order; false when cancelled (sound stopped).
-    pub async fn play_list(self: &Arc<Self>, files: &[Source], cancel: &Cancel) -> bool {
-        self.stop().await;
-        for f in files {
-            if cancel.is_cancelled() {
-                return false;
+    pub async fn stop(&self, id: &str) -> Result<(), String> {
+        let proxy = self.device.proxy("Audio").await?;
+        bounded(proxy.call::<_, _, ()>("Stop", &(id,))).await?;
+        let mut current = self.current.lock().await;
+        if current.as_deref() == Some(id) {
+            *current = None;
+        }
+        Ok(())
+    }
+
+    pub async fn stop_current(&self) -> Result<(), String> {
+        let id = self.current.lock().await.clone();
+        match id {
+            Some(id) => self.stop(&id).await,
+            None => Ok(()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn status(&self) -> Result<Status, String> {
+        let proxy = self.device.proxy("Audio").await?;
+        bounded(proxy.get_property("Status")).await
+    }
+
+    /// Wait for this ID, never whatever playback a later start has installed.
+    pub async fn wait(&self, id: &str, cancel: &Cancel) -> Result<bool, String> {
+        let proxy = self.device.proxy("Audio").await?;
+        let args = (id,);
+        tokio::select! {
+            result = proxy.call::<_, _, String>("Wait", &args) => {
+                match result.map_err(|e| e.to_string())?.as_str() {
+                    "completed" | "stopped" | "preempted" => Ok(true),
+                    outcome => Err(format!("audio playback {id}: {outcome}")),
+                }
             }
-            self.start(f.clone());
-            if !self.wait_done(cancel).await {
-                self.stop().await;
-                return false;
+            _ = cancel.wait() => {
+                self.stop(id).await?;
+                Ok(false)
             }
         }
-        true
+    }
+
+    pub async fn wait_current(&self, cancel: &Cancel) -> Result<bool, String> {
+        let id = self.current.lock().await.clone();
+        match id {
+            Some(id) => self.wait(&id, cancel).await,
+            None => Ok(true),
+        }
+    }
+
+    pub async fn play_list(
+        self: &Arc<Self>,
+        files: &[Source],
+        cancel: &Cancel,
+    ) -> Result<bool, String> {
+        self.stop_current().await?;
+        for source in files {
+            if cancel.is_cancelled() {
+                return Ok(false);
+            }
+            let id = self.start(source.clone()).await?;
+            if !self.wait(&id, cancel).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }

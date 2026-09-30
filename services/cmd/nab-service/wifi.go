@@ -70,7 +70,7 @@ func (a *App) wifiRoute(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 		} else {
-			s, err := network.ReadStatus(r.Context())
+			s, err := a.net.ReadStatus(r.Context())
 			if err != nil {
 				http.Error(w, network.ErrUnavailable.Error(), http.StatusServiceUnavailable)
 				return
@@ -89,7 +89,7 @@ func (a *App) wifiRoute(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *App) wifiPage(w http.ResponseWriter, r *http.Request) {
-	s, err := network.Read(r.Context())
+	s, err := a.net.Read(r.Context())
 	if err != nil {
 		a.render(w, r, "wifi", "Wi-Fi", map[string]any{"Unavailable": true})
 		return
@@ -100,7 +100,7 @@ func (a *App) wifiPage(w http.ResponseWriter, r *http.Request) {
 	authorized := a.auth.Configured()
 	if !authorized && reserved {
 		token := a.wifiToken(r)
-		authorized, _ = network.Authorized(r.Context(), token)
+		authorized, _ = a.net.Authorized(r.Context(), token)
 	}
 	a.render(w, r, "wifi", "Wi-Fi", map[string]any{"Snapshot": s, "Reserved": reserved, "Authorized": authorized, "Setup": !a.auth.Configured()})
 }
@@ -127,7 +127,7 @@ func wifiJSON(w http.ResponseWriter, data any) {
 }
 
 func (a *App) wifiStatus(w http.ResponseWriter, r *http.Request) {
-	s, err := network.ReadStatus(r.Context())
+	s, err := a.net.ReadStatus(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -137,7 +137,7 @@ func (a *App) wifiStatus(w http.ResponseWriter, r *http.Request) {
 	if token := a.wifiToken(r); token != "" {
 		reserved = true
 		if !authorized {
-			authorized, err = network.Authorized(r.Context(), token)
+			authorized, err = a.net.Authorized(r.Context(), token)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)
 				return
@@ -166,7 +166,7 @@ func (a *App) wifiReserve(w http.ResponseWriter, r *http.Request) {
 		}
 		browser = hex.EncodeToString(b)
 	}
-	lease, err := network.Reserve(r.Context(), token)
+	lease, err := a.net.Reserve(r.Context(), token)
 	if err == nil && token != "" && lease != token {
 		err = network.ErrUnavailable
 	}
@@ -194,7 +194,7 @@ func (a *App) wifiRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "réservation absente ou expirée", http.StatusForbidden)
 		return
 	}
-	if err := network.Release(r.Context(), a.wifi.token); err != nil {
+	if err := a.net.Release(r.Context(), a.wifi.token); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -204,7 +204,7 @@ func (a *App) wifiRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) wifiScan(w http.ResponseWriter, r *http.Request) {
-	err := network.Scan(r.Context())
+	err := a.net.Scan(r.Context())
 	if err != nil {
 		err = errors.New("scan temporairement indisponible ; utilisez les derniers résultats ou saisissez le nom du réseau")
 	}
@@ -283,7 +283,7 @@ func (a *App) wifiConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		token = a.wifi.token
-		ok, err := network.Authorized(r.Context(), token)
+		ok, err := a.net.Authorized(r.Context(), token)
 		if err != nil || !ok {
 			http.Error(w, "appuyez sur le bouton du lapin pour autoriser cette tentative pendant cinq minutes", http.StatusForbidden)
 			return
@@ -296,7 +296,7 @@ func (a *App) wifiConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	// Submit independently of the browser disconnect. Rust returns before the
 	// radio switch and owns the attempt, timeout, checkpoint and recovery.
-	id, err := network.Connect(context.Background(), ssid, security, password, uuid, token)
+	id, err := a.net.Connect(context.Background(), ssid, security, password, uuid, token)
 	if err != nil {
 		back(w, r, "/wifi", err, "")
 		return
@@ -329,7 +329,7 @@ func (a *App) wifiCancel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	back(w, r, "/wifi", network.Cancel(context.Background(), id), "Annulation demandée")
+	back(w, r, "/wifi", a.net.Cancel(context.Background(), id), "Annulation demandée")
 }
 
 func (a *App) wifiForget(w http.ResponseWriter, r *http.Request) {
@@ -346,7 +346,7 @@ func (a *App) wifiForget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "profil invalide", http.StatusBadRequest)
 		return
 	}
-	back(w, r, "/wifi", network.Forget(r.Context(), uuid), "Profil oublié")
+	back(w, r, "/wifi", a.net.Forget(r.Context(), uuid), "Profil oublié")
 }
 
 func (a *App) setupNetwork(w http.ResponseWriter, r *http.Request) bool {
@@ -355,7 +355,8 @@ func (a *App) setupNetwork(w http.ResponseWriter, r *http.Request) bool {
 	if a.auth.Configured() {
 		return true
 	}
-	s, err := network.ReadStatus(r.Context())
+	snapshot, err := a.net.Read(r.Context())
+	s := snapshot.Status
 	if err != nil {
 		a.auth.DisarmPresence()
 		http.Error(w, network.ErrUnavailable.Error(), http.StatusServiceUnavailable)
@@ -366,9 +367,27 @@ func (a *App) setupNetwork(w http.ResponseWriter, r *http.Request) bool {
 		http.Redirect(w, r, "/wifi", http.StatusSeeOther)
 		return false
 	}
+	if a.setupGeneration != snapshot.Status.Generation {
+		a.auth.DisarmPresence()
+		a.setupGeneration = snapshot.Status.Generation
+	}
 	if !a.auth.ArmPresence() {
 		http.Error(w, network.ErrUnavailable.Error(), http.StatusServiceUnavailable)
 		return false
 	}
 	return true
+}
+
+// A transferred guard FD holds the daemon's network lock until the admin hash
+// has reached stable storage. UI presence and identity remain application policy.
+func (a *App) setupAdmin(r *http.Request) (string, error) {
+	a.wifiMu.Lock()
+	defer a.wifiMu.Unlock()
+	guard, err := a.net.Guard(r.Context(), a.setupGeneration)
+	if err != nil {
+		a.auth.DisarmPresence()
+		return "", err
+	}
+	defer guard.Close()
+	return a.auth.Setup(r.FormValue("password"))
 }

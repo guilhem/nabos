@@ -13,11 +13,17 @@ import (
 func TestRandomSchedulesPersistAndSkipExpiredJobs(t *testing.T) {
 	a := testApp(t)
 	now := time.Now().UTC()
+	f := appFixture(t, a)
+	f.Mu.Lock()
+	f.ClockQuality = "unknown"
+	f.Mu.Unlock()
 	a.servicesTick(now)
 	if !a.store.Get().Services.NextSurprise.IsZero() {
 		t.Fatal("scheduled with unknown clock")
 	}
-	a.env.TimesyncFile = "none"
+	f.Mu.Lock()
+	f.ClockQuality = "ntp"
+	f.Mu.Unlock()
 	a.servicesTick(now)
 	s := a.store.Get().Services
 	for _, job := range []struct {
@@ -29,7 +35,7 @@ func TestRandomSchedulesPersistAndSkipExpiredJobs(t *testing.T) {
 			t.Fatalf("%s deadline: %v", job.name, job.next)
 		}
 	}
-	reopened, err := config.Open(filepath.Join(a.env.DataDir, "config.json"))
+	reopened, err := config.Open(filepath.Join(a.env.DataDir, "application.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

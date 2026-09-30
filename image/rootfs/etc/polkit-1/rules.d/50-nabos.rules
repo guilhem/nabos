@@ -1,4 +1,4 @@
-// nab-service runs as nabos without a login session: allow reboot/power off and
+// device-core runs as nabos without a login session: allow reboot/power off and
 // manual clock setting and runtime jobs for voice/NTP/SSH only.
 polkit.addRule(function (action, subject) {
 	if (subject.user !== "nabos") {
@@ -10,8 +10,12 @@ polkit.addRule(function (action, subject) {
 	case "org.freedesktop.login1.power-off":
 	case "org.freedesktop.login1.power-off-multiple-sessions":
 	case "org.freedesktop.timedate1.set-time":
-		return polkit.Result.YES;
+		return subject.system_unit === "device-core.service" && subject.no_new_privileges ?
+			polkit.Result.YES : polkit.Result.NO;
 	case "org.freedesktop.systemd1.manage-units":
+		if (subject.system_unit !== "device-core.service" || !subject.no_new_privileges) {
+			return polkit.Result.NO;
+		}
 		if (action.lookup("unit") === "linux-voice-assistant.service" &&
 			["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0) {
 			return polkit.Result.YES;
@@ -20,6 +24,7 @@ polkit.addRule(function (action, subject) {
 			["start", "stop"].indexOf(action.lookup("verb")) >= 0) {
 			return polkit.Result.YES;
 		}
+		return polkit.Result.NO;
 	}
 	return polkit.Result.NOT_HANDLED;
 });

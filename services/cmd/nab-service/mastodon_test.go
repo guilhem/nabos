@@ -134,7 +134,7 @@ func TestMastodonOAuthRoutesAndOneTimeCallback(t *testing.T) {
 	if s.Instance != server.URL || s.ClientID != "client" || s.ClientSecret != "secret" || s.RedirectURI != mastodonTestOrigin+"/services/mastodon/callback" || s.AccessToken != "private-token" || s.AccountID != "account-1" || s.Username != "rabbit" {
 		t.Fatalf("OAuth state not saved: %+v", s)
 	}
-	reloaded, err := config.Open(filepath.Join(a.env.DataDir, "config.json"))
+	reloaded, err := config.Open(filepath.Join(a.env.DataDir, "application.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

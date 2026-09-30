@@ -22,11 +22,13 @@ jobs:
           target: ${{ matrix.rust-target }}
           cache-workspaces: core
           cache-key: ${{ matrix.target }}-${{ hashFiles('image/rust-sysroots.lock.json', 'Makefile') }}
-          cache-directories: build/rust/${{ matrix.target }}/inputs/rust-sysroot
+          cache-directories: |
+            build/cargo/nab-core
+            build/rust/${{ matrix.target }}/inputs/rust-sysroot
       - name: Install linker
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld
+          sudo apt-get install -y --no-install-recommends clang lld llvm
       - name: Cross-compile core and archive inputs
         env:
           TARGET: ${{ matrix.target }}
