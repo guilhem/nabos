@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,8 @@ const usage = `usage:
   nab-image get LOCK KEY...                        print string values at dotted keys
   nab-image fetch LOCK TARGET DIR [--sources-only] download and verify locked inputs
   nab-image unpack LOCK INPUTS SRC                 extract locked source archives to SRC/NAME
+  nab-image source LOCK NAME INPUTS SRC             verify and extract one pinned source
+  nab-image verify-device-core LOCK DIR TARGET REV verify external component identity
   nab-image extract ARCHIVE.tar[.xz] DIR           extract component or replay inputs
   nab-image drivers LOCK --archives DIR [--kernel KERNEL]
                                                    patch and build driver overlays (and modules)`
@@ -49,6 +52,10 @@ func run(args []string) error {
 		return fetch(http.DefaultClient, args[0], args[1], args[2], len(args) == 4)
 	case cmd == "unpack" && len(args) == 3:
 		return unpackSources(args[0], args[1], args[2])
+	case cmd == "source" && len(args) == 4:
+		return source(http.DefaultClient, args[0], args[1], args[2], args[3])
+	case cmd == "verify-device-core" && len(args) == 4:
+		return verifyDeviceCore(args[0], args[1], args[2], args[3])
 	case cmd == "extract" && len(args) == 2:
 		return extractArchive(args[0], args[1])
 	case cmd == "drivers" && len(args) >= 3:
@@ -62,7 +69,137 @@ type lockFile struct {
 		ImageURL    string `json:"image_url"`
 		ImageSHA256 string `json:"image_sha256"`
 	}
-	Sources map[string]struct{ URL, SHA256 string }
+	Sources map[string]sourceLock
+}
+
+type sourceLock struct {
+	Repository string `json:"repository"`
+	Commit     string `json:"commit"`
+	URL        string `json:"url"`
+	SHA256     string `json:"sha256"`
+}
+
+func deviceCoreSource(lock lockFile) (sourceLock, error) {
+	s, ok := lock.Sources["device_core"]
+	if !ok || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(s.Commit) ||
+		!sha256Hex.MatchString(s.SHA256) || s.URL != "https://codeload.github.com/"+s.Repository+"/tar.gz/"+s.Commit ||
+		!regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(s.Repository) {
+		return s, errors.New("device_core source pin is pending or invalid: commit archive and SHA-256 required")
+	}
+	return s, nil
+}
+
+func source(client *http.Client, lockPath, name, inputs, src string) error {
+	lock, err := readLock(lockPath)
+	if err != nil {
+		return err
+	}
+	s, ok := lock.Sources[name]
+	if !ok {
+		return fmt.Errorf("unknown source %q", name)
+	}
+	if name == "device_core" {
+		if s, err = deviceCoreSource(lock); err != nil {
+			return err
+		}
+	}
+	archive := filepath.Join(inputs, name+".tar.gz")
+	if err := download(client, s.URL, s.SHA256, archive); err != nil {
+		return err
+	}
+	root, err := unpack(archive, src)
+	if err != nil {
+		return err
+	}
+	fmt.Println(root)
+	return nil
+}
+
+// Artifact provenance is independent of the NabOS revision. Verify it before
+// assembling an image, including when CI supplied prebuilt components.
+func verifyDeviceCore(lockPath, dir, target, revision string) error {
+	lock, err := readLock(lockPath)
+	if err != nil {
+		return err
+	}
+	s, err := deviceCoreSource(lock)
+	if err != nil {
+		return err
+	}
+	if _, ok := lock.Targets[target]; !ok {
+		return fmt.Errorf("unknown target %q", target)
+	}
+	info, err := os.ReadFile(filepath.Join(dir, "build-info"))
+	if err != nil {
+		return err
+	}
+	if string(info) != target+"\n"+revision+"\n"+s.Commit+"\n" {
+		return errors.New("device-core target or source revision mismatch")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "inputs/device-core/source-identity.json"))
+	if err != nil {
+		return err
+	}
+	var identity sourceLock
+	if err := json.Unmarshal(data, &identity); err != nil {
+		return err
+	}
+	if identity != s {
+		return errors.New("device-core source identity mismatch")
+	}
+	hash, err := digest(filepath.Join(dir, "inputs/device-core/device_core.tar.gz"))
+	if err != nil {
+		return err
+	}
+	if hash != s.SHA256 {
+		return errors.New("device-core source archive checksum mismatch")
+	}
+	stage, err := os.MkdirTemp("", "device-core-identity-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	root, err := unpack(filepath.Join(dir, "inputs/device-core/device_core.tar.gz"), stage)
+	if err != nil {
+		return err
+	}
+	archivedLock, err := os.ReadFile(filepath.Join(dir, "inputs/device-core/Cargo.lock"))
+	if err != nil {
+		return err
+	}
+	sourceLock, err := os.ReadFile(filepath.Join(root, "Cargo.lock"))
+	if err != nil {
+		return err
+	}
+	if string(archivedLock) != string(sourceLock) {
+		return errors.New("device-core Cargo.lock does not match pinned source")
+	}
+	for _, file := range []string{"Cargo.lock", "cargo-vendor"} {
+		if _, err := os.Stat(filepath.Join(dir, "inputs/device-core", file)); err != nil {
+			return err
+		}
+	}
+	hash, err = digest(filepath.Join(dir, "device-core"))
+	if err != nil {
+		return err
+	}
+	expected, err := os.ReadFile(filepath.Join(dir, "binary.sha256"))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(expected)) != hash {
+		return errors.New("device-core binary checksum mismatch")
+	}
+	binary, err := elf.Open(filepath.Join(dir, "device-core"))
+	if err != nil {
+		return err
+	}
+	defer binary.Close()
+	if target == "zero-armv6" && (binary.Machine != elf.EM_ARM || binary.Class != elf.ELFCLASS32) ||
+		target == "zero2-arm64" && (binary.Machine != elf.EM_AARCH64 || binary.Class != elf.ELFCLASS64) {
+		return errors.New("device-core ELF architecture mismatch")
+	}
+	return nil
 }
 
 func readLock(name string) (lockFile, error) {
@@ -108,6 +245,11 @@ func fetch(client *http.Client, lockPath, target, dir string, sourcesOnly bool) 
 	if !ok {
 		return fmt.Errorf("unknown target %q", target)
 	}
+	if _, ok := lock.Sources["device_core"]; ok {
+		if _, err := deviceCoreSource(lock); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return err
 	}
@@ -121,7 +263,11 @@ func fetch(client *http.Client, lockPath, target, dir string, sourcesOnly bool) 
 		if name == "lva" && target != "zero2-arm64" {
 			continue
 		}
-		if err := download(client, s.URL, s.SHA256, filepath.Join(dir, name+".tar.gz")); err != nil {
+		dest := filepath.Join(dir, name+".tar.gz")
+		if name == "device_core" {
+			dest = filepath.Join(dir, "device-core", name+".tar.gz")
+		}
+		if err := download(client, s.URL, s.SHA256, dest); err != nil {
 			return err
 		}
 	}
@@ -245,6 +391,9 @@ func unpackSources(lockPath, inputs, src string) error {
 	}
 	for name := range lock.Sources {
 		archive := filepath.Join(inputs, name+".tar.gz")
+		if name == "device_core" {
+			archive = filepath.Join(inputs, "device-core", name+".tar.gz")
+		}
 		if _, err := os.Stat(archive); errors.Is(err, os.ErrNotExist) {
 			continue
 		}

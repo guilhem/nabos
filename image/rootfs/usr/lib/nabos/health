@@ -51,9 +51,12 @@ persistent() {
 
 healthy() {
 	persistent || return 1
-	for unit in mosquitto.service nab-core.service nab-service.service; do
+	for unit in mosquitto.service device-core.service nab-core.service nab-service.service; do
 		systemctl is-active --quiet "$unit" || { reason="$unit is not active"; return 1; }
 	done
+	[ "$(busctl --system --timeout=5 get-property io.github.guilhem.DeviceCore1 \
+		/io/github/guilhem/DeviceCore1 io.github.guilhem.DeviceCore1.Manager Ready 2>/dev/null)" = "b true" ] ||
+		{ reason="device-core D-Bus is not ready"; return 1; }
 	curl -fsS --max-time 5 -o /dev/null http://127.0.0.1/healthz ||
 		{ reason="nab-service /healthz is not ready"; return 1; }
 	audio_card sinks || { reason="no tagtagtag-sound playback sink in PipeWire"; return 1; }

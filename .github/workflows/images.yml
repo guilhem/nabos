@@ -38,10 +38,12 @@ jobs:
     uses: ./.github/workflows/go.yml
   rust:
     uses: ./.github/workflows/rust.yml
+  device-core:
+    uses: ./.github/workflows/device-core.yml
   uboot:
     uses: ./.github/workflows/uboot.yml
   build:
-    needs: [test, go, rust, uboot]
+    needs: [test, go, rust, device-core, uboot]
     strategy:
       fail-fast: false
       matrix:

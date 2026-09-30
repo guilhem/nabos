@@ -46,7 +46,42 @@ jobs:
         run: |
           for script in ../image/*.sh; do bash -n "$script"; done
           shellcheck -x ../image/*.sh
-          for component in go rust uboot; do
+          for component in go rust device-core uboot; do
             { printf 'set -euo pipefail\n'; make -C .. --no-print-directory -n "$component"; } | shellcheck -s bash -
           done
-          NABOS_INTEGRATION=1 go test -race -count=1 -v ./tests/integration ./cmd/nab-service
+  device-integration:
+    # ProcessFD credentials require a recent D-Bus; image/RAUC checks retain their existing host.
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: services/go.sum
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt,clippy
+      - name: Install runtime test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus libglib2.0-bin openssh-client mosquitto mosquitto-clients
+          # The distro service profile only permits its system configuration paths.
+          # Test brokers use private generated configurations and an isolated executable.
+          cp /usr/sbin/mosquitto "$RUNNER_TEMP/nabos-test-mosquitto"
+          printf 'MOSQUITTO=%s/nabos-test-mosquitto\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Pinned device-core
+        run: |
+          make device-core-source OUT="$PWD/build/device-core-test"
+          source=$(cat build/device-core-test/source-path)
+          export CARGO_TARGET_DIR="$PWD/build/cargo/device-core-tests"
+          cargo fmt --manifest-path "$source/Cargo.toml" --check
+          cargo clippy --locked --manifest-path "$source/Cargo.toml" --all-targets -- -D warnings
+          cargo test --locked --manifest-path "$source/Cargo.toml"
+          cargo build --locked --manifest-path "$source/Cargo.toml"
+          printf 'DEVICE_CORE_BIN=%s/debug/device-core\n' "$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+      - name: Native clients and MQTT interactions
+        run: |
+          cargo build --locked --manifest-path core/Cargo.toml
+          cargo test --locked --manifest-path core/Cargo.toml -- --ignored
+          NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./tests/integration ./cmd/nab-service

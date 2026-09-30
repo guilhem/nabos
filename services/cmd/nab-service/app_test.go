@@ -1,105 +1,130 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/clock"
-	"github.com/guilhem/nabos/services/internal/config"
-	"github.com/guilhem/nabos/services/internal/system"
+	"github.com/guilhem/nabos/services/internal/device"
+	"github.com/guilhem/nabos/services/internal/devicetest"
 )
 
-func TestStartupDoesNotReplaySoftwareMute(t *testing.T) {
-	for _, blocked := range []bool{false, true} {
-		t.Run(fmt.Sprintf("settings_write_blocked=%v", blocked), func(t *testing.T) {
-			a := testApp(t)
-			if _, err := a.store.Update(func(s *config.Settings) error { s.Volume = 0; return nil }); err != nil {
-				t.Fatal(err)
-			}
-			if blocked {
-				path := filepath.Join(a.env.DataDir, "config.json")
-				if err := os.Remove(path); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(path, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			dir := t.TempDir()
-			log := filepath.Join(dir, "volume")
-			t.Setenv("NABOS_TEST_VOLUME", log)
-			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-			if err := os.WriteFile(filepath.Join(dir, "wpctl"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$NABOS_TEST_VOLUME\"\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			// Startup applies the audio settings before opening the HTTP listener.
-			a.env.HTTPAddr = "invalid::address"
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if err := a.Run(ctx); err == nil || !strings.Contains(err.Error(), "invalid::address") {
-				t.Fatalf("startup must reach HTTP even if settings cannot be saved: %v", err)
-			}
-			want := 100
-			if blocked {
-				want = 0
-			}
-			got, err := os.ReadFile(log)
-			if err != nil || string(got) != "set-volume @DEFAULT_AUDIO_SINK@ 1.00\n" || a.store.Get().Volume != want {
-				t.Fatalf("stored mute replayed: command=%q, volume=%d, error=%v", got, a.store.Get().Volume, err)
-			}
-		})
-	}
-}
-
 func testApp(t *testing.T) *App {
-	dir := t.TempDir()
-	a, err := NewApp(Env{MQTTHost: "127.0.0.1", MQTTPort: 1, DataDir: dir,
-		TimesyncFile: filepath.Join(dir, "synchronized"), TimesyncClock: filepath.Join(dir, "clock")})
+	if wifiFixtures[os.Getenv("DBUS_SYSTEM_BUS_ADDRESS")] == nil {
+		wifiTestBus(t)
+	}
+	a, err := NewApp(Env{MQTTHost: "127.0.0.1", MQTTPort: 1, DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.device.Close)
 	return a
 }
-
-func TestClockQualityWithoutInternet(t *testing.T) {
+func appFixture(t *testing.T, a *App) *devicetest.Fixture {
+	t.Helper()
+	return wifiFixtures[os.Getenv("DBUS_SYSTEM_BUS_ADDRESS")].system
+}
+func TestClockUsesRemoteQuality(t *testing.T) {
 	a := testApp(t)
-	if q, _ := a.clockQuality(); q != clock.Unknown {
-		t.Fatal("no time source must be unknown")
+	f := appFixture(t, a)
+	for _, tc := range []struct {
+		source  string
+		quality clock.Quality
+	}{{"unknown", clock.Unknown}, {"restored", clock.Coarse}, {"manual", clock.Exact}, {"ntp", clock.Exact}} {
+		f.Mu.Lock()
+		f.ClockQuality = tc.source
+		f.Mu.Unlock()
+		if quality, source := a.clockQuality(); quality != tc.quality || source != tc.source {
+			t.Fatalf("snapshot %s: %v %s", tc.source, quality, source)
+		}
 	}
-	// Saved clock in the future: the system time was not restored yet.
-	os.WriteFile(a.env.TimesyncClock, nil, 0o644)
-	os.Chtimes(a.env.TimesyncClock, time.Now().Add(time.Hour), time.Now().Add(time.Hour))
-	if q, _ := a.clockQuality(); q != clock.Unknown {
-		t.Fatal("time behind the saved clock is not trustworthy")
-	}
-	os.Chtimes(a.env.TimesyncClock, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour))
-	if q, s := a.clockQuality(); q != clock.Coarse || s != "restored" {
-		t.Fatalf("offline cold boot: %v %s", q, s)
-	}
+	f.Mu.Lock()
+	f.ClockQuality = "restored"
+	f.Mu.Unlock()
 	if err := a.sayTime(); err == nil {
-		t.Fatal("the time must not be announced from a coarse clock")
+		t.Fatal("announced coarse clock")
 	}
-	if id := system.BootID(); id != "" {
-		os.WriteFile(a.manualClockFile(), []byte(id+"\n"), 0o640)
-		if _, s := a.clockQuality(); s != "manual" {
-			t.Fatal("manual time of this boot")
+}
+func TestSystemAndApplicationSettingsSaveIndependently(t *testing.T) {
+	a := testApp(t)
+	cookie := serviceSession(t, a)
+	h := a.routes()
+	revision, _, err := a.device.ReadConfig(a.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"revision": {revision}, "locale": {"en_US"}, "timezone": {"UTC"}, "volume": {"42"}, "voice": {"on"}}
+	w := serviceRequest(h, "POST", "/settings/system", form, cookie)
+	if strings.Contains(w.Header().Get("Location"), "err=") {
+		t.Fatal(w.Header())
+	}
+	if _, err := os.Stat(filepath.Join(a.env.DataDir, "settings.json")); !os.IsNotExist(err) {
+		t.Fatal("application wrote system file")
+	}
+	raw, _ := os.ReadFile(filepath.Join(a.env.DataDir, "application.json"))
+	if strings.Contains(string(raw), "locale") || strings.Contains(string(raw), "volume") || strings.Contains(string(raw), "updates") {
+		t.Fatal("mixed application settings", string(raw))
+	}
+	_, settings, err := a.device.ReadConfig(a.ctx)
+	if err != nil || settings.Locale != "en_US" || settings.Volume != 42 || !settings.VoiceEnabled {
+		t.Fatal("remote save", settings, err)
+	}
+	if w = serviceRequest(h, "POST", "/settings/system", form, cookie); !strings.Contains(w.Header().Get("Location"), "err=") {
+		t.Fatal("stale revision accepted")
+	}
+}
+
+func TestHomeAllowsProductStateWhileDeviceReadIsBlocked(t *testing.T) {
+	a := testApp(t)
+	revision, settings, err := a.device.ReadConfig(a.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, resume := make(chan struct{}, 1), make(chan struct{})
+	read := func() (string, device.Settings, *dbus.Error) {
+		select {
+		case entered <- struct{}{}:
+		default:
 		}
-		os.WriteFile(a.manualClockFile(), []byte("previous-boot\n"), 0o640)
-		if _, s := a.clockQuality(); s != "restored" {
-			t.Fatal("manual time of a previous boot must be ignored")
+		<-resume
+		return revision, settings, nil
+	}
+	if err := appFixture(t, a).Conn.ExportMethodTable(map[string]interface{}{"Read": read}, device.Path("Config"), device.Interface("Config")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	w := httptest.NewRecorder()
+	go func() {
+		a.home(w, httptest.NewRequest("GET", "/", nil))
+		close(done)
+	}()
+	defer func() {
+		close(resume)
+		select {
+		case <-done:
+			if w.Code != http.StatusOK {
+				t.Error("home did not complete", w.Code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("home did not resume after device reply")
 		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("home did not reach device read")
 	}
-	os.WriteFile(a.env.TimesyncFile, nil, 0o644)
-	if _, s := a.clockQuality(); s != "ntp" {
-		t.Fatal("NTP")
+	if !a.mu.TryLock() {
+		t.Fatal("blocked device read holds the product state mutex")
 	}
+	a.mu.Unlock()
 }
 
 func TestEveryPageRenders(t *testing.T) {
@@ -121,5 +146,26 @@ func TestEveryPageRenders(t *testing.T) {
 		if w.Code != 200 && w.Code != http.StatusSeeOther {
 			t.Fatalf("%s: %d", p, w.Code)
 		}
+	}
+}
+
+func TestOldConfigIsNotMigrated(t *testing.T) {
+	a := testApp(t)
+	oldPath := filepath.Join(a.env.DataDir, "config.json")
+	raw := []byte(`{"version":1,"locale":"en_US","admin":{"hash":"old-hash"}}`)
+	if err := os.WriteFile(oldPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewApp(a.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.device.Close()
+	if reopened.auth.Configured() {
+		t.Fatal("old administrator migrated")
+	}
+	preserved, err := os.ReadFile(oldPath)
+	if err != nil || string(preserved) != string(raw) {
+		t.Fatal("old file changed", err)
 	}
 }

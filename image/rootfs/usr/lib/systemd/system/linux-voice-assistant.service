@@ -1,7 +1,7 @@
 [Unit]
 Description=Linux Voice Assistant (Home Assistant voice satellite)
-# nab-service creates/removes the flag and starts/stops this unit (polkit rule).
-ConditionPathExists=/data/nabos/voice-enabled
+# device-core owns the flag and starts/stops this unit (polkit rule).
+ConditionPathExists=/data/device-core/voice-enabled
 ConditionPathExists=/opt/linux-voice-assistant/.venv/bin/python
 Wants=user@1000.service network-online.target
 After=user@1000.service network-online.target
@@ -12,6 +12,7 @@ User=nabos
 Group=nabos
 # Same PipeWire session as the core.
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=/var/lib/nabos
 # Run from the source tree like upstream's script/run so sounds/ and wakewords/ resolve.
 WorkingDirectory=/opt/linux-voice-assistant
 ExecStart=/opt/linux-voice-assistant/.venv/bin/python -m linux_voice_assistant --name Nabaztag \

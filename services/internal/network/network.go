@@ -1,4 +1,4 @@
-// Package network is the bounded D-Bus client of nab-core's Network1 API.
+// Package network wraps device-core's typed Network API.
 // It never contacts NetworkManager directly or stores Wi-Fi secrets.
 package network
 
@@ -7,21 +7,22 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net"
+	"os"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/guilhem/nabos/services/internal/device"
 )
 
 const (
-	Destination = "org.nabaztag.Core"
-	Path        = dbus.ObjectPath("/org/nabaztag/Core/Network")
-	Interface   = "org.nabaztag.Core.Network1"
-	callTimeout = 5 * time.Second
+	Destination = device.Destination
+	Path        = dbus.ObjectPath("/io/github/guilhem/DeviceCore1/Network")
+	Interface   = Destination + ".Network"
 )
+
+type Client struct{ *device.Client }
 
 var (
 	ErrUnavailable = errors.New("configuration Wi-Fi indisponible, réessayez")
@@ -52,6 +53,8 @@ func (s SSID) String() string {
 
 type Status struct {
 	Mode        string `json:"mode"`
+	Generation  string `json:"generation"`
+	Ready       bool   `json:"ready"`
 	Address     string `json:"address"`
 	SSID        SSID   `json:"ssid"`
 	ProfileUUID string `json:"profile_uuid"`
@@ -60,10 +63,7 @@ type Status struct {
 	Error       string `json:"error"`
 }
 
-func (s Status) ClientReady() bool {
-	ip := net.ParseIP(s.Address)
-	return s.Mode == "client" && ip != nil && ip.IsGlobalUnicast() && !ip.IsUnspecified()
-}
+func (s Status) ClientReady() bool { return s.Mode == "client" && s.Ready }
 
 type Network struct {
 	SSID     SSID   `json:"ssid"`
@@ -82,112 +82,112 @@ type Snapshot struct {
 	Profiles []Profile `json:"profiles"`
 }
 
-func call(ctx context.Context, method string, args ...any) (*dbus.Call, error) {
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
-	conn, err := dbus.ConnectSystemBus(dbus.WithContext(ctx))
+func (c *Client) call(ctx context.Context, method string, args ...any) (*dbus.Call, error) {
+	call, err := c.Client.Call(ctx, "Network", method, args...)
+	if errors.Is(err, device.ErrRefused) {
+		return nil, ErrRefused
+	}
 	if err != nil {
 		return nil, ErrUnavailable
 	}
-	defer conn.Close()
-	c := conn.Object(Destination, Path).CallWithContext(ctx, method, 0, args...)
-	if c.Err != nil {
-		// Error bodies may contain the submitted secret. Only fixed messages
-		// cross the HTTP boundary; neither requests nor errors are logged.
-		var e dbus.Error
-		if errors.As(c.Err, &e) {
-			switch e.Name {
-			case "org.freedesktop.DBus.Error.Failed", "org.freedesktop.DBus.Error.InvalidArgs", "org.freedesktop.DBus.Error.AccessDenied", "org.freedesktop.DBus.Error.NotSupported":
-				return nil, ErrRefused
-			}
-			if strings.HasPrefix(e.Name, "org.nabaztag.") {
-				return nil, ErrRefused
-			}
-		}
-		return nil, ErrUnavailable
-	}
-	return c, nil
+	return call, nil
 }
 
-func ReadStatus(ctx context.Context) (Status, error) {
-	c, err := call(ctx, "org.freedesktop.DBus.Properties.Get", Interface, "Status")
+func (c *Client) ReadStatus(ctx context.Context) (Status, error) {
+	reply, err := c.call(ctx, "org.freedesktop.DBus.Properties.Get", Interface, "Status")
 	if err != nil {
 		return Status{}, err
 	}
 	var v dbus.Variant
 	var s Status
-	if c.Store(&v) != nil {
+	if reply.Store(&v) != nil {
 		return s, ErrUnavailable
 	}
-	text, ok := v.Value().(string)
-	if !ok || json.Unmarshal([]byte(text), &s) != nil {
+	if v.Store(&s) != nil {
 		return Status{}, ErrUnavailable
 	}
 	return s, nil
 }
 
-func Read(ctx context.Context) (Snapshot, error) {
-	c, err := call(ctx, "org.freedesktop.DBus.Properties.GetAll", Interface)
+func (c *Client) Read(ctx context.Context) (Snapshot, error) {
+	reply, err := c.call(ctx, "org.freedesktop.DBus.Properties.GetAll", Interface)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	var properties map[string]dbus.Variant
-	if c.Store(&properties) != nil {
+	if reply.Store(&properties) != nil {
 		return Snapshot{}, ErrUnavailable
 	}
 	var s Snapshot
 	for name, dst := range map[string]any{"Status": &s.Status, "Networks": &s.Networks, "Profiles": &s.Profiles} {
-		v, ok := properties[name].Value().(string)
-		if !ok || json.Unmarshal([]byte(v), dst) != nil {
+		v, ok := properties[name]
+		if !ok || v.Store(dst) != nil {
 			return Snapshot{}, ErrUnavailable
 		}
 	}
 	return s, nil
 }
 
-func Scan(ctx context.Context) error { _, err := call(ctx, Interface+".Scan"); return err }
-func Reserve(ctx context.Context, token string) (string, error) {
-	c, err := call(ctx, Interface+".Reserve", token)
+func (c *Client) Scan(ctx context.Context) error {
+	_, err := c.call(ctx, Interface+".Scan")
+	return err
+}
+func (c *Client) Reserve(ctx context.Context, token string) (string, error) {
+	reply, err := c.call(ctx, Interface+".Reserve", token)
 	if err != nil {
 		return "", err
 	}
 	var value string
-	if c.Store(&value) != nil || value == "" {
+	if reply.Store(&value) != nil || value == "" {
 		return "", ErrUnavailable
 	}
 	return value, nil
 }
-func Authorized(ctx context.Context, token string) (bool, error) {
-	c, err := call(ctx, Interface+".Authorized", token)
+func (c *Client) Authorized(ctx context.Context, token string) (bool, error) {
+	reply, err := c.call(ctx, Interface+".Authorized", token)
 	if err != nil {
 		return false, err
 	}
 	var value bool
-	if c.Store(&value) != nil {
+	if reply.Store(&value) != nil {
 		return false, ErrUnavailable
 	}
 	return value, nil
 }
-func Release(ctx context.Context, token string) error {
-	_, err := call(ctx, Interface+".Release", token)
+func (c *Client) Release(ctx context.Context, token string) error {
+	_, err := c.call(ctx, Interface+".Release", token)
 	return err
 }
-func Connect(ctx context.Context, ssid SSID, security, password, uuid, token string) (uint64, error) {
-	c, err := call(ctx, Interface+".Connect", []byte(ssid), security, password, uuid, token)
+func (c *Client) Connect(ctx context.Context, ssid SSID, security, password, uuid, token string) (uint64, error) {
+	reply, err := c.call(ctx, Interface+".Connect", []byte(ssid), security, password, uuid, token)
 	if err != nil {
 		return 0, err
 	}
 	var id uint64
-	if c.Store(&id) != nil || id == 0 {
+	if reply.Store(&id) != nil || id == 0 {
 		return 0, ErrUnavailable
 	}
 	return id, nil
 }
-func Cancel(ctx context.Context, id uint64) error {
-	_, err := call(ctx, Interface+".Cancel", id)
+func (c *Client) Cancel(ctx context.Context, id uint64) error {
+	_, err := c.call(ctx, Interface+".Cancel", id)
 	return err
 }
-func Forget(ctx context.Context, uuid string) error {
-	_, err := call(ctx, Interface+".Forget", uuid)
+func (c *Client) Forget(ctx context.Context, uuid string) error {
+	_, err := c.call(ctx, Interface+".Forget", uuid)
 	return err
+}
+
+// Guard returns an FD whose lifetime covers the application commit. The daemon
+// checks generation under the same exclusive lock used by every radio mutation.
+func (c *Client) Guard(ctx context.Context, generation string) (*os.File, error) {
+	reply, err := c.call(ctx, "AcquireGuard", generation)
+	if err != nil {
+		return nil, err
+	}
+	var fd dbus.UnixFD
+	if reply.Store(&fd) != nil || fd < 0 {
+		return nil, ErrUnavailable
+	}
+	return os.NewFile(uintptr(fd), "device-core-network-guard"), nil
 }

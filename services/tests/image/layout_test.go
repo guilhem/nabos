@@ -244,12 +244,12 @@ func TestPolkitRule(t *testing.T) {
 	}
 	rules := read(t, filepath.Join(rootfsDir, "etc/polkit-1/rules.d/50-nabos.rules"))
 	decide := func(user, action string, details map[string]string) string {
-		js := `const polkit = { Result: { YES: "yes", NOT_HANDLED: "not_handled" }, rules: [],
+		js := `const polkit = { Result: { YES: "yes", NO: "no", NOT_HANDLED: "not_handled" }, rules: [],
                   addRule(f) { this.rules.push(f); } };
 ` + rules + fmt.Sprintf(`
 const details = %s;
 const action = { id: %s, lookup: (k) => details[k] };
-console.log(polkit.rules[0](action, { user: %s }));
+console.log(polkit.rules[0](action, { user: %s, system_unit: "device-core.service", no_new_privileges: true }));
 `, must(json.Marshal(details)), must(json.Marshal(action)), must(json.Marshal(user)))
 		return strings.TrimSpace(run(t, "", "node", "-e", js))
 	}
@@ -265,16 +265,16 @@ console.log(polkit.rules[0](action, { user: %s }));
 		{"nabos", manage, units("linux-voice-assistant.service", "start"), "yes"},
 		{"nabos", manage, units("ssh.service", "start"), "yes"},
 		{"nabos", manage, units("ssh.service", "stop"), "yes"},
-		{"nabos", manage, units("ssh.service", "restart"), "not_handled"},
-		{"nabos", manage, units("ssh.service", "enable"), "not_handled"},
+		{"nabos", manage, units("ssh.service", "restart"), "no"},
+		{"nabos", manage, units("ssh.service", "enable"), "no"},
 		{"nobody", manage, units("ssh.service", "start"), "not_handled"},
-		{"nabos", manage, units("linux-voice-assistant.service", "enable"), "not_handled"},
+		{"nabos", manage, units("linux-voice-assistant.service", "enable"), "no"},
 		{"nabos", "org.freedesktop.systemd1.manage-unit-files", nil, "not_handled"},
 		{"nabos", "org.freedesktop.timedate1.set-time", nil, "yes"},
 		{"nabos", "org.freedesktop.timedate1.set-ntp", nil, "not_handled"},
 		{"nabos", manage, units("systemd-timesyncd.service", "start"), "yes"},
 		{"nabos", manage, units("systemd-timesyncd.service", "stop"), "yes"},
-		{"nabos", manage, units("systemd-timesyncd.service", "restart"), "not_handled"},
+		{"nabos", manage, units("systemd-timesyncd.service", "restart"), "no"},
 		{"nobody", "org.freedesktop.login1.reboot", nil, "not_handled"},
 	} {
 		if got := decide(c.user, c.action, c.details); got != c.want {
@@ -294,11 +294,12 @@ const polkit = { Result: { YES: 'yes', NO: 'no', NOT_HANDLED: 'not_handled' },
 ` + rules + `
 const decide = (suffix, subject) => polkit.rules[0](
   {id: 'org.freedesktop.NetworkManager.' + suffix}, subject);
-const core = {user: 'nabos', system_unit: 'nab-core.service', no_new_privileges: true};
+const core = {user: 'nabos', system_unit: 'device-core.service', no_new_privileges: true};
 for (const action of ['network-control', 'wifi.scan', 'wifi.share.open',
                      'settings.modify.system', 'checkpoint-rollback']) {
   assert.equal(decide(action, core), 'yes');
   assert.equal(decide(action, {...core, system_unit: 'nab-service.service'}), 'no');
+  assert.equal(decide(action, {...core, system_unit: 'nab-core.service'}), 'no');
   assert.equal(decide(action, {...core, system_unit: 'user@1000.service'}), 'no');
   assert.equal(decide(action, {...core, no_new_privileges: false}), 'no');
   assert.equal(decide(action, {...core, user: 'nobody'}), 'not_handled');

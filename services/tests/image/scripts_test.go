@@ -230,6 +230,8 @@ const (
 
 // healthCase leaves fields empty for a healthy slot A with attempts left.
 type healthCase struct {
+	deviceUnready       bool
+	deviceInactive      bool
 	slot                string
 	healthyAfter        int
 	own, other, otherFS string
@@ -285,7 +287,8 @@ func checkHealth(t *testing.T, c healthCase) (string, []string, string) {
 		cases += k + ") echo \"" + v + "\";; "
 	}
 	fake := newFakes(t, tmp, map[string]string{
-		"systemctl": "exit 0",
+		"systemctl": fmt.Sprintf(`[ "$*" != "is-active --quiet device-core.service" ] || [ %t = false ]`, c.deviceInactive),
+		"busctl":    fmt.Sprintf(`[ "$*" = "--system --timeout=5 get-property io.github.guilhem.DeviceCore1 /io/github/guilhem/DeviceCore1 io.github.guilhem.DeviceCore1.Manager Ready" ] || exit 1; echo 'b %t'`, !c.deviceUnready),
 		"curl":      fmt.Sprintf("n=$(($(cat %s) + 1)); echo $n > %s; [ $n -gt %d ]", counter, counter, c.healthyAfter),
 		// runuser -u nabos -- env ... pactl list KIND
 		"runuser": `[ "$1 $2 $3" = "-u nabos --" ] || exit 1; shift 3; exec "$@"`,
@@ -350,6 +353,13 @@ func TestHealth(t *testing.T) {
 			t.Errorf("marker %q", marker)
 		}
 	})
+	for _, c := range []healthCase{{deviceUnready: true}, {deviceInactive: true}} {
+		check(fmt.Sprintf("device-core inactive=%t unready=%t", c.deviceInactive, c.deviceUnready), func(t *testing.T) {
+			_, calls, _ := checkHealth(t, c)
+			confirmed(t, calls, false)
+			rebooted(t, calls, true)
+		})
+	}
 	check("failed mark-good leaves no verdict", func(t *testing.T) {
 		_, calls, marker := checkHealth(t, healthCase{raucFails: true})
 		confirmed(t, calls, true)

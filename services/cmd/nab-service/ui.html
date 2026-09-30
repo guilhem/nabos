@@ -70,15 +70,16 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <section><h2>Heure</h2><p>{{template "clock" .Data.Clock}}</p>
 {{if ne .Data.Clock "ntp"}}<form method="post" action="/clock"><label>Date et heure <input type="datetime-local" name="now" value="{{.Data.Now}}" required></label>
 <button>Régler l'heure</button></form><p>Le lapin n'a pas d'horloge sauvegardée par pile : sans Internet, l'heure réglée à la main vaut jusqu'au prochain redémarrage.</p>{{end}}</section>
-<form method="post" action="/settings">
+{{if .System}}<form method="post" action="/settings/system"><input type="hidden" name="revision" value="{{.Revision}}">
 <section><h2>Général</h2>
-<label>Langue <select name="locale">{{range .Data.Locales}}<option{{if eq . $.S.Locale}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-<label>Fuseau horaire <input name="timezone" value="{{.S.Timezone}}" required></label>
-<label>Volume <input type="range" name="volume" min="0" max="100" step="5" value="{{.S.Volume}}"></label>
-<p>Ce réglage réduit le niveau choisi avec la molette et revient à 100 % au démarrage.</p>
+<label>Langue <select name="locale">{{range .Data.Locales}}<option{{if eq . $.System.Locale}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+<label>Fuseau horaire <input name="timezone" value="{{.System.Timezone}}" required></label>
+<label>Volume <input type="range" name="volume" min="0" max="100" step="5" value="{{.System.Volume}}"></label>
+<p>Ce réglage réduit le niveau choisi avec la molette.</p>
 <p>Recherche et installation des nouvelles versions : <a href="/updates">Mises à jour</a>.</p>
 {{if .Data.Voice}}<label><input type="checkbox" name="voice"{{if .Data.VoiceOn}} checked{{end}}> Assistant vocal (Linux Voice Assistant, via Home Assistant)</label>{{end}}
-</section>
+</section><button>Enregistrer les réglages système</button></form>{{else}}<p role="alert">{{.SystemError}}</p>{{end}}
+<form method="post" action="/settings/application">
 <section><h2>Horloge et sommeil</h2>
 <label><input type="checkbox" name="chime"{{if .S.Clock.Chime}} checked{{end}}> Annoncer les heures</label>
 <label><input type="checkbox" name="sleep_sounds"{{if .S.Clock.SleepSounds}} checked{{end}}> Sons au coucher et au réveil</label>
@@ -115,6 +116,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <p>Connexion avec <code>ssh nabos@nabaztag.local</code>, par clé uniquement. Le compte <code>nabos</code> dispose de <code>sudo</code> sans mot de passe pour administrer le système.</p>
 {{if .Data.SSHError}}<p class="err">Impossible de lire les clés SSH : {{.Data.SSHError}}</p>{{else}}
 <form method="post" action="/settings/ssh">
+<input type="hidden" name="ssh_revision" value="{{.SSHRevision}}">
 <label for="ssh-keys">Clés publiques SSH — une par ligne</label>
 <textarea id="ssh-keys" name="authorized_keys" rows="5" maxlength="65536" spellcheck="false" aria-describedby="ssh-help">{{.Data.SSHKeys}}</textarea>
 <p id="ssh-help">Collez le contenu de votre fichier <code>.pub</code>, jamais votre clé privée. Videz le champ pour désactiver les nouvelles connexions SSH. Les sessions déjà ouvertes restent actives.</p>
@@ -129,7 +131,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <section><h2>Système</h2>{{with .Data.Status}}<table>
 <tr><td>Version installée</td><td>{{.Current}}</td></tr>
 <tr><td>État</td><td role="status">{{$.Data.StateLabel}}{{if .Target}} — {{.Target}}{{end}}</td></tr>
-{{if not .Checked.IsZero}}<tr><td>Dernière recherche réussie</td><td>{{.Checked.Format "02/01/2006 15:04 MST"}}</td></tr>{{end}}
+{{if .Checked}}<tr><td>Dernière recherche réussie</td><td>{{date .Checked}}</td></tr>{{end}}
 </table>
 {{if or (eq .State "downloading") (eq .State "installing")}}<p><progress aria-label="Progression de la mise à jour" max="100" value="{{.Progress}}"></progress> {{.Progress}} %</p>{{end}}
 {{if .Checking}}<p role="status">Recherche des versions…</p>{{end}}
@@ -139,7 +141,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{if .Suspended}}<p class="err">Installation automatique suspendue. {{if .RetryRequired}}Utilisez « Réessayer » pour reprendre manuellement.{{else}}Installez d’abord une version publiée pour activer l’automatique.{{end}}</p>{{end}}
 {{if .LastResult}}<p>Dernier résultat : {{.LastResult}}</p>{{end}}
 {{end}}
-{{if and .Data.LastError (ne .Data.LastError .Data.Status.Error)}}<p class="err" role="alert">{{.Data.LastError}}</p>{{end}}
+{{if .Data.LastError}}<p class="err" role="alert">{{.Data.LastError}}</p>{{end}}
 {{if .Data.Waiting}}<p>{{.Data.Waiting}}</p>{{end}}
 {{if .Data.Configured}}
 <form method="post" action="/updates/check"><button{{if or .Data.Busy .Data.Status.Checking}} disabled{{end}}>Vérifier maintenant</button></form>
@@ -147,22 +149,22 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{else}}<p>Les mises à jour ne sont pas configurées sur cette image.</p>{{end}}
 <p>La nouvelle version s'installe sur la partition inactive. Si elle ne démarre pas correctement, le lapin revient tout seul à la version précédente.</p></section>
 {{if .Data.Configured}}
-<section><h2>Préférences</h2><form method="post" action="/updates/settings">
+{{if .System}}<section><h2>Préférences</h2><form method="post" action="/updates/settings"><input type="hidden" name="revision" value="{{.Revision}}">
 <label>Mode <select name="mode">
-<option value="manual"{{if not .S.AutoCheck}} selected{{end}}>Vérifier à la demande</option>
-<option value="notify"{{if and .S.AutoCheck (not .S.Updates.Automatic)}} selected{{end}}>Proposer les mises à jour chaque jour</option>
-<option value="auto"{{if .S.Updates.Automatic}} selected{{end}}>Installer automatiquement</option>
+<option value="manual"{{if not .System.AutoCheck}} selected{{end}}>Vérifier à la demande</option>
+<option value="notify"{{if and .System.AutoCheck (not .System.Updates.Automatic)}} selected{{end}}>Proposer les mises à jour chaque jour</option>
+<option value="auto"{{if .System.Updates.Automatic}} selected{{end}}>Installer automatiquement</option>
 </select></label>
-<label>Canal <select name="channel"><option value="stable"{{if eq .S.Updates.Channel "stable"}} selected{{end}}>Stable</option><option value="test"{{if eq .S.Updates.Channel "test"}} selected{{end}}>Test : stables et préversions</option></select></label>
+<label>Canal <select name="channel"><option value="stable"{{if eq .System.Updates.Channel "stable"}} selected{{end}}>Stable</option><option value="test"{{if eq .System.Updates.Channel "test"}} selected{{end}}>Test : stables et préversions</option></select></label>
 <p>Le canal choisi s’applique aussi aux installations automatiques. Les préversions sont destinées aux essais.</p>
-<label>Début du créneau <input type="time" name="start" value="{{hm .S.Updates.Start}}" required></label>
-<label>Fin du créneau <input type="time" name="end" value="{{hm .S.Updates.End}}" required></label>
-<p>Heure du lapin : {{.S.Timezone}}. En mode automatique, installation et redémarrage attendent ce créneau et la fin des lectures ou interactions.</p>
+<label>Début du créneau <input type="time" name="start" value="{{hm .System.Updates.Start}}" required></label>
+<label>Fin du créneau <input type="time" name="end" value="{{hm .System.Updates.End}}" required></label>
+<p>Heure du lapin : {{.System.Timezone}}. En mode automatique, installation et redémarrage attendent ce créneau et la fin des lectures ou interactions.</p>
 <button>Enregistrer les préférences</button></form></section>
-<section><h2>Nouvelles versions</h2>
+{{end}}<section><h2>Nouvelles versions</h2>
 {{range .Data.Releases}}
 <article><h3>{{.Tag}} — {{if .Prerelease}}Test{{else}}Stable{{end}}</h3>
-{{if not .Published.IsZero}}<p>Publiée le {{.Published.Format "02/01/2006"}}</p>{{end}}
+{{if .Published}}<p>Publiée le {{date .Published}}</p>{{end}}
 {{if .Notes}}<details><summary>Notes de publication</summary><pre style="white-space:pre-wrap">{{.Notes}}</pre></details>{{end}}
 {{if .Blocked}}<p class="err">Exclue de l’automatique : {{.Blocked}}</p>{{end}}
 {{if .Ready}}

@@ -1,4 +1,4 @@
-// Run with NABOS_INTEGRATION=1. Requires cargo, Mosquitto and its pub/sub tools.
+// Run with NABOS_INTEGRATION=1 and DEVICE_CORE_BIN. Requires D-Bus, cargo and Mosquitto.
 // NAB_CORE_BIN accepts a binary path or a command line (for example an emulator);
 // without it, cargo builds core with --locked. CARGO_TARGET_DIR, MOSQUITTO,
 // MOSQUITTO_PUB and MOSQUITTO_SUB override the build directory and MQTT tools.
@@ -281,13 +281,40 @@ func TestPynabMQTTIntegration(t *testing.T) {
 		}
 	}()
 	time.Sleep(200 * time.Millisecond) // let the subscriber attach before starting the core
-	coreEnv := []string{"NABOS_MQTT_PORT=" + strconv.Itoa(port), "NABOS_SOUNDS_DIRS=" + filepath.Join(assets, "sounds"),
-		"NABOS_CHOREOGRAPHIES_DIRS=" + filepath.Join(assets, "choreographies"), "NABOS_SIM_AUDIO_MS=2500"}
-	coreProcess := h.start(t, "core", append(core, "--simulate"), coreEnv...)
-	a, err := NewApp(Env{MQTTHost: "127.0.0.1", MQTTPort: port, DataDir: t.TempDir(), SoundsDirs: []string{filepath.Join(assets, "sounds")}, TimesyncFile: "none"})
+	privateBus := exec.Command("dbus-daemon", "--session", "--nofork", "--print-address=1")
+	busOut, err := privateBus.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := privateBus.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { privateBus.Process.Kill(); privateBus.Wait() })
+	address, err := bufio.NewReader(busOut).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	address = strings.TrimSpace(address)
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", address)
+	h.env = append(h.env, "DBUS_SYSTEM_BUS_ADDRESS="+address)
+	deviceBin := os.Getenv("DEVICE_CORE_BIN")
+	if deviceBin == "" {
+		t.Fatal("set DEVICE_CORE_BIN to the current device-core binary")
+	}
+	data := t.TempDir()
+	h.start(t, "device", append(pynabCommandLine(deviceBin), "--simulate"),
+		"DEVICE_CORE_BUS_ADDRESS="+address, "DEVICE_CORE_DATA_DIR="+data,
+		"DEVICE_CORE_NETWORK_GUARD="+filepath.Join(data, "network.lock"),
+		"DEVICE_CORE_MAINTENANCE_UNITS=", "DEVICE_CORE_AUDIO_ROOTS="+filepath.Join(assets, "sounds"),
+		"DEVICE_CORE_SIM_AUDIO_MS=2500")
+	coreEnv := []string{"NABOS_DEVICE_BUS_ADDRESS=" + address, "NABOS_MQTT_PORT=" + strconv.Itoa(port), "NABOS_SOUNDS_DIRS=" + filepath.Join(assets, "sounds"),
+		"NABOS_CHOREOGRAPHIES_DIRS=" + filepath.Join(assets, "choreographies")}
+	coreProcess := h.start(t, "core", append(core, "--simulate"), coreEnv...)
+	a, err := NewApp(Env{MQTTHost: "127.0.0.1", MQTTPort: port, DataDir: t.TempDir(), SoundsDirs: []string{filepath.Join(assets, "sounds")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.device.Close)
 	ctx, stop := context.WithCancel(context.Background())
 	a.ctx = ctx
 	go a.eventLoop(ctx)

@@ -22,9 +22,9 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/config"
+	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/network"
 	"github.com/guilhem/nabos/services/internal/pynab"
-	"github.com/guilhem/nabos/services/internal/system"
 	"github.com/guilhem/nabos/services/internal/web"
 )
 
@@ -33,8 +33,23 @@ var uiFS embed.FS
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"ssid64": func(s network.SSID) string { return base64.StdEncoding.EncodeToString(s) },
-	"hm":     func(h config.HM) string { return fmt.Sprintf("%02d:%02d", h.Hour, h.Min) },
-	"json":   func(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) },
+	"hm": func(value any) string {
+		switch h := value.(type) {
+		case config.HM:
+			return fmt.Sprintf("%02d:%02d", h.Hour, h.Min)
+		case device.HM:
+			return fmt.Sprintf("%02d:%02d", h.Hour, h.Min)
+		}
+		return ""
+	},
+	"date": func(raw string) string {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return raw
+		}
+		return t.Format("02/01/2006 15:04 MST")
+	},
+	"json": func(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) },
 	"days": func() []string {
 		return []string{"Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"}
 	},
@@ -46,12 +61,22 @@ type page struct {
 	Title, Flash, Error string
 	Auth                bool
 	App                 *App
+	System              *device.Settings
+	Revision            string
+	SSHRevision         string
+	SystemError         error
 	S                   config.Settings
 	Data                map[string]any
 }
 
 func (a *App) render(w http.ResponseWriter, r *http.Request, name, title string, data map[string]any) {
 	p := page{Title: title, App: a, Auth: a.auth.Valid(r), S: a.store.Get(), Data: data, Flash: r.URL.Query().Get("ok"), Error: r.URL.Query().Get("err")}
+	p.SSHRevision, _ = data["SSHRevision"].(string)
+	revision, settings, err := a.device.ReadConfig(r.Context())
+	p.Revision, p.SystemError = revision, err
+	if err == nil {
+		p.System = &settings
+	}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, name, p); err != nil {
 		slog.Error("template", "page", name, "err", err)
@@ -95,7 +120,7 @@ func (a *App) routes() http.Handler {
 			back(w, r, "/setup", errors.New("les mots de passe diffèrent"), "")
 			return
 		}
-		tok, err := a.auth.Setup(r.FormValue("password"))
+		tok, err := a.setupAdmin(r)
 		if err != nil {
 			back(w, r, "/setup", err, "")
 			return
@@ -121,12 +146,13 @@ func (a *App) routes() http.Handler {
 	m.HandleFunc("POST /action", a.action)
 	m.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
 		_, clk := a.clockQuality()
-		keys, sshErr := a.readSSHKeys()
+		sshRevision, keys, sshErr := a.readSSHKeys()
 		a.render(w, r, "settings", "Réglages", map[string]any{"Locales": locales, "Voice": a.voiceSupported(), "VoiceOn": a.voiceEnabled(),
-			"SSHKeys": keys, "SSHError": sshErr,
-			"Clock": clk, "Now": time.Now().In(a.location()).Format("2006-01-02T15:04")})
+			"SSHRevision": sshRevision, "SSHKeys": keys, "SSHError": sshErr,
+			"Clock": clk, "Now": a.clockNow().In(a.location()).Format("2006-01-02T15:04")})
 	})
-	m.HandleFunc("POST /settings", a.saveSettings)
+	m.HandleFunc("POST /settings/application", a.saveSettings)
+	m.HandleFunc("POST /settings/system", a.saveSystemSettings)
 	m.HandleFunc("POST /settings/ssh", a.saveSSHKeys)
 	a.wifiRoutes(m)
 	a.serviceRoutes(m)
@@ -191,10 +217,11 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Core": core, "Online": online, "MQTT": connected, "Network": a.network,
 		"Forecast": a.forecast, "WeatherError": a.wxErr, "HA": a.ha.Connected(), "HAError": a.haErr,
-		"Voice": a.voiceEnabled(), "Recovered": a.store.Recovered, "Version": a.env.Version,
-		"Clock": clk, "Now": time.Now().In(a.location()).Format("15:04"),
+		"Recovered": a.store.Recovered, "Version": a.env.Version, "Clock": clk,
 	}
 	a.mu.Unlock()
+	data["Voice"] = a.voiceEnabled()
+	data["Now"] = a.clockNow().In(a.location()).Format("15:04")
 	data["Update"] = a.proposedUpdate()
 	a.render(w, r, "home", "Nabaztag", data)
 }
@@ -229,17 +256,10 @@ func (a *App) action(w http.ResponseWriter, r *http.Request) {
 		err = a.do(ctx, "play", map[string]any{"sequence": []any{map[string]any{"audio": []string{res}}}}, 5*time.Minute)
 		msg = "Son joué"
 	case "reboot":
-		a.mu.Lock()
-		updating := a.updateBusy
-		a.mu.Unlock()
-		if state := a.upd.Status().State; updating || state == "installing" || state == "downloading" {
-			err = errors.New("attendez la fin de la mise à jour")
-		} else {
-			err = a.rebootSystem()
-		}
+		err = a.device.Reboot(ctx)
 		msg = "Redémarrage…"
 	case "poweroff":
-		err = system.PowerOff()
+		err = a.device.PowerOff(ctx)
 		msg = "Extinction…"
 	default:
 		err = errors.New("action inconnue")
@@ -275,7 +295,13 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		place.Location, place.Latitude, place.Longitude = "", 0, 0
 		if loc != "" {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-			lang, _, _ := strings.Cut(f("locale"), "_")
+			settings, err := a.systemSettings(r.Context())
+			if err != nil {
+				cancel()
+				back(w, r, "/settings", err, "")
+				return
+			}
+			lang, _, _ := strings.Cut(settings.Locale, "_")
 			p, err := a.wx.Geocode(ctx, loc, lang)
 			cancel()
 			if err != nil {
@@ -287,10 +313,6 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := a.store.Update(func(s *config.Settings) error {
 		var err error
-		s.Locale, s.Timezone = f("locale"), strings.TrimSpace(f("timezone"))
-		if s.Volume, err = atoi(f("volume")); err != nil {
-			return err
-		}
 		c := &s.Clock
 		c.Chime, c.SleepSounds, c.PerDay = f("chime") == "on", f("sleep_sounds") == "on", f("per_day") == "on"
 		if c.Wakeup, err = parseHM(f("wakeup")); err != nil {
@@ -326,12 +348,6 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		back(w, r, "/settings", err, "")
 		return
 	}
-	if st.Volume != old.Volume {
-		a.applyVolume(r.Context())
-	}
-	if st.Locale != old.Locale {
-		a.publishSettings(r.Context())
-	}
 	if st.Weather != old.Weather {
 		kick(a.weatherKick)
 		kick(a.airKick)
@@ -340,12 +356,6 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		a.setHAErr(a.ha.Start(st.HomeAssistant))
 	}
 	kick(a.clockKick)
-	if a.voiceSupported() {
-		if err := a.SetVoice(f("voice") == "on"); err != nil {
-			back(w, r, "/settings", fmt.Errorf("assistant vocal : %v", err), "")
-			return
-		}
-	}
 	back(w, r, "/settings", nil, "Réglages enregistrés")
 }
 
@@ -487,4 +497,26 @@ func (a *App) uploadSound(w http.ResponseWriter, r *http.Request) {
 		os.Remove(tmp.Name())
 	}
 	back(w, r, "/sounds", err, "Son ajouté")
+}
+
+func (a *App) saveSystemSettings(w http.ResponseWriter, r *http.Request) {
+	revision, settings, err := a.device.ReadConfig(r.Context())
+	if err == nil && revision != r.FormValue("revision") {
+		err = errors.New("réglages système modifiés, rechargez la page")
+	}
+	if err == nil {
+		settings.Locale, settings.Timezone = r.FormValue("locale"), strings.TrimSpace(r.FormValue("timezone"))
+		volume, parseErr := strconv.ParseUint(r.FormValue("volume"), 10, 32)
+		err = parseErr
+		if err == nil {
+			settings.Volume = uint32(volume)
+			settings.VoiceEnabled = r.FormValue("voice") == "on"
+			_, err = a.device.UpdateConfig(r.Context(), revision, settings)
+		}
+	}
+	if err == nil {
+		a.publishSettings(r.Context())
+		kick(a.clockKick)
+	}
+	back(w, r, "/settings", err, "Réglages système enregistrés")
 }

@@ -1,7 +1,7 @@
 [Unit]
-Description=Nabaztag core (hardware and Wi-Fi)
-Wants=mosquitto.service user@1000.service NetworkManager.service
-After=mosquitto.service user@1000.service nabos-rfid.service tagtagtag-mixerd.service NetworkManager.service
+Description=Nabaztag core (hardware and choreography)
+Wants=mosquitto.service user@1000.service device-core.service
+After=mosquitto.service user@1000.service nabos-rfid.service tagtagtag-mixerd.service device-core.service
 
 [Service]
 Type=exec
@@ -13,6 +13,9 @@ SupplementaryGroups=gpio video kmem audio
 AmbientCapabilities=CAP_SYS_RAWIO
 CapabilityBoundingSet=CAP_SYS_RAWIO
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=/var/lib/nabos
+RuntimeDirectory=nab-core
+WorkingDirectory=/run/nab-core
 ExecStart=/usr/bin/nab-core
 Restart=always
 RestartSec=2

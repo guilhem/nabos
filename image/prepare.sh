@@ -212,7 +212,7 @@ finalize)
     systemctl mask "$service"
   done
   apt-get clean
-  rm -rf /var/lib/apt/lists/* /tmp/*
+  rm -rf /var/lib/apt/lists/* /tmp/* /root/.cache /root/.cargo /root/.rustup /root/go
   find /var/log -type f -exec truncate -s0 '{}' +
   # SSH keys, machine identity and random seeds belong to the device, not the image.
   rm -f /etc/ssh/ssh_host_* /etc/ssh/sshd_config.d/rename_user.conf /var/lib/systemd/random-seed

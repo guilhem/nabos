@@ -11,25 +11,18 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/config"
-	"github.com/guilhem/nabos/services/internal/network"
+	"github.com/guilhem/nabos/services/internal/web"
 )
 
 func serviceSession(t *testing.T, a *App) *http.Cookie {
 	t.Helper()
-	core := wifiTestBus(t)
-	core.mu.Lock()
-	core.status = network.Status{Mode: "client", Address: "192.0.2.10", Phase: "succeeded"}
-	core.mu.Unlock()
-	h := a.routes()
-	if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != http.StatusOK {
-		t.Fatal("setup page", w.Code, w.Body.String())
-	}
+	a.auth.ArmPresence()
 	freshDown(a)
-	w := serviceRequest(h, "POST", "/setup", url.Values{"password": {"carotte-42"}, "confirm": {"carotte-42"}}, nil)
-	if w.Header().Get("Location") != "/settings" || len(w.Result().Cookies()) != 1 {
-		t.Fatal("setup after fresh press", w.Code, w.Header())
+	token, err := a.auth.Setup("carotte-42")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return w.Result().Cookies()[0]
+	return &http.Cookie{Name: web.CookieName, Value: token}
 }
 
 func serviceRequest(h http.Handler, method, path string, values url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -167,7 +160,7 @@ func TestAssociateLegacyLockedTagWithoutWritingHardware(t *testing.T) {
 	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "ok=") {
 		t.Fatalf("association: %d %s", w.Code, w.Header().Get("Location"))
 	}
-	reopened, err := config.Open(filepath.Join(a.env.DataDir, "config.json"))
+	reopened, err := config.Open(filepath.Join(a.env.DataDir, "application.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

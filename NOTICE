@@ -19,6 +19,12 @@ NabOS's repository, build, runtime and update infrastructure.
 
 External components
 
+device-core is an independent GPL-3.0-only Rust/Linux service, pinned by
+repository, commit archive and SHA-256 in image/sources.lock.json. Its LICENSE
+and NOTICE are installed under /usr/share/doc/device-core; its source, Cargo.lock
+and vendored dependencies belong to the archived build inputs, not the runtime
+filesystem.
+
 Drivers, rpi_ws281x, U-Boot, Linux Voice Assistant and their dependencies keep
 their respective licenses. Their pinned sources are listed in
 image/sources.lock.json; build input archives include the upstream sources.

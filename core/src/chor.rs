@@ -9,7 +9,7 @@ use crate::resources::Kind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const MIDI_LIST: [&str; 24] = [
+pub(crate) const MIDI_LIST: [&str; 24] = [
     "choreographies/1noteA4.mp3",
     "choreographies/1noteB5.mp3",
     "choreographies/1noteBb4.mp3",
@@ -127,6 +127,7 @@ pub struct Interp {
     directions: [bool; 2],
     palette: Palette,
     palette_colors: [usize; 4],
+    audio_error: Option<String>,
 }
 
 impl Interp {
@@ -139,6 +140,7 @@ impl Interp {
             directions: [false; 2],
             palette: [[0; 3]; 8],
             palette_colors: [0; 4],
+            audio_error: None,
         }
     }
 
@@ -195,7 +197,13 @@ impl Interp {
                     .res
                     .find(Kind::Sound, MIDI_LIST[fastrand::usize(..MIDI_LIST.len())])
                 {
-                    self.hw.player.start(Source::File(p));
+                    match self.hw.player.start(Source::File(p)).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            self.audio_error = Some(e);
+                            return None;
+                        }
+                    }
                 }
                 Some(i)
             }
@@ -219,7 +227,10 @@ impl Interp {
             }
             (Opcodes::Mtl, 19) => {
                 self.hw.ears.wait_idle().await;
-                self.hw.player.wait_done(&Cancel::never()).await;
+                if let Err(e) = self.hw.player.wait_current(&Cancel::never()).await {
+                    self.audio_error = Some(e);
+                    return None;
+                }
                 Some(i)
             }
             (Opcodes::Mtl, 20) => {
@@ -239,7 +250,12 @@ impl Interp {
         }
     }
 
-    pub async fn play_binary(&mut self, chor: &[u8], set: Opcodes, timescale: u32) {
+    pub async fn play_binary(
+        &mut self,
+        chor: &[u8],
+        set: Opcodes,
+        timescale: u32,
+    ) -> Result<(), String> {
         let mut index = if chor.len() >= 4 && chor[..4] == [1, 1, 1, 1] {
             4
         } else {
@@ -260,12 +276,13 @@ impl Interp {
             }
             match self.op(chor[index - 1], index, chor, set).await {
                 Some(i) => index = i,
-                None => return,
+                None => return self.audio_error.take().map_or(Ok(()), Err),
             }
         }
+        Ok(())
     }
 
-    async fn play_streaming(&mut self, palette: Option<usize>) {
+    async fn play_streaming(&mut self, palette: Option<usize>) -> Result<(), String> {
         let mut ear_chance: Option<u32> = None;
         loop {
             match ear_chance {
@@ -290,24 +307,24 @@ impl Interp {
                 .find(Kind::Choreography, "system/streaming/*.chor")
             else {
                 warn!("no streaming choreography found");
-                return;
+                return Ok(());
             };
             let Ok(chor) = std::fs::read(&file) else {
-                return;
+                return Ok(());
             };
             let tempo = 160 + fastrand::u32(0..=90);
             let loops = 3 + fastrand::u32(0..=17);
             self.palette = PALETTES[palette.unwrap_or_else(|| fastrand::usize(..PALETTES.len()))];
             self.palette_colors = std::array::from_fn(|_| fastrand::usize(0..8));
             for _ in 0..loops {
-                self.play_binary(&chor, Opcodes::Streaming, tempo).await;
+                self.play_binary(&chor, Opcodes::Streaming, tempo).await?;
             }
         }
     }
 }
 
 /// Play a choreography reference until it ends (streaming never ends).
-pub async fn play(hw: Arc<Hw>, reference: String) {
+pub async fn play(hw: Arc<Hw>, reference: String) -> Result<(), String> {
     let mut it = Interp::new(hw.clone());
     if let Some(rest) = reference.strip_prefix(STREAMING_URN) {
         let palette = rest
@@ -315,16 +332,16 @@ pub async fn play(hw: Arc<Hw>, reference: String) {
             .and_then(|n| n.parse::<usize>().ok())
             .map(|n| n & 7)
             .filter(|n| *n < PALETTES.len());
-        it.play_streaming(palette).await;
-        return;
+        return it.play_streaming(palette).await;
     }
     match hw
         .res
         .find(Kind::Choreography, &reference)
         .map(std::fs::read)
     {
-        Some(Ok(chor)) => it.play_binary(&chor, Opcodes::Mtl, 0).await,
+        Some(Ok(chor)) => return it.play_binary(&chor, Opcodes::Mtl, 0).await,
         Some(Err(e)) => warn!("choreography {reference}: {e}"),
         None => warn!("choreography {reference} not found"),
     }
+    Ok(())
 }

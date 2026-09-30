@@ -15,7 +15,7 @@ import (
 )
 
 func newAuth(t *testing.T) *Auth {
-	st, err := config.Open(filepath.Join(t.TempDir(), "config.json"))
+	st, err := config.Open(filepath.Join(t.TempDir(), "application.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

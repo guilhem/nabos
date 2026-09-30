@@ -1,0 +1,34 @@
+[Unit]
+Description=Linux device services (D-Bus)
+Wants=user@1000.service NetworkManager.service rauc.service
+After=systemd-tmpfiles-setup.service user@1000.service NetworkManager.service rauc.service
+
+[Service]
+Type=exec
+User=nabos
+Group=nabos
+Environment=HOME=/var/lib/nabos
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DEVICE_CORE_DATA_DIR=/data/device-core
+Environment=DEVICE_CORE_NETWORK_GUARD=/run/lock/device-core/network
+Environment=DEVICE_CORE_AUDIO_ROOTS=/usr/share/nabos/sounds:/data/nabos/media/sounds
+Environment=DEVICE_CORE_PRESENCE_UNIT=nab-core.service
+Environment=DEVICE_CORE_MAINTENANCE_UNITS=nab-core.service:nab-service.service
+Environment=DEVICE_CORE_HOTSPOT_PREFIX=Nabaztag-
+Environment=DEVICE_CORE_HOTSPOT_UUID=4e61624f-5300-4000-8000-000000000001
+Environment=DEVICE_CORE_BOOT_HEALTH=/run/nabos-boot-health
+EnvironmentFile=/etc/nabos/release.env
+RuntimeDirectory=device-core
+WorkingDirectory=/run/device-core
+ExecStart=/usr/bin/device-core
+Restart=always
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/data/device-core /var/lib/nabos /run/device-core /run/lock/device-core
+
+[Install]
+WantedBy=multi-user.target

@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"github.com/guilhem/nabos/services/internal/devicetest"
+	"golang.org/x/sys/unix"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -22,9 +24,14 @@ import (
 )
 
 const testProfile = "12345678-1234-1234-1234-123456789abc"
+
+var wifiFixtures = map[string]*wifiCore{}
+
 const coreLease = "only-the-core-and-go-know-this-lease"
 
 type wifiCore struct {
+	system                *devicetest.Fixture
+	guardPath             string
 	mu                    sync.Mutex
 	status                network.Status
 	reserved              bool
@@ -47,11 +54,11 @@ func (c *wifiCore) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 	if c.unavailable {
 		return nil, dbus.MakeFailedError(context.Canceled)
 	}
-	s, _ := json.Marshal(c.status)
+
 	return map[string]dbus.Variant{
-		"Status":   dbus.MakeVariant(string(s)),
-		"Networks": dbus.MakeVariant(`[{"ssid":[255,0,65],"strength":90,"security":"wpa-psk"},{"ssid":[87,105,70,105],"strength":80,"security":"open"}]`),
-		"Profiles": dbus.MakeVariant(`[{"uuid":"` + testProfile + `","ssid":[255,0,65]}]`),
+		"Status":   dbus.MakeVariant(c.status),
+		"Networks": dbus.MakeVariant([]network.Network{{SSID: network.SSID{255, 0, 65}, Strength: 90, Security: "wpa-psk"}, {SSID: network.SSID("WiFi"), Strength: 80, Security: "open"}}),
+		"Profiles": dbus.MakeVariant([]network.Profile{{UUID: testProfile, SSID: network.SSID{255, 0, 65}}}),
 	}, nil
 }
 func (c *wifiCore) Get(iface, name string) (dbus.Variant, *dbus.Error) {
@@ -102,7 +109,7 @@ func (c *wifiCore) Connect(ssid []byte, security, password, uuid, token string) 
 		c.mu.Lock()
 	}
 	if c.fail {
-		return 0, dbus.NewError("org.nabaztag.Core.Error.Refused", []any{password})
+		return 0, dbus.NewError("io.github.guilhem.DeviceCore1.Error.Refused", []any{password})
 	}
 	c.connections++
 	c.ssid, c.uuid, c.token, c.password = ssid, uuid, token, password
@@ -151,13 +158,14 @@ func wifiTestBus(t *testing.T) *wifiCore {
 	if _, err = bus.RequestName(network.Destination, dbus.NameFlagDoNotQueue); err != nil {
 		t.Fatal(err)
 	}
-	core := &wifiCore{status: network.Status{Mode: "hotspot", Address: hotspotAddress, Phase: "idle"}}
+	core := &wifiCore{system: devicetest.Attach(t, bus), guardPath: t.TempDir() + "/guard", status: network.Status{Mode: "hotspot", Generation: "network:1", Address: hotspotAddress, Phase: "idle"}}
 	if err = bus.Export(core, network.Path, network.Interface); err != nil {
 		t.Fatal(err)
 	}
 	if err = bus.Export(core, network.Path, "org.freedesktop.DBus.Properties"); err != nil {
 		t.Fatal(err)
 	}
+	wifiFixtures[os.Getenv("DBUS_SYSTEM_BUS_ADDRESS")] = core
 	return core
 }
 
@@ -295,7 +303,7 @@ func TestWifiBeforeAdminOnRealHotspot(t *testing.T) {
 	}
 	duringConnect := freshDown(a)
 	core.mu.Lock()
-	core.status.Phase = "succeeded"
+	core.status.Phase, core.status.Ready = "succeeded", true
 	core.mu.Unlock()
 	if w := request("GET", "/wifi/status", nil, cookie); w.Code != http.StatusForbidden {
 		t.Fatal("pre-admin operations admitted outside actual hotspot")
@@ -334,9 +342,9 @@ func TestWifiBeforeAdminOnRealHotspot(t *testing.T) {
 }
 
 func TestWifiAdminAuthAndDetachedConnection(t *testing.T) {
+	core := wifiTestBus(t)
 	a := testApp(t)
 	cookie := serviceSession(t, a)
-	core := wifiTestBus(t)
 	h := a.routes()
 	form := url.Values{"ssid": {"LAN"}, "security": {"wpa-psk"}, "password": {"wifi-secret-42"}, "token": {"forged"}}
 	for _, path := range []string{"/wifi/reserve", "/wifi/release", "/wifi/scan", "/wifi/connect", "/wifi/cancel", "/wifi/forget"} {
@@ -389,7 +397,7 @@ func TestSetupDisarmsOnNetworkAndServiceTransitions(t *testing.T) {
 	core := wifiTestBus(t)
 	a := testApp(t)
 	h := a.routes()
-	ready := network.Status{Mode: "client", Address: "192.0.2.10", Phase: "succeeded"}
+	ready := network.Status{Mode: "client", Ready: true, Generation: "network:1", Address: "192.0.2.10", Phase: "succeeded"}
 	setStatus := func(s network.Status, unavailable bool) {
 		core.mu.Lock()
 		core.status, core.unavailable = s, unavailable
@@ -402,8 +410,8 @@ func TestSetupDisarmsOnNetworkAndServiceTransitions(t *testing.T) {
 	}{
 		{"hotspot", network.Status{Mode: "hotspot", Address: hotspotAddress}, false},
 		{"reconnecting", network.Status{Mode: "reconnecting"}, false},
-		{"no-address", network.Status{Mode: "client", Phase: "succeeded"}, false},
-		{"connecting-with-address", network.Status{Mode: "client", Address: ready.Address, Phase: "connecting"}, false},
+		{"no-address", network.Status{Mode: "client", Generation: "network:1", Phase: "succeeded"}, false},
+		{"connecting-with-address", network.Status{Mode: "client", Ready: true, Generation: "network:1", Address: ready.Address, Phase: "connecting"}, false},
 		{"unavailable", network.Status{Mode: "unavailable"}, false},
 		{"dbus-error", ready, true},
 	} {
@@ -454,7 +462,7 @@ func TestSetupDisarmsOnNetworkAndServiceTransitions(t *testing.T) {
 func TestButtonPresenceRequiresFreshDownMetadata(t *testing.T) {
 	core := wifiTestBus(t)
 	core.mu.Lock()
-	core.status = network.Status{Mode: "client", Address: "192.0.2.10", Phase: "idle"}
+	core.status = network.Status{Mode: "client", Ready: true, Generation: "network:1", Address: "192.0.2.10", Phase: "idle"}
 	core.mu.Unlock()
 	a := testApp(t)
 	now := uint64(1<<53) + 1000 // Above JSON's exact floating-point integer range.
@@ -498,14 +506,14 @@ func TestWifiConnectDisarmsBeforeDBusAndStaysDisarmedOnError(t *testing.T) {
 	a := testApp(t)
 	h := a.routes()
 	core.mu.Lock()
-	core.status = network.Status{Mode: "client", Address: "192.0.2.10", Phase: "idle"}
+	core.status = network.Status{Mode: "client", Ready: true, Generation: "network:1", Address: "192.0.2.10", Phase: "idle"}
 	core.mu.Unlock()
 	if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
 		t.Fatal("open setup", w.Code)
 	}
 	freshDown(a)
 	core.mu.Lock()
-	core.status = network.Status{Mode: "hotspot", Address: hotspotAddress, Phase: "idle"}
+	core.status = network.Status{Mode: "hotspot", Generation: "network:1", Address: hotspotAddress, Phase: "idle"}
 	core.connectEntered, core.connectResume = make(chan struct{}), make(chan struct{})
 	core.fail = true
 	core.mu.Unlock()
@@ -579,5 +587,49 @@ func TestWifiHealthAndInputBoundary(t *testing.T) {
 		if _, _, _, _, err := wifiCandidate(r); err == nil {
 			t.Fatal("invalid Wi-Fi candidate accepted")
 		}
+	}
+}
+
+func (c *wifiCore) AcquireGuard(expected string) (dbus.UnixFD, *dbus.Error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if expected == "" || expected != c.status.Generation || !c.status.ClientReady() || c.status.Phase == "connecting" {
+		return 0, dbus.MakeFailedError(context.Canceled)
+	}
+	fd, err := unix.Open(c.guardPath, unix.O_CREAT|unix.O_RDONLY|unix.O_CLOEXEC, 0600)
+	if err != nil {
+		return 0, dbus.MakeFailedError(err)
+	}
+	if err = unix.Flock(fd, unix.LOCK_SH); err != nil {
+		unix.Close(fd)
+		return 0, dbus.MakeFailedError(err)
+	}
+	// The wire implementation duplicates SCM_RIGHTS descriptors. Close our
+	// descriptor after the send, retaining the client's duplicated shared lock.
+	time.AfterFunc(time.Second, func() { unix.Close(fd) })
+	return dbus.UnixFD(fd), nil
+}
+
+func TestSetupNetworkGenerationRequiresNewProof(t *testing.T) {
+	core := wifiTestBus(t)
+	core.mu.Lock()
+	core.status = network.Status{Mode: "client", Generation: "network:1", Ready: true, Address: "192.0.2.10", Phase: "idle"}
+	core.mu.Unlock()
+	a := testApp(t)
+	h := a.routes()
+	if w := serviceRequest(h, "GET", "/setup", nil, nil); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	freshDown(a)
+	core.mu.Lock()
+	core.status.Generation = "network:2"
+	core.mu.Unlock()
+	password := url.Values{"password": {"carotte-42"}, "confirm": {"carotte-42"}}
+	if w := serviceRequest(h, "POST", "/setup", password, nil); !strings.Contains(w.Header().Get("Location"), "err=") || a.auth.Configured() {
+		t.Fatal("old network proof committed administrator", w.Header())
+	}
+	freshDown(a)
+	if w := serviceRequest(h, "POST", "/setup", password, nil); w.Header().Get("Location") != "/settings" {
+		t.Fatal("fresh proof rejected", w.Header())
 	}
 }

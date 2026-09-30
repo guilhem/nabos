@@ -1,13 +1,17 @@
 # Network D-Bus API
 
-The system bus service `org.nabaztag.Core`, object `/org/nabaztag/Core/Network`,
-implements `org.nabaztag.Core.Network1`. The production policy admits only the
+The independent system bus service `io.github.guilhem.DeviceCore1`, object
+`/io/github/guilhem/DeviceCore1/Network`, implements
+`io.github.guilhem.DeviceCore1.Network`. nab-core and nab-service are direct
+D-Bus clients; nab-core has no NetworkManager controller. The production policy admits only the
 NabOS service user; the HTTP service enforces administrator authentication.
 NetworkManager owns the radio, connection profiles and secrets.
 
-Read-only properties `Status`, `Networks`, `Profiles` are JSON strings. The
-`Changed(status: s)` signal reports progress; clients may also poll properties.
-Status contains `mode` (unavailable, reconnecting, hotspot, client), `address`,
+Read-only properties are typed: `Status:(ssbsaystss)`,
+`Networks:a(ayys)` and `Profiles:a(say)`. `Changed(status:(ssbsaystss))` and
+PropertiesChanged report progress; clients may also poll properties.
+Status field order is `mode` (unavailable, reconnecting, hotspot, client),
+`generation` (opaque incarnation plus counter), `ready` (boolean), `address`,
 `ssid` (byte array), `profile_uuid`, `attempt_id` (unsigned integer), `phase`
 (idle, connecting, succeeded, failed, cancelled), and `error` (safe error code).
 Networks contain `ssid` (byte array), `strength` (0–100), `security` (open,
@@ -68,4 +72,20 @@ be newer than the arming cutoff, not in the future, and less than five minutes
 old; missing metadata, other gestures, delayed old edges and duplicates cannot
 renew proof. Service restarts require opening setup and a new press.
 
-Simulation never connects to the system bus or claims this production name.
+`ReportPresence(monotonic_ns:t)` is D-Bus-only. The daemon resolves the actual
+sender from bus credentials and systemd, and accepts only `nab-core.service`
+configured through `DEVICE_CORE_PRESENCE_UNIT`. MQTT delivery alone does not
+prove presence to the Linux network controller. HTTP never exposes this method.
+
+`AcquireGuard(expected_generation:s)→h` checks a ready client connection and
+returns an already shared-flocked FD. Keep it open during the protected transfer
+or operation; closing the last duplicate releases the flock. All controller
+mutations, including scan and recovery, hold an exclusive flock. The lock is
+`/run/lock/device-core/network`, created by tmpfiles with no age or truncation,
+in a root-owned directory. It is outside RuntimeDirectory cleanup and cannot be
+replaced by the daemon. Surviving client FDs protect the same inode across daemon
+restarts; an old generation is rejected after a new incarnation starts.
+
+Simulation requires an explicit private bus and never invokes host
+NetworkManager. The old `org.nabaztag.Core` service and JSON property protocol
+are removed; no compatibility or migration is provided.

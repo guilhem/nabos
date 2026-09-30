@@ -70,10 +70,17 @@ func TestImageIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			copyFile(t, filepath.Join(imageDir, "test.sh"), filepath.Join(checkout, "image/test.sh"))
+			write(t, filepath.Join(checkout, "image/test-bus.sh"), `set -eu
+[ "$1" = "$TEST_PAYLOAD/inputs/test-bus" ]
+[ "$2" = "$(dirname "$(cat "$STATE/copy")")/test-bus" ]
+mkdir -p "$1" "$2"
+printf '%s\n' "$2"
+`)
 			write(t, filepath.Join(checkout, "build/iot/keep"), "another build")
 			for name, script := range map[string]string{
 				filepath.Join(payload, "src/uboot/scripts/config"):                        "exit 0",
 				filepath.Join(fixture, "usr/bin/nab-core"):                                "echo shipped-core",
+				filepath.Join(fixture, "usr/bin/device-core"):                             "echo shipped-device-core",
 				filepath.Join(fixture, "usr/bin/nab-service"):                             "echo shipped-service",
 				filepath.Join(fixture, "usr/bin/dtoverlay"):                               "exit 0",
 				filepath.Join(fixture, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"): "set -eu\n[ \"$1\" = --library-path ]\nshift 2\nexec \"$@\"",
@@ -154,7 +161,7 @@ case "$2" in
     [ "$3" = -G ]
     printf '%s\n' 'allowusers nabos' 'permitrootlogin no' 'authenticationmethods publickey' \
       'passwordauthentication no' 'kbdinteractiveauthentication no' 'usepam yes' \
-      'strictmodes yes' 'authorizedkeysfile /data/nabos/ssh/authorized_keys' ;;
+      'strictmodes yes' 'authorizedkeysfile /data/device-core/ssh/authorized_keys' ;;
   getent)
     [ "$3 $4" = 'passwd nabos' ]
     echo 'nabos:x:1000:1000::/var/lib/nabos:/bin/bash' ;;
@@ -177,6 +184,7 @@ touch "$out/u-boot"
 chmod 755 "$out/u-boot"`,
 				"go": `set -eu
 work=$(dirname "$(cat "$STATE/copy")")
+case "$PATH" in "$work/test-bus":*) ;; *) exit 1 ;; esac
 [ "$GOCACHE" = "$work/go-cache" ]
 [ "$GOMODCACHE" = "$work/go-modcache" ]
 [ "$TMPDIR" = "$work/tmp" ]
@@ -185,6 +193,7 @@ case "$*" in
     [ "$NABOS_TEST_ASSETS" = "$work/root/usr/share/nabos" ]
     [ "$("$NAB_CORE_BIN" --version)" = shipped-core ]
     [ "$("$NAB_SERVICE_BIN" --version)" = shipped-service ]
+    [ "$("$DEVICE_CORE_BIN" --version)" = shipped-device-core ]
     [ "$NABOS_IMAGE_BOOT" = "$work/boot" ]
     [ "$NABOS_VENDOR_DTBS" = "$work/root/boot/dtb" ]
     [ "$NABOS_IMAGE_OVERLAYS" = "$work/root/boot/overlays" ]
@@ -194,8 +203,8 @@ case "$*" in
   *) exit 1 ;;
 esac`,
 			})
-			r := execute(t, "", fake.env("NABOS_BUILD_NAMESPACE=", "ORIGINAL="+original, "STATE="+tmp,
-				"BOOT_FIXTURE="+boot, "ROOT_FIXTURE="+fixture, "KERNEL="+kernel,
+			r := execute(t, "", fake.env("GO=go", "NABOS_BUILD_NAMESPACE=", "ORIGINAL="+original, "STATE="+tmp,
+				"BOOT_FIXTURE="+boot, "ROOT_FIXTURE="+fixture, "KERNEL="+kernel, "TEST_PAYLOAD="+payload,
 				fmt.Sprintf("FAIL_TEST=%t", scenario.fail), fmt.Sprintf("CORRUPT=%t", scenario.corrupt)),
 				"bash", filepath.Join(checkout, "image/test.sh"), scenario.target, original, payload, expected)
 			calls := strings.Join(fake.calls(t), "\n")

@@ -4,6 +4,7 @@
 use crate::bus::{now, Bus};
 use crate::hw::leds::{Rgb, BOTTOM, NOSE};
 use crate::hw::{encode_tag_data, Cancel, CancelSource, Hw, HwEvent, TagEvent};
+use crate::maintenance::{self, Observation, Operation, Request};
 use crate::playback::{self, FUCHSIA, INFO_LOOP};
 use crate::protocol::{app_name, Action, Animation, Command, Rejection};
 use serde_json::{json, Value};
@@ -23,6 +24,8 @@ pub enum Input {
     Hw(HwEvent),
     JobDone(String, Outcome),
     EarsDetected(Option<u8>, Option<u8>),
+    Maintenance(Request),
+    MaintenanceObserved(Observation),
     Shutdown,
 }
 
@@ -68,6 +71,7 @@ pub struct Engine {
     network: String,
     seen: HashMap<String, u64>,
     ear_task: Option<JoinHandle<()>>,
+    maintenance: maintenance::State,
 }
 
 fn hex(b: &[u8]) -> String {
@@ -96,8 +100,8 @@ fn tag_json(t: &TagEvent) -> Value {
     v
 }
 
-async fn run_job(hw: Arc<Hw>, action: Action, cancel: Cancel) -> Outcome {
-    match action {
+pub(crate) async fn run_job(hw: Arc<Hw>, action: Action, cancel: Cancel) -> Outcome {
+    let result = match action {
         Action::Play { sequence, .. } => playback::play_sequence(hw, &sequence, &cancel).await,
         Action::Message {
             signature, body, ..
@@ -139,7 +143,11 @@ async fn run_job(hw: Arc<Hw>, action: Action, cancel: Cancel) -> Outcome {
                 }
             };
         }
-        _ => {}
+        _ => Ok(()),
+    };
+    if let Err(e) = result {
+        warn!("audio job failed: {e}");
+        return Outcome::Error("audio_failed");
     }
     if cancel.is_cancelled() {
         Outcome::Canceled
@@ -165,6 +173,7 @@ impl Engine {
             network: "ok".into(),
             seen: HashMap::new(),
             ear_task: None,
+            maintenance: maintenance::State::default(),
         }
     }
 
@@ -187,6 +196,30 @@ impl Engine {
                 Some(Input::Settings(v)) => self.settings(v),
                 Some(Input::Hw(ev)) => self.hardware(ev),
                 Some(Input::JobDone(id, out)) => self.job_done(id, out),
+                Some(Input::Maintenance(request)) => self.maintenance_request(request).await,
+                Some(Input::MaintenanceObserved(mut observation)) => {
+                    if observation.safe {
+                        if let Some(bus) = &observation.connection {
+                            if maintenance::authorize(bus, &observation.owner)
+                                .await
+                                .is_err()
+                            {
+                                observation.safe = false;
+                                observation.owner.clear();
+                            }
+                        } else {
+                            observation.safe = false;
+                        }
+                    }
+                    let blocked = self.maintenance.blocked();
+                    self.maintenance.observe(observation);
+                    if self.maintenance.blocked() {
+                        self.stop_bg();
+                    } else if blocked {
+                        self.refresh_bg();
+                        self.pump();
+                    }
+                }
                 Some(Input::EarsDetected(l, r)) => {
                     self.ears = (l.unwrap_or(self.ears.0), r.unwrap_or(self.ears.1));
                     self.bus.event("ears", json!({"left": l, "right": r}));
@@ -199,7 +232,9 @@ impl Engine {
         if let Some(j) = self.job.take() {
             j.handle.abort();
         }
-        self.hw.player.stop().await;
+        if let Err(e) = self.hw.player.stop_current().await {
+            warn!("audio shutdown failed: {e}");
+        }
         self.hw.leds.set_all([0, 0, 0]);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -275,6 +310,11 @@ impl Engine {
             return self.bus.result(Some(&cmd.id), "expired", None, None);
         }
         self.remember(&cmd.id, cmd.expires_at);
+        if self.maintenance.blocked()
+            && !matches!(cmd.action, Action::Gestalt | Action::Cancel { .. })
+        {
+            return self.fail(&cmd.id, "error", "maintenance");
+        }
         let id = cmd.id.clone();
         match cmd.action {
             Action::Sleep if self.state == State::Asleep => self.ok(&id, None),
@@ -347,7 +387,10 @@ impl Engine {
                 self.publish_state();
                 if self.state == State::Idle && self.job.is_none() {
                     let (hw, (l, r)) = (self.hw.clone(), self.ears);
-                    tokio::spawn(async move { hw.ears.move_to(l, r).await });
+                    if let Some(task) = self.ear_task.take() {
+                        task.abort();
+                    }
+                    self.ear_task = Some(tokio::spawn(async move { hw.ears.move_to(l, r).await }));
                 }
             }
             Action::Wakeup => {
@@ -406,6 +449,9 @@ impl Engine {
             HwEvent::EarMoved(ear) => {
                 let ear = if ear == 0 { "left" } else { "right" };
                 self.bus.event("ear_moved", json!({"ear": ear}));
+                if self.maintenance.blocked() {
+                    return;
+                }
                 if let Some(t) = self.ear_task.take() {
                     t.abort();
                 }
@@ -436,6 +482,13 @@ impl Engine {
             Outcome::Canceled => self.bus.result(Some(&id), "canceled", None, None),
             Outcome::Error(e) => self.fail(&id, "error", e),
         }
+        if self.maintenance.blocked() {
+            if self.state == State::Playing {
+                self.state = State::Idle;
+            }
+            self.publish_state();
+            return;
+        }
         if self.state == State::Asleep {
             self.publish_state();
             self.start_asleep(true);
@@ -446,7 +499,7 @@ impl Engine {
 
     /// Start the next runnable queued item, or go back to idle.
     fn pump(&mut self) {
-        if self.job.is_some() || self.state == State::Asleep {
+        if self.maintenance.blocked() || self.job.is_some() || self.state == State::Asleep {
             return;
         }
         let now = now();
@@ -499,9 +552,12 @@ impl Engine {
             q.id.clone(),
         );
         let handle = tokio::spawn(async move {
-            let out = run_job(hw.clone(), q.action, cancel).await;
+            let mut out = run_job(hw.clone(), q.action, cancel).await;
             if fb.load(Ordering::Relaxed) {
-                playback::abort_feedback(&hw).await;
+                if let Err(e) = playback::abort_feedback(&hw).await {
+                    warn!("abort feedback failed: {e}");
+                    out = Outcome::Error("audio_failed");
+                }
             }
             let _ = tx.send(Input::JobDone(id, out));
         });
@@ -536,6 +592,9 @@ impl Engine {
     }
 
     fn start_idle(&mut self, transition: bool, rfid_feedback: bool) {
+        if self.maintenance.blocked() {
+            return;
+        }
         self.stop_bg();
         let belly = match self.network.as_str() {
             "offline" => [255, 0, 0],
@@ -552,7 +611,9 @@ impl Engine {
         );
         self.bg = Some(tokio::spawn(async move {
             if rfid_feedback {
-                playback::rfid_feedback(hw.clone()).await;
+                if let Err(e) = playback::rfid_feedback(hw.clone()).await {
+                    warn!("RFID feedback failed: {e}");
+                }
             }
             if transition {
                 playback::move_ears_with_leds(&hw, FUCHSIA, l, r).await;
@@ -565,6 +626,9 @@ impl Engine {
     }
 
     fn start_asleep(&mut self, setup: bool) {
+        if self.maintenance.blocked() {
+            return;
+        }
         self.stop_bg();
         self.belly = None;
         let (hw, indicator) = (self.hw.clone(), self.indicator.clone());
@@ -574,6 +638,42 @@ impl Engine {
             }
             animations(&hw, indicator, Vec::new()).await;
         }));
+    }
+
+    async fn maintenance_request(&mut self, request: Request) {
+        if let Err(e) = maintenance::authorize(&request.connection, &request.owner).await {
+            let _ = request.reply.send(Err(e));
+            return;
+        }
+        let result = match request.operation {
+            Operation::Acquire(operation) => {
+                if self.job.is_some() {
+                    Err(zbus::fdo::Error::Failed("rabbit-busy".into()))
+                } else {
+                    let result = self.maintenance.acquire(request.owner, operation);
+                    if result.is_ok() {
+                        self.stop_bg();
+                        self.belly = None;
+                        if let Some(task) = self.ear_task.take() {
+                            task.abort();
+                        }
+                        if tokio::time::timeout(Duration::from_secs(2), self.hw.ears.wait_idle())
+                            .await
+                            .is_err()
+                        {
+                            let _ = request
+                                .reply
+                                .send(Err(zbus::fdo::Error::Failed("ears-busy".into())));
+                            return;
+                        }
+                    }
+                    result
+                }
+            }
+            Operation::Abort(operation) => self.maintenance.abort(&request.owner, &operation),
+            Operation::Release(token) => self.maintenance.release(&request.owner, &token),
+        };
+        let _ = request.reply.send(result);
     }
 }
 

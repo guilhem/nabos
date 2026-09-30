@@ -4,7 +4,7 @@ Logiciel libre pour les Nabaztag équipés d'une carte **TagTagTag 2019/2021** o
 
 [![Images](https://github.com/guilhem/nabos/actions/workflows/images.yml/badge.svg)](https://github.com/guilhem/nabos/actions/workflows/images.yml)
 
-NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et un bus MQTT 5 local. Le cœur matériel est en Rust ; l'interface, la configuration et les services sont en Go. Les réglages sont enregistrés atomiquement dans un fichier JSON versionné : aucun serveur de base de données n'est nécessaire.
+NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et un bus MQTT 5 local. `nab-core` garde le matériel et les chorégraphies en Rust. Le dépôt indépendant `device-core` fournit les services Linux en Rust : réseau, audio, configuration système, horloge, SSH, voix et mises à jour. `nab-core` et `nab-service` l'appellent directement par D-Bus ; Go garde l'interface et les applications. Les réglages système vivent dans `/data/device-core/settings.json`, les réglages applicatifs dans `/data/nabos/application.json`.
 
 Les outils de fabrication et les tests propres à NabOS sont aussi en Go. Linux Voice Assistant conserve ses dépendances Python.
 
@@ -29,23 +29,26 @@ ssh nabos@nabaztag.local
 
 OpenSSH utilise le fichier standard `authorized_keys`. La connexion fonctionne uniquement par clé, sous le compte `nabos`, avec **sudo sans mot de passe** pour administrer le système ; ni le mot de passe de l'interface ni une connexion SSH directe en root ne sont acceptés. Les clés autorisées et l'identité SSH du lapin sont conservées après redémarrage et mise à jour. Vider le champ puis enregistrer désactive les nouvelles connexions ; les sessions déjà ouvertes restent actives.
 
-Cette fonction nécessite une image qui l'intègre, ou sa mise à jour RAUC. Les anciennes images qui masquent SSH doivent être mises à jour auparavant. Les options SSH de Raspberry Pi Imager et les fichiers `ssh`/`userconf.txt` ne sont pas utilisés par NabOS.
+Les options SSH de Raspberry Pi Imager et les fichiers `ssh`/`userconf.txt` ne sont pas utilisés par NabOS.
 
 La page **Mises à jour** liste les nouvelles versions GitHub et leurs notes de publication. Elle permet de vérifier à la demande, de proposer les mises à jour chaque jour (réglage initial), ou d'activer leur installation automatique. Le canal **Stable** est sélectionné par défaut ; le canal **Test** inclut les préversions et s'applique aussi à l'automatique. Chaque version disponible peut être installée manuellement, puis activée avec le bouton de redémarrage.
 
 L'automatique attend le créneau réglable (03:00–05:00 par défaut, dans le fuseau du lapin), une heure fiable et la fin des lectures et interactions. Il ne redémarre que les installations qu'il a déclenchées. Désactiver l'automatique laisse une écriture déjà commencée se terminer, puis conserve le redémarrage manuel. Une release dont les fichiers sont encore en fabrication apparaît **En préparation**.
 
-RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis le contrôle de santé confirme le nouveau système. Les données et réglages sont conservés. Après un rollback, la version fautive est exclue de l'automatique ; un réessai manuel reste possible. Une coupure au résultat indéterminé suspend l'automatique jusqu'à une reprise manuelle. Firmware Raspberry Pi et U-Boot restent ceux du flash initial.
+RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis le contrôle de santé confirme le nouveau système. Les données et réglages sont conservés. Après un rollback, la version fautive est exclue de l'automatique ; un réessai manuel reste possible. Une coupure au résultat indéterminé suspend l'automatique jusqu'à une reprise manuelle. Firmware Raspberry Pi et U-Boot sont livrés dans les deux copies FAT mises à jour par RAUC.
+
+Cette extraction utilise de nouveaux contrats et fichiers de configuration. Aucune migration des anciens réglages ni rétrocompatibilité des anciennes API n’est fournie. Le système racine reste en lecture seule ; le home et les préférences LVA restent sous `/var/lib/nabos`, lié à `/data/system` au démarrage.
 
 ## Composants
 
 | Composant | Rôle |
 |---|---|
-| `core/` — `nab-core` | Matériel, Wi-Fi, états, séquences, chorégraphies, synchronisation avec le son |
-| `services/` — `nab-service` | Interface locale, réglages, services pynab en Go, Home Assistant, mises à jour |
+| `core/` — `nab-core` | Matériel, états, séquences, chorégraphies, synchronisation avec le son via D-Bus |
+| `device-core` — dépôt indépendant | NetworkManager, audio, réglages système, horloge, SSH, voix, RAUC ; API D-Bus, HTTP facultatif désactivé dans NabOS |
+| `services/` — `nab-service` | Interface locale, applications pynab, Home Assistant ; clients D-Bus de device-core |
 | Mosquitto | Transport MQTT 5 local ; [contrat JSON v1](docs/protocol-v1.md) |
 | PipeWire + WirePlumber | Lecture et capture ALSA ; compatibilité PulseAudio pour la voix |
-| NetworkManager | Radio Wi-Fi, profils et secrets ; [API D-Bus du cœur](docs/network-dbus.md) |
+| NetworkManager | Radio Wi-Fi, profils et secrets ; [API D-Bus de device-core](docs/network-dbus.md) |
 | RAUC + U-Boot | Installation signée A/B et retour à la version précédente |
 
 Linux Voice Assistant est préinstallé uniquement sur ARM64 et **désactivé par défaut**. Son activation utilise Home Assistant pour la reconnaissance et la synthèse. Le bouton précède la qualification du mot d'activation et de l'annulation d'écho. L'API de périphériques reste en boucle locale.
@@ -76,6 +79,6 @@ cargo test --locked --manifest-path core/Cargo.toml
 (cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nab-service)
 ```
 
-Le dernier contrôle requiert Mosquitto et ses clients. Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).
+Les simulations requièrent Mosquitto, ses clients et un bus D-Bus privé. `DEVICE_CORE_BIN` désigne le binaire externe de simulation (voir le guide de fabrication). Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Le projet est distribué sous GPL-3.0-only ; les attributions des éléments réutilisés sont dans [NOTICE](NOTICE). Les firmwares binaires nécessaires au Raspberry Pi restent une exception fournie par Raspberry Pi OS.

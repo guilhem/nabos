@@ -22,8 +22,12 @@ macro_rules! debug { ($($a:tt)*) => { $crate::logline(3, format!($($a)*)) } }
 
 mod bus;
 mod chor;
+#[cfg(test)]
+mod client_tests;
+mod device;
 mod engine;
 mod hw;
+mod maintenance;
 mod network;
 mod playback;
 mod protocol;
@@ -38,13 +42,11 @@ pub struct Config {
     pub mqtt_port: u16,
     pub sounds_dirs: Vec<PathBuf>,
     pub chor_dirs: Vec<PathBuf>,
-    pub alsa_device: String,
     pub gpio_chip: String,
     pub button_gpio: u32,
     pub ws2811_lib: String,
     pub led_brightness: u8,
     pub led_strip: String,
-    pub sim_audio_ms: u64,
 }
 
 fn env_or(name: &str, default: &str) -> String {
@@ -86,13 +88,11 @@ impl Config {
                 "NABOS_CHOREOGRAPHIES_DIRS",
                 "/usr/share/nabos/choreographies:/data/nabos/media/choreographies",
             ),
-            alsa_device: env_or("NABOS_ALSA_DEVICE", "default"),
             gpio_chip: env_or("NABOS_GPIO_CHIP", "/dev/gpiochip0"),
             button_gpio: env_parse("NABOS_BUTTON_GPIO", 17),
             ws2811_lib: env_or("NABOS_WS2811_LIB", "libws2811.so"),
             led_brightness: env_parse("NABOS_LED_BRIGHTNESS", 200),
             led_strip: env_or("NABOS_LED_STRIP", "grb"),
-            sim_audio_ms: env_parse("NABOS_SIM_AUDIO_MS", 50),
         }
     }
 }
@@ -121,10 +121,19 @@ fn main() {
         .expect("tokio runtime");
     rt.block_on(async move {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let presence = network::start(cfg.simulate);
+        let device = match device::Device::open(cfg.simulate).await {
+            Ok(device) => device,
+            Err(e) => {
+                error!("{e}");
+                std::process::exit(1);
+            }
+        };
+        let presence = network::start(device.clone());
+        maintenance::start(device.clone(), tx.clone());
+        let player = Arc::new(hw::player::Player::new(device));
         let hardware_tx = tx.clone();
         let (cfg, hw) = tokio::task::spawn_blocking(move || {
-            let hw = hw::Hw::open(&cfg, hardware_tx, presence);
+            let hw = hw::Hw::open(&cfg, hardware_tx, Some(presence), player);
             (cfg, Arc::new(hw))
         })
         .await

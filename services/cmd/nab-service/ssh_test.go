@@ -1,111 +1,99 @@
 package main
 
 import (
-	"html"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestSSHSettings(t *testing.T) {
+func TestSSHSettingsUseRemoteAPI(t *testing.T) {
 	a := testApp(t)
 	cookie := serviceSession(t, a)
 	h := a.routes()
-	dir := t.TempDir()
-	key := filepath.Join(dir, "client")
-	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "test<&+", "-f", key).CombinedOutput(); err != nil {
-		t.Fatalf("ssh-keygen: %v %s", err, out)
-	}
-	pub, _ := os.ReadFile(key + ".pub")
-	private, _ := os.ReadFile(key)
-	// Only the job runner is faked; key validation uses the installed OpenSSH.
-	control := `#!/bin/sh
-[ "$3" = ssh.service ] || exit 2
-if [ "$1" = is-active ]; then test -s "$SSH_TEST_KEYS"; exit; fi
-[ "$1" = --no-ask-password ] || exit 2
-echo "$2" >> "$SSH_TEST_LOG"
-[ ! -f "$SSH_TEST_FAIL" ] || exit 1
-case "$2" in
-start) test -s "$SSH_TEST_KEYS" ;;
-stop) test ! -s "$SSH_TEST_KEYS" ;;
-*) exit 2 ;;
-esac
-`
-	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(control), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	t.Setenv("SSH_TEST_KEYS", a.sshKeysFile())
-	t.Setenv("SSH_TEST_LOG", filepath.Join(dir, "jobs"))
-	t.Setenv("SSH_TEST_FAIL", filepath.Join(dir, "fail"))
-	form := url.Values{"authorized_keys": {string(pub)}}
-	if w := serviceRequest(h, "POST", "/settings/ssh", form, nil); w.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated POST: %d", w.Code)
-	}
-	r := httptest.NewRequest("POST", "/settings/ssh", strings.NewReader(form.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Origin", "http://elsewhere.example")
-	r.AddCookie(cookie)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("cross-origin POST: %d", w.Code)
-	}
-	if keys, err := a.readSSHKeys(); keys != "" || err != nil {
-		t.Fatalf("SSH enabled before authorized save: %v", err)
-	}
-	save := func(raw string, wantError bool) {
-		t.Helper()
-		form.Set("authorized_keys", raw)
-		w := serviceRequest(h, "POST", "/settings/ssh", form, cookie)
-		if w.Code != http.StatusSeeOther || strings.Contains(w.Header().Get("Location"), "err=") != wantError {
-			t.Fatalf("save: %d %s", w.Code, w.Header().Get("Location"))
-		}
-	}
-	save(string(pub), false)
-	fi, err := os.Stat(a.sshKeysFile())
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("private permissions: %v %v", fi, err)
-	}
-	for _, raw := range []string{"not a key", string(private), string(pub) + "broken\n", strings.Repeat("x", maxSSHKeys+1), string(pub) + "\x00"} {
-		save(raw, true)
-		if stored, _ := a.readSSHKeys(); stored != string(pub) {
-			t.Fatal("invalid input replaced the working keys")
-		}
-	}
-	keys := "# My devices\r\n" + strings.TrimSpace(string(pub)) + "\r\nrestrict " + strings.TrimSpace(string(pub)) + "\r\n"
-	save(keys, false)
-	keys = strings.ReplaceAll(keys, "\r\n", "\n")
-	page := serviceRequest(h, "GET", "/settings", nil, cookie)
-	if page.Code != http.StatusOK || !strings.Contains(html.UnescapeString(page.Body.String()), strings.TrimSpace(string(pub))) {
-		t.Fatal("saved keys missing from settings")
-	}
-	afterRestart, err := NewApp(a.env)
+	f := appFixture(t, a)
+	sshRevision, _, err := a.device.SSHKeys(a.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored, _ := afterRestart.readSSHKeys(); stored != keys {
-		t.Fatal("keys lost after application restart")
+	page := serviceRequest(h, "GET", "/settings", nil, cookie)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `name="ssh_revision" value="`+sshRevision+`"`) {
+		t.Fatal("SSH snapshot revision missing from form", page.Code, page.Body.String())
 	}
-	if err := os.WriteFile(filepath.Join(dir, "fail"), nil, 0o600); err != nil {
+	form := url.Values{"ssh_revision": {sshRevision}, "authorized_keys": {"ssh-ed25519 test remote"}}
+	if w := serviceRequest(h, "POST", "/settings/ssh", form, nil); w.Code != http.StatusUnauthorized {
+		t.Fatal(w.Code)
+	}
+	w := serviceRequest(h, "POST", "/settings/ssh", form, cookie)
+	if strings.Contains(w.Header().Get("Location"), "err=") {
+		t.Fatal(w.Header())
+	}
+	next, keys, err := a.device.SSHKeys(a.ctx)
+	if err != nil || keys != form.Get("authorized_keys") || next == sshRevision {
+		t.Fatal(next, keys, err)
+	}
+	if _, err := os.Stat(filepath.Join(a.env.DataDir, "ssh/authorized_keys")); !os.IsNotExist(err) {
+		t.Fatal("application wrote local SSH keys", err)
+	}
+	f.Mu.Lock()
+	f.FailSSH = true
+	f.Mu.Unlock()
+	form.Set("authorized_keys", "invalid")
+	form.Set("ssh_revision", next)
+	w = serviceRequest(h, "POST", "/settings/ssh", form, cookie)
+	if !strings.Contains(w.Header().Get("Location"), "err=") || strings.Contains(w.Header().Get("Location"), "secret") {
+		t.Fatal("remote refusal not handled safely", w.Header())
+	}
+	if revision, keys, _ := a.device.SSHKeys(a.ctx); keys != "ssh-ed25519 test remote" || revision != next {
+		t.Fatal("rejection changed SSH snapshot", revision, keys)
+	}
+}
+
+func TestSSHSettingsRefuseMissingAndStaleRevisions(t *testing.T) {
+	a := testApp(t)
+	cookie := serviceSession(t, a)
+	h := a.routes()
+	f := appFixture(t, a)
+	oldRevision, _, err := a.device.SSHKeys(a.ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	save(string(pub), true)
-	if stored, _ := a.readSSHKeys(); stored != string(pub) {
-		t.Fatal("startup failure discarded saved keys")
+	current, err := a.device.SetSSHKeys(a.ctx, oldRevision, "current remote keys")
+	if err != nil {
+		t.Fatal(err)
 	}
-	os.Remove(filepath.Join(dir, "fail"))
-	save("# no keys left\n", false)
-	if stored, _ := a.readSSHKeys(); stored != "" {
-		t.Fatal("removing the last key did not disable SSH")
+	page := serviceRequest(h, "GET", "/settings", nil, cookie)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `name="ssh_revision" value="`+current+`"`) || !strings.Contains(page.Body.String(), "current remote keys") {
+		t.Fatal("SSH page did not pair current revision and keys", page.Code, page.Body.String())
 	}
-	jobs, _ := os.ReadFile(filepath.Join(dir, "jobs"))
-	if string(jobs) != "start\nstart\nstart\nstop\n" {
-		t.Fatalf("unexpected systemd jobs: %q", jobs)
+	configRevision, _, err := a.device.ReadConfig(a.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []string{"", oldRevision, configRevision} {
+		form := url.Values{"ssh_revision": {revision}, "authorized_keys": {"must not replace keys"}}
+		if revision == "" {
+			form.Del("ssh_revision") // the old form had no SSH revision
+		}
+		w := serviceRequest(h, "POST", "/settings/ssh", form, cookie)
+		if !strings.Contains(w.Header().Get("Location"), "err=") {
+			t.Fatal("missing/stale SSH form accepted", revision, w.Code, w.Header())
+		}
+		if saved, keys, err := a.device.SSHKeys(a.ctx); err != nil || saved != current || keys != "current remote keys" {
+			t.Fatal("refused SSH form changed snapshot", saved, keys, err)
+		}
+	}
+	f.Mu.Lock()
+	f.SSHRevision = "ssh-restarted:1"
+	f.Mu.Unlock()
+	form := url.Values{"ssh_revision": {current}, "authorized_keys": {"stale daemon keys"}}
+	w := serviceRequest(h, "POST", "/settings/ssh", form, cookie)
+	if !strings.Contains(w.Header().Get("Location"), "err=") {
+		t.Fatal("SSH form survived daemon incarnation change", w.Header())
+	}
+	if revision, keys, err := a.device.SSHKeys(a.ctx); err != nil || revision != "ssh-restarted:1" || keys != "current remote keys" {
+		t.Fatal("old daemon form changed SSH snapshot", revision, keys, err)
 	}
 }

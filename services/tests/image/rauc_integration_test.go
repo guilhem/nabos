@@ -25,7 +25,7 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("NABOS_RAUC_INTEGRATION=1 requires root")
 	}
-	for _, name := range []string{"rauc", "genimage", "losetup", "dbus-daemon", "dbus-send", "mkenvimage", "fw_printenv", "fw_setenv", "mkfs.vfat", "mkfs.ext4", "mcopy", "openssl", "sync"} {
+	for _, name := range []string{"rauc", "genimage", "losetup", "udevadm", "dbus-daemon", "dbus-send", "mkenvimage", "fw_printenv", "fw_setenv", "mkfs.vfat", "mkfs.ext4", "mcopy", "openssl", "sync"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Fatal(err)
 		}
@@ -66,6 +66,17 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 			t.Errorf("detach %s: %s", loop, r.stderr)
 		}
 	})
+	run(t, "", "udevadm", "settle", "--timeout=10")
+	// Keep udev from probing partially updated filesystems/MBRs throughout the test.
+	// https://systemd.io/BLOCK_DEVICE_LOCKING/
+	diskDevice, err := os.OpenFile(loop, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = diskDevice.Close() })
+	if err := syscall.Flock(int(diskDevice.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
 	for _, n := range []string{"p2", "p3"} {
 		if _, err := os.Stat(loop + n); err != nil {
 			t.Fatalf("loop partition %s: %v", loop+n, err)

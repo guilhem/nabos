@@ -1,13 +1,16 @@
 # NabOS runtime protocol v1
 
-Two programs run on the rabbit and talk through the local Mosquitto broker
-(MQTT 5, `127.0.0.1:1883`, anonymous, loopback only):
+Three programs run on the rabbit. NabOS commands and hardware events use local
+Mosquitto (MQTT 5, `127.0.0.1:1883`, anonymous, loopback only); Linux device
+operations use direct D-Bus calls to the independent device-core daemon:
 
-- `nab-core` (Rust, `core/`): hardware, state machine, queue, choreographies, audio.
+- `nab-core` (Rust, `core/`): hardware, state machine, queue and choreographies;
+  direct Audio/Network D-Bus client and physical-presence reporter.
 - `nab-service` (Go, `services/`): web UI, settings, clock, weather, the nine PyNab
   services (tai-chi, surprise, 8-ball, air quality, IFTTT, webhook, radio, book,
-  Mastodon), Home Assistant,
-  Linux Voice Assistant, updates.
+  Mastodon), Home Assistant and application settings; direct device-core client.
+- `device-core` (Rust, independent repository): Linux network, audio, system
+  settings, clock, SSH, voice transport, signed updates and maintenance.
 
 Every topic starts with `nabos/v1`. Payloads are UTF-8 JSON objects with `"v": 1`.
 
@@ -162,16 +165,14 @@ RFID application identifiers use the Nabaztag tag format (1 eightball … 5 cloc
 | `NABOS_MQTT_HOST` / `NABOS_MQTT_PORT` | `127.0.0.1` / `1883` |
 | `NABOS_SOUNDS_DIRS` | `/usr/share/nabos/sounds:/data/nabos/media/sounds` |
 | `NABOS_CHOREOGRAPHIES_DIRS` | `/usr/share/nabos/choreographies:/data/nabos/media/choreographies` |
-| `NABOS_ALSA_DEVICE` | `default` (pipewire-alsa makes it PipeWire) |
 | `NABOS_GPIO_CHIP` / `NABOS_BUTTON_GPIO` | `/dev/gpiochip0` / `17` |
 | `NABOS_WS2811_LIB` | `libws2811.so` (loaded with dlopen, GPIO 13, PWM channel 1, DMA 12) |
 | `NABOS_LED_BRIGHTNESS` / `NABOS_LED_STRIP` | `200` / `grb` (`rgb`, `grb`, `brg`…) |
-| `NABOS_SIM_AUDIO_MS` | `50` (simulate mode only: duration of each sound) |
 | `RUST_LOG`-like `NABOS_LOG` | `info` (`debug` for traces) |
 
-Runtime needs: `mpg123` (mp3) and `aplay` (wav) from alsa-utils, `pipewire-alsa`,
-`XDG_RUNTIME_DIR=/run/user/1000` so the ALSA plugin finds the PipeWire socket,
-`libws2811.so` in the loader path.
+Runtime needs: device-core’s Audio API and `libws2811.so` in the loader path.
+The original hardware drivers, mixer and calibration remain in NabOS.
+`NABOS_DEVICE_BUS_ADDRESS` must name an explicit private bus in simulation.
 
 Permissions (no root):
 
@@ -190,85 +191,117 @@ Media: copy `assets/sounds/` into `/usr/share/nabos/sounds/` and
 `assets/choreographies/` into `/usr/share/nabos/choreographies/`.
 Keep locale directories and resource paths intact.
 
+### device-core
+
+`/usr/bin/device-core [--simulate]`, `device-core.service`, `User=nabos`, no
+hardware capability. Its source is the commit archive pinned as
+`sources.device_core` in `image/sources.lock.json`, outside this repository.
+Only its binary and notices are installed; sources, Cargo vendor trees and build
+caches stay in archived build inputs.
+
+The system bus name is `io.github.guilhem.DeviceCore1`. Manager is at
+`/io/github/guilhem/DeviceCore1`, interface `io.github.guilhem.DeviceCore1.Manager`;
+other domains use `/io/github/guilhem/DeviceCore1/<Domain>` and interface
+`io.github.guilhem.DeviceCore1.<Domain>`.
+
+| Domain | Contract |
+|---|---|
+| Manager | `Ready:b`, `Maintenance:b`, `Instance:s`, `Version:s`, `Capabilities:as`; `RegisterAgent(path:o)` |
+| Network | Typed properties and leased network FD; [full contract](network-dbus.md) |
+| Audio | `Start(kind:s,source:s)→id:s`, `Stop(id:s)`, `Wait(id:s)→outcome:s`, `SetVolume(percent:u)`; `Status:(ssu)` |
+| Config | `Read()→(revision:s,settings:(ssub(bs(uu)(uu))b))`, `Update(revision:s,settings)→revision:s` |
+| System | `Reboot()`, `PowerOff()`, `SetTime(unix_microseconds:x)`, `GetSSHKeys()→s`, `SetSSHKeys(s)`, `Clock()→(s,x)`, `Connectivity()→s` |
+| Voice | `Supported:b`, `Status:s`, `Enable(b)`, `Command(s)`; `Event(event:s,data_json:s)` |
+| Updates | `Check()`, `Releases(channel:s)`, `Install(tag:s,channel:s,automatic:b,retry:b)→operation_id:s`, `Reconcile()` and typed `Status` |
+
+Config settings fields, in wire order: locale, timezone, volume,
+auto_check_updates, updates (automatic, channel, start HM, end HM), voice_enabled.
+HM fields are hour/minute unsigned integers. Revision includes the daemon
+incarnation; stale writes fail rather than silently overwriting settings.
+Applications never enter this store. Audio playback IDs also include the
+incarnation; a stale Stop cannot cancel a newer playback. D-Bus playback is
+bound to the actual caller connection. File sources are bounded to configured
+roots; streaming uses literal loopback HTTP URLs and no proxy or redirect.
+
+The image sets these Options variables (generic defaults are in device-core’s
+`src/options.rs`):
+
+| Variable | NabOS value |
+|---|---|
+| `DEVICE_CORE_DATA_DIR` | `/data/device-core` |
+| `DEVICE_CORE_NETWORK_GUARD` | `/run/lock/device-core/network` |
+| `DEVICE_CORE_AUDIO_ROOTS` | `/usr/share/nabos/sounds:/data/nabos/media/sounds` |
+| `DEVICE_CORE_ALSA_DEVICE` | `default` through pipewire-alsa |
+| `DEVICE_CORE_PRESENCE_UNIT` | `nab-core.service` |
+| `DEVICE_CORE_MAINTENANCE_UNITS` | `nab-core.service:nab-service.service` |
+| `DEVICE_CORE_HOTSPOT_PREFIX` | `Nabaztag-` |
+| `DEVICE_CORE_LVA_UNIT` | `linux-voice-assistant.service` only when `/opt/linux-voice-assistant/.venv/bin/python` is executable; otherwise empty |
+| `DEVICE_CORE_BOOT_HEALTH` | `/run/nabos-boot-health` |
+| `DEVICE_CORE_IMAGE_VERSION` | image release, independent of the crate version |
+| `DEVICE_CORE_UPDATE_REPO` / `DEVICE_CORE_UPDATE_ASSET` | release repository / `nabos-<target>.raucb` |
+| `DEVICE_CORE_HTTP_ADDR` | unset: HTTP disabled |
+| `HOME` / `XDG_RUNTIME_DIR` | `/var/lib/nabos` / `/run/user/1000` |
+
+The unit uses `RuntimeDirectory=device-core`, `WorkingDirectory=/run/device-core`
+and `ProtectSystem=strict`. `PrivateDevices=yes` hides hardware devices from
+device-core; ALSA `default` connects to the shared PipeWire session. Writable paths are `/data/device-core`,
+`/var/lib/nabos`, `/run/device-core` and `/run/lock/device-core`. The root stays
+read-only. Persistent files are `settings.json`, `updates/`, `clock-manual`,
+`ssh/authorized_keys` and `voice-enabled` under `/data/device-core`; file modes are
+0600 and directories private. LVA’s preferences and downloaded wakewords remain
+under `/var/lib/nabos/lva`, bound from `/data/system` by the existing boot-init.
+The volatile `/data/.volatile` fallback cannot provide persistence.
+
+Polkit grants NetworkManager mutations, power/time and runtime SSH/NTP/LVA jobs
+only to the exact `device-core.service` subject with NoNewPrivileges. D-Bus
+policy admits the shared nabos account; physical presence and maintenance agents
+are authorized by the daemon from bus credentials and systemd unit identity.
+RAUC bus rules retain root health access and narrowly admit the shared account
+for InstallBundle/properties/introspection; they cannot distinguish its units.
+OpenSSH uses `/data/device-core/ssh/authorized_keys`; host keys remain under
+`/data/system/ssh/etc/ssh`. Voice enablement is conditioned by
+`/data/device-core/voice-enabled`.
+
 ### nab-service
 
-`/usr/bin/nab-service`, system service, `User=nabos`.
-
-The image runs the interface at `http://nabaztag.local` (port 80), setting
-`NABOS_HTTP_ADDR=:80` and granting only `CAP_NET_BIND_SERVICE` to Go. Local
-builds default to `:8080`. `/healthz` is restricted to loopback clients.
-
-Wi-Fi configuration uses the [core D-Bus API](network-dbus.md). Rust owns
-connection attempts and recovery through NetworkManager; Go owns the web UI and
-authentication. Before administrator creation, Wi-Fi setup is available only via
-the actual hotspot address `10.41.0.1` and requires a button press for that setup
-reservation. Once an administrator exists, login is required on every network.
-NetworkManager's shared mode provides DHCP and captive DNS using `dnsmasq-base`.
-A failed candidate connection returns to the previous profile or recovery hotspot;
-LAN connectivity without Internet is sufficient. `--simulate` never accesses the
-host NetworkManager or claims the production D-Bus name.
+`/usr/bin/nab-service`, system service, `User=nabos`. The image sets
+`NABOS_HTTP_ADDR=:80` with `CAP_NET_BIND_SERVICE`; local builds use `:8080`.
+Go owns HTTP authentication, applications and MQTT; all device operations go
+directly to device-core over D-Bus. It does not implement NetworkManager,
+RAUC, system clock, SSH or LVA policy.
 
 | Variable | Default |
 |---|---|
 | `NABOS_MQTT_HOST` / `NABOS_MQTT_PORT` | `127.0.0.1` / `1883` |
 | `NABOS_HTTP_ADDR` | `:8080` |
-| `NABOS_DATA_DIR` | `/data/nabos` (`config.json`, `media/`, `updates/`, `voice-enabled`) |
-| `NABOS_SOUNDS_DIRS` | same as the core (used to list sounds) |
-| `NABOS_VERSION` | release version (`v1.2.3`), from `/etc/nabos/release` |
-| (build) | `go build -ldflags "-X main.version=v1.2.3"` sets the default of `NABOS_VERSION` |
-| `NABOS_UPDATE_REPO` | `owner/repo` of the GitHub Releases |
-| `NABOS_UPDATE_ASSET` | bundle asset name for this board, e.g. `nabos-zero2-arm64.raucb` |
-| `NABOS_GITHUB_API` / `NABOS_GITHUB_DOWNLOAD` | `https://api.github.com` / `https://github.com` |
-| `NABOS_LVA_URL` | `ws://127.0.0.1:6055` |
-| `NABOS_LVA_UNIT` | `linux-voice-assistant.service` (empty: voice unsupported on this image) |
+| `NABOS_DATA_DIR` | `/data/nabos` (`application.json`, application media) |
+| `NABOS_SOUNDS_DIRS` | same media roots as nab-core |
+| `NABOS_VERSION` | running image version, set by the release environment/build |
 | `NABOS_WEATHER_URL` / `NABOS_GEOCODING_URL` | Open-Meteo endpoints |
-| `NABOS_TIMESYNC_FILE` | `/run/systemd/timesync/synchronized` (`none`: always trusted, tests only) |
-| `NABOS_TIMESYNC_CLOCK` | `/var/lib/systemd/timesync/clock` (timesyncd saved clock, must persist) |
-| `NABOS_NET_PROBE` | `api.github.com:443` (TCP reachability test for the belly colour) |
 
-`config.json` also stores `services` (frequencies, deadlines, switches and API
-keys), `tags` (UID → `{app,value}` for radio/IFTTT/webhook) and `mastodon` (OAuth
-credentials, pairing state and message cursor). Older settings without these
-fields load defaults. The file remains mode 0600 and writes are atomic. Secrets
-are not prefilled in web forms. Existing formatted tags can be associated locally
-without rewriting their payload, including locked tags.
+`application.json` stores administration, application configuration, schedules,
+tags and Mastodon credentials/state. Its writes are atomic and mode 0600.
+There is no migration or compatibility layer for the old config.json or old
+D-Bus name/API. Secrets are not prefilled in web forms.
 
-Only one Go media owner is active at a time. A book or 8-ball session keeps
-ownership across its commands, forwards button/ear events and cancels its own
-command by ID. The radio is preempted by other audio and sleep; MQTT/core loss
-cancels active radio and interactive sessions. The radio relay serves one
-consumer with a fixed-size copy buffer, upstream read deadline and a private
-loopback URL. It never downloads a complete stream to disk.
+Pre-admin Wi-Fi setup is admitted only on the socket’s actual hotspot address
+`10.41.0.1`, with fresh physical proof for its reservation. Once administration
+exists, every network route requires login. NetworkManager provides DHCP and
+captive DNS; LAN connectivity is enough to accept a candidate connection.
 
-- `GET /healthz`: loopback only, no auth. `200` when MQTT is connected and the core is
-  `online`, `503` otherwise. Use it before `rauc status mark-good`.
-- D-Bus (system bus) through polkit rules for user `nabos`:
-  `de.pengutronix.rauc.Installer` (`InstallBundle`, properties),
-  `org.freedesktop.login1.Manager.Reboot/PowerOff`,
-  `org.freedesktop.systemd1.Manager.StartUnit/StopUnit` on `$NABOS_LVA_UNIT` only,
-  `org.freedesktop.timedate1` `SetTime` and `SetNTP` (actions `set-time`, `set-ntp`).
-- Volume: `wpctl set-volume @DEFAULT_AUDIO_SINK@` (`wireplumber`), with
-  `XDG_RUNTIME_DIR=/run/user/1000`. Only the TagTagTag card is exposed. Its
-  unchanged mixer daemon owns hardware gain and the wheel; Web/HA volume is
-  software attenuation, so it cannot override a muted wheel. Each nab-service
-  start resets this attenuation to 100%, and WirePlumber does not restore old
-  route volumes. Turning the wheel does not reset a later Web/HA attenuation.
-- Time zone: `/etc/localtime` is used; the service embeds tzdata for the configured zone.
-- Clock (no RTC on the Pi): *exact* when NTP synchronised or set by hand in the UI
-  during this boot (`<data>/clock-manual` holds the boot id); *approximate* when
-  timesyncd restored its saved clock (offline cold boot): sleep and wakeup run, the
-  time is never announced; *unknown* otherwise: nothing is scheduled. The UI shows
-  the state and offers a manual setting (timedated).
-- LVA must run with `--peripheral-host 127.0.0.1` (port 6055) and
-  `ConditionPathExists=/data/nabos/voice-enabled`.
-- Data files: `config.json` (0600, atomic writes; a corrupt file is renamed
-  `config.json.corrupt-<time>` and defaults are used), `updates/`, `media/sounds/user/`,
-  `voice-enabled`, `clock-manual`.
+Only one Go media owner is active at a time. Book/8-ball commands keep ownership
+by ID; radio is preempted by audio/sleep. The loopback radio relay uses a bounded
+copy buffer and never downloads a whole stream to disk.
+
+`GET /healthz` is loopback-only and verifies MQTT, nab-core availability and
+hardware readiness. Before `rauc status mark-good`, the root health script also
+requires all three units active and `Manager.Ready` via D-Bus, plus real audio
+sink/capture and persistent mounts. Device-core HTTP is never required.
 
 ### Releases
 
 Each release tag `vX.Y.Z` (including SemVer prereleases such as `v1.2.0-rc.1`) carries the bundles and a `SHA256SUMS` asset
-(`sha256sum` format, one line per asset). The service only accepts assets whose URL
+(`sha256sum` format, one line per asset). device-core only accepts assets whose URL
 is `https://github.com/<repo>/releases/download/<tag>/<name>`, redirects to
 `*.githubusercontent.com`, the announced size (≤ 2 GiB) and the listed checksum,
 resumes interrupted downloads, then hands the local file to RAUC, which checks the
@@ -293,7 +326,7 @@ across service restarts and daylight-saving changes. A started RAUC write finish
 even when the window closes; an automatic reboot waits for another eligible window.
 Manually requested installations keep a manual reboot.
 
-The update journal is `/data/nabos/updates/state.json`. It records the pending
+The update journal is `/data/device-core/updates/state.json`. It records the pending
 bundle, source/target slots, boot identity, origin, phase, last automatic attempt
 and blocked versions using an atomic, durable write. The root-owned runtime
 marker `/run/nabos-boot-health` is published by the health script only after
@@ -321,9 +354,9 @@ again atomically at the settings commit boundary. Two clicks then a third press 
 ## End-to-end test
 
 `(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nab-service)`
-starts Mosquitto, `nab-core --simulate` and
-`nab-service`, and checks execution, deduplication, expiration, cancel, retained
+starts Mosquitto, a private D-Bus daemon, `device-core --simulate`,
+`nab-core --simulate` and `nab-service`, and checks execution, deduplication, expiration, cancel, retained
 refusal, validation, broker and core restarts, the web flow, exclusive interactive
 playback and RFID dispatch. By default it builds
-native binaries; `NAB_CORE_BIN`, `NAB_SERVICE_BIN` (commands, e.g.
+native binaries; `NAB_CORE_BIN`, `DEVICE_CORE_BIN`, `NAB_SERVICE_BIN` (commands, e.g.
 `qemu-arm-static -L <sysroot> <sysroot>/usr/bin/nab-core`) and `MOSQUITTO` override them.

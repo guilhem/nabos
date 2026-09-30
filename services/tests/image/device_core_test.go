@@ -1,0 +1,176 @@
+package image
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestDeviceCoreImageContract(t *testing.T) {
+	unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/device-core.service"))
+	for _, required := range []string{
+		"User=nabos", "Environment=HOME=/var/lib/nabos", "Environment=XDG_RUNTIME_DIR=/run/user/1000",
+		"Environment=DEVICE_CORE_DATA_DIR=/data/device-core", "Environment=DEVICE_CORE_NETWORK_GUARD=/run/lock/device-core/network",
+		"Environment=DEVICE_CORE_PRESENCE_UNIT=nab-core.service", "RuntimeDirectory=device-core", "WorkingDirectory=/run/device-core",
+		"CapabilityBoundingSet=", "ProtectSystem=strict", "ReadWritePaths=/data/device-core /var/lib/nabos /run/device-core /run/lock/device-core",
+	} {
+		if !strings.Contains(unit, required+"\n") {
+			t.Errorf("missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"CAP_SYS_RAWIO", "SupplementaryGroups", "AmbientCapabilities", "DEVICE_CORE_HTTP_ADDR", "Environment=DEVICE_CORE_LVA_UNIT=", "RuntimeDirectory=device-core/lock"} {
+		if strings.Contains(unit, forbidden) {
+			t.Errorf("unexpected %q", forbidden)
+		}
+	}
+	for _, file := range []string{"usr/lib/systemd/system/nab-core.service", "usr/lib/systemd/system/nab-service.service", "usr/lib/systemd/system/nabos-health.service"} {
+		if !strings.Contains(read(t, filepath.Join(rootfsDir, file)), "device-core.service") {
+			t.Errorf("missing dependency in %s", file)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(rootfsDir, "etc/dbus-1/system.d/org.nabaztag.Core.conf")); !os.IsNotExist(err) {
+		t.Error("obsolete D-Bus policy remains")
+	}
+	policy := read(t, filepath.Join(rootfsDir, "etc/dbus-1/system.d/io.github.guilhem.DeviceCore1.conf"))
+	if !strings.Contains(policy, `<deny own="io.github.guilhem.DeviceCore1"/>`) || !strings.Contains(policy, `<policy user="nabos">`) {
+		t.Error("missing default deny/shared-account policy")
+	}
+	for _, file := range []string{"etc/systemd/system/ssh.service.d/nabos.conf", "etc/ssh/sshd_config.d/00-nabos.conf"} {
+		if !strings.Contains(read(t, filepath.Join(rootfsDir, file)), "/data/device-core/ssh/authorized_keys") {
+			t.Errorf("SSH path in %s", file)
+		}
+	}
+	voice := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/linux-voice-assistant.service"))
+	if !strings.Contains(voice, "ConditionPathExists=/data/device-core/voice-enabled") || !strings.Contains(voice, "--preferences-file /var/lib/nabos/lva/preferences.json") {
+		t.Error("voice flag/preferences contract")
+	}
+	build := read(t, filepath.Join(imageDir, "build.sh"))
+	for _, required := range []string{"for component in go rust device-core uboot", "verify-device-core", `"$root/usr/bin/device-core"`, "DEVICE_CORE_IMAGE_VERSION", "DEVICE_CORE_UPDATE_REPO", "device_core_revision", "device_core_archive_sha256", "device_core_binary_sha256"} {
+		if !strings.Contains(build, required) {
+			t.Errorf("build lacks %q", required)
+		}
+	}
+	makefile := read(t, filepath.Join(repo, "Makefile"))
+	for _, required := range []string{"$$out/inputs/$$component", "$$inputs/$$component/Cargo.lock", "$$inputs/$$component/cargo-vendor", "$$repo/build/sysroot/$$component/$$target", "--locked --offline", "--exclude=./.source", "cc_key=CC_$${rust_target//-/_}", `"$$cc_key=$$linker"`} {
+		if !strings.Contains(makefile, required) {
+			t.Errorf("Make lacks %q", required)
+		}
+	}
+}
+
+func TestDeviceCorePrivateDevices(t *testing.T) {
+	unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/device-core.service"))
+	for _, required := range []string{"PrivateDevices=yes", "CapabilityBoundingSet=", "NoNewPrivileges=yes", "Environment=XDG_RUNTIME_DIR=/run/user/1000"} {
+		if !strings.Contains(unit, required+"\n") {
+			t.Errorf("missing device isolation setting %q", required)
+		}
+	}
+	for _, forbidden := range []string{"DeviceAllow=", "BindPaths=", "BindReadOnlyPaths=", "AmbientCapabilities=", "/dev/"} {
+		if strings.Contains(unit, forbidden) {
+			t.Errorf("device access restored by %q", forbidden)
+		}
+	}
+	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
+	setup := read(t, filepath.Join(rootfsDir, "usr/lib/nabos/image-setup"))
+	if !strings.Contains(prepare, "pipewire-alsa") || !strings.Contains(setup, "systemctl --global enable pipewire.service pipewire.socket") {
+		t.Fatal("device-core audio requires the PipeWire ALSA plugin and user session")
+	}
+}
+
+func TestLVAUnitAdvertisedOnlyWhenInstalled(t *testing.T) {
+	setup := read(t, filepath.Join(rootfsDir, "usr/lib/nabos/image-setup"))
+	_, block, ok := strings.Cut(setup, "# Advertise Voice only when finalize installed its executable environment.\n")
+	if !ok {
+		t.Fatal("LVA availability check missing")
+	}
+	block, _, ok = strings.Cut(block, "\n# pi-gen soft-blocks")
+	if !ok {
+		t.Fatal("end of LVA availability check missing")
+	}
+	for _, scenario := range []struct {
+		name      string
+		installed bool
+		mode      os.FileMode
+		want      string
+	}{
+		{"absent", false, 0, ""},
+		{"not-executable", true, 0o644, ""},
+		{"installed", true, 0o755, "linux-voice-assistant.service"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			python := filepath.Join(tmp, "python")
+			release := filepath.Join(tmp, "release.env")
+			write(t, release, "NABOS_VERSION=test\n")
+			if scenario.installed {
+				if err := os.WriteFile(python, []byte("#!/bin/sh\n"), scenario.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := strings.ReplaceAll(block, "/opt/linux-voice-assistant/.venv/bin/python", python)
+			script = strings.ReplaceAll(script, "/etc/nabos/release.env", release)
+			run(t, "", "bash", "-euo", "pipefail", "-c", script)
+			if got := read(t, release); got != "NABOS_VERSION=test\nDEVICE_CORE_LVA_UNIT="+scenario.want+"\n" {
+				t.Fatalf("unexpected release environment: %q", got)
+			}
+		})
+	}
+}
+
+func TestDeviceCoreSystemPolkitUnitBoundary(t *testing.T) {
+	imageTools(t, "node")
+	rules := read(t, filepath.Join(rootfsDir, "etc/polkit-1/rules.d/50-nabos.rules"))
+	run(t, "", "node", "-e", `const assert = require('node:assert/strict');
+const polkit = {Result: {YES:'yes', NO:'no', NOT_HANDLED:'not_handled'}, rules:[], addRule(f) { this.rules.push(f); }};
+`+rules+`
+const decide = (id, subject, unit='', verb='') => polkit.rules[0]({id,lookup:k=>({unit,verb}[k])},subject);
+const core = {user:'nabos',system_unit:'device-core.service',no_new_privileges:true};
+for (const id of ['org.freedesktop.login1.reboot','org.freedesktop.login1.power-off', 'org.freedesktop.timedate1.set-time']) {
+  assert.equal(decide(id,core),'yes');
+  for (const unit of ['nab-core.service','nab-service.service','user@1000.service',''])
+    assert.equal(decide(id,{...core,system_unit:unit}),'no');
+  assert.equal(decide(id,{...core,no_new_privileges:false}),'no');
+}
+for (const unit of ['linux-voice-assistant.service','ssh.service','systemd-timesyncd.service']) {
+  const id='org.freedesktop.systemd1.manage-units';
+  assert.equal(decide(id,core,unit,'start'),'yes');
+  assert.equal(decide(id,{...core,system_unit:'nab-service.service'},unit,'start'),'no');
+  assert.equal(decide(id,core,unit,'enable'),'no');
+}
+`)
+}
+
+func TestNetworkLockTmpfilesPreservesInode(t *testing.T) {
+	imageTools(t, "systemd-tmpfiles")
+	config := read(t, filepath.Join(rootfsDir, "usr/lib/tmpfiles.d/nabos.conf"))
+	var lockRules string
+	for _, line := range strings.Split(config, "\n") {
+		if strings.Contains(line, "/run/lock/device-core") {
+			// Exercise tmpfiles on an owned root. Production owners are checked
+			// separately; this check needs no root or host account named nabos.
+			fields := strings.Fields(line)
+			if fields[0] == "d" && fields[3] != "root" || fields[0] == "f" && fields[3] != "nabos" || fields[5] != "-" {
+				t.Fatalf("unsafe lock rule: %s", line)
+			}
+			fields[3], fields[4] = fmt.Sprint(os.Getuid()), fmt.Sprint(os.Getgid())
+			lockRules += strings.Join(fields, " ") + "\n"
+		}
+	}
+	if !strings.Contains(lockRules, "f /run/lock/device-core/network 0600") {
+		t.Fatal("missing non-truncating lock file")
+	}
+	tmp := t.TempDir()
+	conf := filepath.Join(tmp, "lock.conf")
+	write(t, conf, lockRules)
+	run(t, "", "systemd-tmpfiles", "--root="+tmp, "--create", conf)
+	lock := filepath.Join(tmp, "run/lock/device-core/network")
+	before := must(os.Stat(lock))
+	write(t, lock, "must survive")
+	run(t, "", "systemd-tmpfiles", "--root="+tmp, "--create", conf)
+	run(t, "", "systemd-tmpfiles", "--root="+tmp, "--clean", conf)
+	if !os.SameFile(before, must(os.Stat(lock))) || read(t, lock) != "must survive" {
+		t.Fatal("tmpfiles replaced, truncated or cleaned the network lock")
+	}
+}
