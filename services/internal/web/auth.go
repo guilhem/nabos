@@ -236,7 +236,11 @@ func sameOrigin(r *http.Request) bool {
 		return false
 	}
 	u, err := url.Parse(src)
-	return err == nil && u.Host == r.Host
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return err == nil && u.Scheme == scheme && u.Host == r.Host
 }
 
 // Middleware protects everything except the public paths.

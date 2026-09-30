@@ -13,7 +13,7 @@ export DEBIAN_FRONTEND=noninteractive
 runtime=(ca-certificates curl dbus dbus-user-session polkitd systemd-timesyncd openssl openssh-server sudo
   pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils alsa-utils
   libasound2t64 libmpg123-0t64 mpg123 mosquitto mosquitto-clients
-  network-manager comitup avahi-daemon rauc rauc-service u-boot-tools libubootenv-tool i2c-tools raspi-utils-dt
+  network-manager wpasupplicant dnsmasq-base nftables avahi-daemon rauc rauc-service u-boot-tools libubootenv-tool i2c-tools raspi-utils-dt
   util-linux fdisk e2fsprogs python3 device-tree-compiler)
 development=(build-essential cmake pkg-config libasound2-dev libssl-dev
   bison flex bc python3-dev python3-setuptools python3-pyelftools
@@ -57,10 +57,11 @@ build-packages|packages)
     # Reuse those exact archived upgrades without installing development packages.
     apt-get "${replay_apt[@]}" upgrade --yes --with-new-pkgs --no-install-recommends
     if [[ $phase == packages ]]; then
-      # The official Lite base already includes GCC, Make and kernel headers.
-      # Remove those inherited tools; our own build dependencies stay in the clone.
+      # Drop inherited build tools and Python GPIO bindings: hardware is in Rust.
+      # Our own build dependencies stay in the disposable builder.
       apt-get "${replay_apt[@]}" purge --yes --auto-remove \
-        "${development[@]}" gcc g++ cpp make dpkg-dev 'linux-headers-*'
+        "${development[@]}" gcc g++ cpp make dpkg-dev 'linux-headers-*' \
+        python3-rpi-lgpio python3-lgpio liblgpio1
     fi
   else
     apt-get update

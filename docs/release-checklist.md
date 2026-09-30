@@ -5,7 +5,7 @@ Créer d'abord une **prérelease** avec son changelog ; la CI y ajoute les artef
 Les [essais Zero 2 W du 30 septembre 2026](qualification-zero2-2026-09-30.md) consignent les mises à jour A → B → A et un rollback Linux contrôlé sur `v0.0.4-rc.1`. Ils utilisent le même bundle et des données persistantes déjà initialisées ; la qualification globale ci-dessous reste incomplète, notamment pour le Zero W, le premier flash corrigé et les coupures réelles.
 
 - [ ] Premier démarrage, Wi-Fi depuis un téléphone, administration authentifiée, SSH fermé.
-- [ ] Racine réellement en lecture seule et partition de démarrage non montée : premier démarrage avec `/data` vierge puis redémarrage avec état conservé ; point d'accès Comitup puis connexion Wi-Fi/DNS fonctionnels. Vérifier `/data` agrandie, `/dev/zram0` actif avec `/data/swap` comme fichier de soutien (via son périphérique loop), et Bluetooth/Cloud-init désactivés. Exercer les unités systemd effectives, y compris celles des paquets et leurs overrides, avec leurs restrictions et droits réels ; activer aussi les fonctions optionnelles dès le premier démarrage et relever `systemctl --failed`, `swapon --show` et toute erreur d'écriture.
+- [ ] Racine réellement en lecture seule et partition de démarrage non montée : premier démarrage avec `/data` vierge puis redémarrage avec état conservé ; point d'accès du cœur Rust puis connexion Wi-Fi/DNS fonctionnels. Vérifier `/data` agrandie, `/dev/zram0` actif avec `/data/swap` comme fichier de soutien (via son périphérique loop), et Bluetooth/Cloud-init désactivés. Exercer les unités systemd effectives, y compris celles des paquets et leurs overrides, avec leurs restrictions et droits réels ; activer aussi les fonctions optionnelles dès le premier démarrage et relever `systemctl --failed`, `swapon --show` et toute erreur d'écriture.
 - [ ] Clés SSH depuis les réglages : ajout, remplacement, refus d'une clé inconnue/des mots de passe/de root, retrait de toutes les clés ; `sudo -n id -u` renvoie `0` sous `nabos`. Clés autorisées et empreinte hôte conservées après redémarrage et bascule A/B.
 - [ ] Démarrage autonome de PipeWire et des applications, sans connexion utilisateur.
 - [ ] Oreilles, calibration, cinq LED, bouton, capture et lecture simultanées ; lecteurs CR14 et NFC ST25 testés séparément sur leurs cartes.
@@ -30,3 +30,12 @@ Les [essais Zero 2 W du 30 septembre 2026](qualification-zero2-2026-09-30.md) co
 - [ ] Chaque artefact est inférieur à 2 Gio ; pic disque de chaque job relevé dans `disk-usage-*.txt`.
 
 Les assets comprennent l'image de premier flash, le bundle RAUC signé, les manifestes des versions et sommes SHA-256, et les dépendances archivées. Le certificat de confiance est embarqué dans l'image ; la clé privée n'y figure jamais. Firmware Raspberry Pi, U-Boot et leur configuration sont communs aux racines A/B, mais les deux copies FAT sont mises à jour par RAUC. Un changement du partitionnement nécessite un nouveau flash.
+
+## Qualification Wi-Fi
+
+- [ ] Sur ARMv6 et ARM64 : scan explicite pendant le hotspot, saisie manuelle, connexion avec mot de passe erroné et absence de DHCP, annulation et retour à la connexion précédente ou au hotspot.
+- [ ] Confirmer la réussite sur un LAN sans Internet ; conserver les profils fonctionnels précédents.
+- [ ] Premier démarrage et persistance après coupure de courant, redémarrage du cœur et de NetworkManager pendant une tentative, racine réellement en lecture seule et restrictions systemd effectives.
+- [ ] Wi-Fi sans Go ni MQTT ; matériel disponible malgré NetworkManager indisponible.
+- [ ] Formulaire avant administration accessible uniquement par le hotspot réel avec confirmation physique liée à la réservation ; après administration, connexion obligatoire y compris sur le hotspot.
+- [ ] Vérifier DNS captif et accès HTTP sur 80 ; `/healthz` distant reste inaccessible.

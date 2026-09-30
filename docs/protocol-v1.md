@@ -187,6 +187,20 @@ Keep locale directories and resource paths intact.
 
 `/usr/bin/nab-service`, system service, `User=nabos`.
 
+The image runs the interface at `http://nabaztag.local` (port 80), setting
+`NABOS_HTTP_ADDR=:80` and granting only `CAP_NET_BIND_SERVICE` to Go. Local
+builds default to `:8080`. `/healthz` is restricted to loopback clients.
+
+Wi-Fi configuration uses the [core D-Bus API](network-dbus.md). Rust owns
+connection attempts and recovery through NetworkManager; Go owns the web UI and
+authentication. Before administrator creation, Wi-Fi setup is available only via
+the actual hotspot address `10.41.0.1` and requires a button press for that setup
+reservation. Once an administrator exists, login is required on every network.
+NetworkManager's shared mode provides DHCP and captive DNS using `dnsmasq-base`.
+A failed candidate connection returns to the previous profile or recovery hotspot;
+LAN connectivity without Internet is sufficient. `--simulate` never accesses the
+host NetworkManager or claims the production D-Bus name.
+
 | Variable | Default |
 |---|---|
 | `NABOS_MQTT_HOST` / `NABOS_MQTT_PORT` | `127.0.0.1` / `1883` |

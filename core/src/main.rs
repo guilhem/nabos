@@ -24,6 +24,7 @@ mod bus;
 mod chor;
 mod engine;
 mod hw;
+mod network;
 mod playback;
 mod protocol;
 mod resources;
@@ -120,7 +121,14 @@ fn main() {
         .expect("tokio runtime");
     rt.block_on(async move {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let hw = Arc::new(hw::Hw::open(&cfg, tx.clone()));
+        let presence = network::start(cfg.simulate);
+        let hardware_tx = tx.clone();
+        let (cfg, hw) = tokio::task::spawn_blocking(move || {
+            let hw = hw::Hw::open(&cfg, hardware_tx, presence);
+            (cfg, Arc::new(hw))
+        })
+        .await
+        .expect("hardware initialization thread");
         let bus = bus::Bus::start(&cfg, tx.clone());
         let shutdown = tx.clone();
         tokio::spawn(async move {

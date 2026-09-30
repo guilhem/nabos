@@ -152,3 +152,24 @@ func TestLoopback(t *testing.T) {
 		t.Fatal("loopback refused")
 	}
 }
+
+func TestSameOriginIncludesScheme(t *testing.T) {
+	for _, tc := range []struct {
+		target, origin string
+		want           bool
+	}{
+		{"http://rabbit.local/wifi/connect", "http://rabbit.local", true},
+		{"https://rabbit.local/wifi/connect", "https://rabbit.local", true},
+		{"http://rabbit.local/wifi/connect", "https://rabbit.local", false},
+		{"https://rabbit.local/wifi/connect", "http://rabbit.local", false},
+		{"http://rabbit.local/wifi/connect", "//rabbit.local", false},
+		{"http://rabbit.local/wifi/connect", "http://other.local", false},
+		{"http://rabbit.local/wifi/connect", "null", false},
+	} {
+		r := httptest.NewRequest("POST", tc.target, nil)
+		r.Header.Set("Origin", tc.origin)
+		if sameOrigin(r) != tc.want {
+			t.Errorf("sameOrigin(%q, %q)", tc.target, tc.origin)
+		}
+	}
+}

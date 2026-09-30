@@ -239,8 +239,8 @@ esac`,
 			if scenario.target == "zero2-arm64" && !strings.Contains(read(t, filepath.Join(tmp, "lva-check")), "from linux_voice_assistant import util") {
 				t.Error("ARM64 did not run the copied-root LVA check")
 			}
-			if !strings.Contains(read(t, filepath.Join(tmp, "readonly-check")), "import lgpio") {
-				t.Error("image did not run the GPIO import with a read-only root")
+			if !strings.Contains(read(t, filepath.Join(tmp, "readonly-check")), "['dnsmasq', '--test'") {
+				t.Error("image did not check the hotspot DNS configuration with a read-only root")
 			}
 		})
 	}

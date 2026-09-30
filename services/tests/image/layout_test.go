@@ -283,6 +283,32 @@ console.log(polkit.rules[0](action, { user: %s }));
 	}
 }
 
+func TestNetworkPolkitUnitBoundary(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not available")
+	}
+	rules := read(t, filepath.Join(rootfsDir, "etc/polkit-1/rules.d/40-nabos-network.rules"))
+	js := `const assert = require('node:assert/strict');
+const polkit = { Result: { YES: 'yes', NO: 'no', NOT_HANDLED: 'not_handled' },
+  rules: [], addRule(f) { this.rules.push(f); } };
+` + rules + `
+const decide = (suffix, subject) => polkit.rules[0](
+  {id: 'org.freedesktop.NetworkManager.' + suffix}, subject);
+const core = {user: 'nabos', system_unit: 'nab-core.service', no_new_privileges: true};
+for (const action of ['network-control', 'wifi.scan', 'wifi.share.open',
+                     'settings.modify.system', 'checkpoint-rollback']) {
+  assert.equal(decide(action, core), 'yes');
+  assert.equal(decide(action, {...core, system_unit: 'nab-service.service'}), 'no');
+  assert.equal(decide(action, {...core, system_unit: 'user@1000.service'}), 'no');
+  assert.equal(decide(action, {...core, no_new_privileges: false}), 'no');
+  assert.equal(decide(action, {...core, user: 'nobody'}), 'not_handled');
+}
+assert.equal(decide('settings.modify.hostname', core), 'no');
+assert.equal(polkit.rules[0]({id: 'org.freedesktop.login1.reboot'}, core), 'not_handled');
+`
+	run(t, "", "node", "-e", js)
+}
+
 func TestRaucInstallerOnlyForNabos(t *testing.T) {
 	type rule struct {
 		XMLName xml.Name

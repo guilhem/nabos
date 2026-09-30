@@ -8,7 +8,7 @@
 // CSRF, authenticated actions, settings persistence, /healthz).
 //
 // Run from services/: NABOS_INTEGRATION=1 go test -count=1 ./tests/integration
-// Requirements: mosquitto, mosquitto_pub, mosquitto_sub, cargo, go.
+// Requirements: mosquitto, mosquitto_pub, mosquitto_sub, dbus-daemon, cargo, go.
 // Overrides: an existing path is used as is (spaces allowed); anything else
 // is split on spaces, so emulator command lines work:
 //
@@ -501,6 +501,7 @@ func TestEndToEnd(t *testing.T) {
 		expect(h.status("blocker"), "ok")
 	})
 
+	readyNetworkBus(t)
 	h.startService()
 	var cookie string
 	post := func(path string, form url.Values, cookie string, origin bool) (int, http.Header) {

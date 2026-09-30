@@ -1,0 +1,14 @@
+// Network mutations belong to the core unit, including when there is no login
+// session. Deny the other nabos processes rather than falling back to defaults.
+polkit.addRule(function (action, subject) {
+	if (subject.user !== "nabos" ||
+		action.id.indexOf("org.freedesktop.NetworkManager.") !== 0) {
+		return polkit.Result.NOT_HANDLED;
+	}
+	if (subject.system_unit === "nab-core.service" && subject.no_new_privileges &&
+		["network-control", "wifi.scan", "wifi.share.open", "settings.modify.system",
+			"checkpoint-rollback"].indexOf(action.id.substring("org.freedesktop.NetworkManager.".length)) >= 0) {
+		return polkit.Result.YES;
+	}
+	return polkit.Result.NO;
+});

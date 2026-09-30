@@ -86,8 +86,7 @@ sudo udevadm settle
 sudo mount -o ro "${loop}p2" "$root"
 sudo mount -o ro "${loop}p1" "$boot"
 sudo mount -o rw "${loop}p4" "$root/data"
-# Exercise the shipped GPIO import with the root still read-only. systemd creates
-# RuntimeDirectory before applying WorkingDirectory; reproduce those two steps.
+# Exercise runtime paths with the root still read-only.
 sudo mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "$root/run"
 sudo mount -t proc proc "$root/proc"
 sudo mount --rbind /dev "$root/dev"
@@ -99,14 +98,31 @@ import subprocess
 from pathlib import Path
 
 os.environ['LC_ALL'] = 'C'
-unit = configparser.ConfigParser()
-unit.read('/etc/systemd/system/comitup.service.d/nabos.conf')
-service = unit['Service']
-runtime = Path('/run') / service['RuntimeDirectory']
-runtime.mkdir()
-os.chdir(service['WorkingDirectory'])
-# Import the failing dependency directly: RPi.GPIO also requires a real Pi DTB.
-import lgpio  # creates a notification FIFO in cwd, without opening a GPIO chip
+unit = configparser.ConfigParser(strict=False)
+unit.read('/usr/lib/systemd/system/nab-service.service')
+assert unit['Service']['AmbientCapabilities'] == 'CAP_NET_BIND_SERVICE'
+assert 'NABOS_HTTP_ADDR=:80' in unit['Service']['Environment']
+assert not Path('/etc/comitup.conf').exists()
+assert not Path('/usr/share/comitup').exists()
+# Check the installed packages, including bindings inherited from the Lite base.
+# Jinja2 remains a dependency of cloud-init; Python also serves the voice assistant.
+installed = {
+    name.split(':')[0]
+    for name, status in (line.split('\t') for line in subprocess.check_output(
+        ['dpkg-query', '-W', '-f=${binary:Package}\t${db:Status-Status}\n'], text=True).splitlines())
+    if status == 'installed'
+}
+obsolete = {
+    'comitup', 'python3-cachetools', 'python3-cairo', 'python3-flask',
+    'python3-gi', 'python3-networkmanager', 'python3-dbus',
+    'python3-click', 'python3-itsdangerous', 'python3-werkzeug',
+    'python3-rpi-lgpio', 'python3-lgpio', 'liblgpio1',
+}
+assert not installed & obsolete, f'Unused Comitup dependencies: {sorted(installed & obsolete)}'
+assert Path('/usr/sbin/dnsmasq').is_file()
+assert 'address=/#/10.41.0.1' in Path('/etc/NetworkManager/dnsmasq-shared.d/nabos.conf').read_text()
+# Validate the actual dnsmasq configuration without opening a radio or listener.
+subprocess.run(['dnsmasq', '--test', '--conf-file=/etc/NetworkManager/dnsmasq-shared.d/nabos.conf'], check=True)
 
 # Matching the package rules at build time must avoid all writes to /etc at boot.
 result = subprocess.run(['systemd-tmpfiles', '--create', '--prefix=/etc/mtab',

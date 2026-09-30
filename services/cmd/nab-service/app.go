@@ -55,6 +55,8 @@ type App struct {
 	airQuery      airquality.Query
 	mastodonMu    sync.Mutex
 	sshMu         sync.Mutex
+	wifiMu        sync.Mutex
+	wifi          *wifiSession
 	mastodonKick  chan struct{}
 	oauth         *oauthLogin
 

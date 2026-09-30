@@ -123,7 +123,7 @@ var (
 	bootInit = filepath.Join(rootfsDir, "usr/lib/nabos/boot-init")
 	health   = filepath.Join(rootfsDir, "usr/lib/nabos/health")
 	persist  = []string{"/etc/NetworkManager/system-connections", "/var/lib/NetworkManager",
-		"/var/lib/comitup", "/var/lib/systemd/timesync", "/var/lib/tagtagtag-sound", "/var/lib/nabos"}
+		"/var/lib/systemd/timesync", "/var/lib/tagtagtag-sound", "/var/lib/nabos"}
 )
 
 func TestBootInitRefusesToRunOutsidePID1(t *testing.T) {
@@ -377,7 +377,7 @@ func TestHealth(t *testing.T) {
 		})
 	}
 	check("bind from elsewhere is never confirmed", func(t *testing.T) {
-		_, calls, _ := checkHealth(t, healthCase{mounts: mounts(map[string]string{"/var/lib/comitup": "tmpfs"})})
+		_, calls, _ := checkHealth(t, healthCase{mounts: mounts(map[string]string{"/var/lib/NetworkManager": "tmpfs"})})
 		confirmed(t, calls, false)
 	})
 	check("card name matches the pinned sound overlay", func(t *testing.T) {
