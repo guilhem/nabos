@@ -1,4 +1,4 @@
-name: Go service
+name: Go application
 on:
   workflow_call:
 permissions:
@@ -19,7 +19,7 @@ jobs:
         with:
           go-version: '1.27.1'
           cache-dependency-path: services/go.sum
-      - name: Cross-compile service and archive inputs
+      - name: Cross-compile application and archive inputs
         env:
           TARGET: ${{ matrix.target }}
         run: |

@@ -106,13 +106,40 @@ from pathlib import Path
 
 os.environ['LC_ALL'] = 'C'
 unit = configparser.ConfigParser(strict=False)
-unit.read('/usr/lib/systemd/system/nab-service.service')
+unit.read('/usr/lib/systemd/system/nabos.service')
 assert unit['Service']['AmbientCapabilities'] == 'CAP_NET_BIND_SERVICE'
 assert 'NABOS_HTTP_ADDR=:80' in unit['Service']['Environment']
+assert unit['Service']['CapabilityBoundingSet'] == 'CAP_NET_BIND_SERVICE'
+assert unit['Service']['PrivateDevices'] == 'yes'
+assert unit['Service']['ReadWritePaths'] == '/data/nabos'
+assert unit['Service']['RuntimeDirectory'] == 'nabos'
+assert unit['Service']['WorkingDirectory'] == '/run/nabos'
+hardware_unit = configparser.ConfigParser(strict=False)
+hardware_unit.read('/usr/lib/systemd/system/nab-hardware.service')
+assert hardware_unit['Service']['Type'] == 'dbus'
+assert hardware_unit['Service']['BusName'] == 'io.github.guilhem.NabHardware1'
+assert hardware_unit['Service']['AmbientCapabilities'] == 'CAP_SYS_RAWIO'
+assert hardware_unit['Service']['CapabilityBoundingSet'] == 'CAP_SYS_RAWIO'
+assert hardware_unit['Service']['SupplementaryGroups'] == 'gpio video kmem'
+assert 'ReadWritePaths' not in hardware_unit['Service']
+for name in ('nabos', 'nab-hardware', 'device-core'):
+    assert os.access('/usr/bin/' + name, os.X_OK), name
+for name in ('nab-core', 'nab-service', 'mosquitto'):
+    assert not Path('/usr/bin/' + name).exists(), name
+    for directory in ('/usr/lib/systemd/system', '/etc/systemd/system'):
+        assert not os.path.lexists(directory + '/' + name + '.service'), name
+assert not Path('/usr/sbin/mosquitto').exists()
+assert not Path('/etc/mosquitto').exists()
+assert not Path('/etc/dbus-1/system.d/org.nabaztag.Core.conf').exists()
+# Global groups must not give the application raw GPIO/video/memory access.
+import grp
+assert not {'gpio', 'video', 'kmem'} & {g.gr_name for g in grp.getgrall() if 'nabos' in g.gr_mem}
+assert Path('/etc/dbus-1/system.d/io.github.guilhem.NabHardware1.conf').is_file()
 assert not Path('/etc/comitup.conf').exists()
 assert not Path('/usr/share/comitup').exists()
 device_unit = configparser.ConfigParser(strict=False)
 device_unit.read('/usr/lib/systemd/system/device-core.service')
+assert 'Environment=DEVICE_CORE_MAINTENANCE_UNITS=nabos.service:nab-hardware.service' in Path('/usr/lib/systemd/system/device-core.service').read_text().splitlines()
 assert device_unit['Service']['PrivateDevices'] == 'yes'
 assert device_unit['Service']['CapabilityBoundingSet'] == ''
 release_env = dict(line.split('=', 1) for line in Path('/etc/nabos/release.env').read_text().splitlines())
@@ -139,12 +166,12 @@ installed = {
     if status == 'installed'
 }
 obsolete = {
-    'comitup', 'python3-cachetools', 'python3-cairo', 'python3-flask',
+    'mosquitto', 'mosquitto-clients', 'comitup', 'python3-cachetools', 'python3-cairo', 'python3-flask',
     'python3-gi', 'python3-networkmanager', 'python3-dbus',
     'python3-click', 'python3-itsdangerous', 'python3-werkzeug',
     'python3-rpi-lgpio', 'python3-lgpio', 'liblgpio1',
 }
-assert not installed & obsolete, f'Unused Comitup dependencies: {sorted(installed & obsolete)}'
+assert not installed & obsolete, f'Obsolete runtime packages: {sorted(installed & obsolete)}'
 assert Path('/usr/sbin/dnsmasq').is_file()
 assert 'address=/#/10.41.0.1' in Path('/etc/NetworkManager/dnsmasq-shared.d/nabos.conf').read_text()
 # Validate the actual dnsmasq configuration without opening a radio or listener.
@@ -372,27 +399,27 @@ done
 # Sound, ears and RFID overlays resolve their targets through these symbols.
 fdtget "$root/boot/dtb/$dtb" /__symbols__ i2s /__symbols__ i2c1 /__symbols__ gpio /__symbols__ sound >/dev/null
 
-# Use the shipped loader/libc for the core; the Go service is static.
-for name in nab-core device-core nab-service; do
+# Use the shipped loader/libc for Rust; the Go application is static.
+for name in nab-hardware device-core nabos; do
   prefix=()
   if [[ $target == zero-armv6 ]]; then
     sysroot=/
-    if [[ $name != nab-service ]]; then sysroot=$root; fi
+    if [[ $name != nabos ]]; then sysroot=$root; fi
     prefix=(qemu-arm-static -cpu arm1176 -L "$sysroot")
-  elif [[ $name != nab-service ]]; then
+  elif [[ $name != nabos ]]; then
     prefix=("$root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" --library-path "$root/usr/lib/aarch64-linux-gnu")
   fi
   printf '#!/bin/bash\nexec %s"$@"\n' "$(printf '%q ' "${prefix[@]}" "$root/usr/bin/$name")" > "$work/$name-test"
   chmod 755 "$work/$name-test"
 done
 # The sandbox simulates boot decisions; it does not boot a kernel or hardware.
-export NABOS_INTEGRATION=1 NAB_CORE_BIN="$work/nab-core-test" NAB_SERVICE_BIN="$work/nab-service-test" DEVICE_CORE_BIN="$work/device-core-test"
+export NABOS_INTEGRATION=1 NABOS_HARDWARE_BIN="$work/nab-hardware-test" NABOS_BIN="$work/nabos-test" DEVICE_CORE_BIN="$work/device-core-test"
 export NABOS_TEST_ASSETS="$root/usr/share/nabos" NABOS_UBOOT_SANDBOX="$work/uboot-sandbox" NABOS_SOURCES="$payload/src"
 export NABOS_VENDOR_DTBS="$root/boot/dtb" NABOS_IMAGE_OVERLAYS="$root/boot/overlays"
 export NABOS_IMAGE_BOOT="$boot" NABOS_IMAGE_ENV="$work/uboot.env" NABOS_IMAGE_TARGET="$target"
 export NABOS_IMAGE_DISK="$work/sdcard.img"
 test_bus=$(bash "$repo/image/test-bus.sh" "$payload/inputs/test-bus" "$work/test-bus")
-export PATH="$test_bus:$PATH"
+export PATH="$test_bus:$PATH" DBUS_DAEMON="$test_bus/dbus-daemon"
 cd "$repo/services"
 setsid "$GO" test -count=1 -timeout 20m -v ./tests/integration ./tests/image &
 tests_pid=$!

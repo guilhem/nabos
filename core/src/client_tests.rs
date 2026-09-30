@@ -1,194 +1,59 @@
-//! Private-bus client tests, without linking the daemon library.
-//! Real-daemon checks: DEVICE_CORE_BIN=/absolute/path/device-core cargo test -- --ignored.
-
-use crate::device::Device;
-use crate::hw::player::{Player, Source};
-use crate::hw::{Cancel, CancelSource, Hw};
+//! Private-bus tests use the real bus ProcessFD; systemd alone is a fixture.
+use super::*;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
-use std::time::Duration;
-use zbus::{Connection, Proxy};
-
-struct Daemon(Child);
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-async fn manager(device: &Device) -> Proxy<'static> {
-    let connection = device.connection().await.unwrap();
-    zbus::proxy::Builder::new(&connection)
-        .destination(crate::device::SERVICE)
-        .unwrap()
-        .path(crate::device::ROOT)
-        .unwrap()
-        .interface("io.github.guilhem.DeviceCore1.Manager")
-        .unwrap()
-        .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
-        .await
-        .unwrap()
-}
-
-async fn daemon(bus: &PrivateBus, milliseconds: u64, agents: bool) -> (Daemon, Proxy<'static>) {
-    let binary = std::env::var_os("DEVICE_CORE_BIN")
-        .expect("real-daemon tests require an explicit DEVICE_CORE_BIN executable path");
-    let log = std::fs::File::create(bus.directory.join("device-core.log")).unwrap();
-    let child = Command::new(binary)
-        .arg("--simulate")
-        .env_clear()
-        .envs(
-            std::env::vars_os()
-                .filter(|(key, _)| !key.to_string_lossy().starts_with("DEVICE_CORE_")),
-        )
-        .env("DEVICE_CORE_BUS_ADDRESS", &bus.address)
-        .env("DEVICE_CORE_DATA_DIR", bus.directory.join("data"))
-        .env(
-            "DEVICE_CORE_NETWORK_GUARD",
-            bus.directory.join("network.guard"),
-        )
-        .env("DEVICE_CORE_AUDIO_ROOTS", &bus.directory)
-        .env("DEVICE_CORE_SIM_AUDIO_MS", milliseconds.to_string())
-        .env("DEVICE_CORE_DEFAULT_VOLUME", "100")
-        .env("DEVICE_CORE_HTTP_ADDR", "")
-        .env("DEVICE_CORE_PRESENCE_UNIT", "nab-core.service")
-        .env(
-            "DEVICE_CORE_MAINTENANCE_UNITS",
-            if agents { "nab-core.service" } else { "" },
-        )
-        .env("DEVICE_CORE_LVA_UNIT", "")
-        .env("DEVICE_CORE_UPDATE_REPO", "")
-        .env("DEVICE_CORE_UPDATE_ASSET", "")
-        .env(
-            "DEVICE_CORE_TIMESYNC_FILE",
-            bus.directory.join("synchronized"),
-        )
-        .env("DEVICE_CORE_TIMESYNC_CLOCK", bus.directory.join("clock"))
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .expect("cannot launch DEVICE_CORE_BIN");
-    let mut daemon = Daemon(child);
-    let device = Device::on_bus(bus.address.clone());
-    let manager = manager(&device).await;
-    let ready = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            assert!(
-                daemon.0.try_wait().unwrap().is_none(),
-                "device-core exited before readiness"
-            );
-            if manager.get_property::<bool>("Ready").await.unwrap_or(false)
-                && !manager
-                    .get_property::<bool>("Maintenance")
-                    .await
-                    .unwrap_or(true)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    assert!(
-        ready.is_ok(),
-        "device-core startup log: {}",
-        std::fs::read_to_string(bus.directory.join("device-core.log")).unwrap()
-    );
-    (daemon, device.proxy("Audio").await.unwrap())
-}
-
-async fn wait(audio: &Proxy<'_>, id: &str) -> String {
-    tokio::time::timeout(Duration::from_secs(3), audio.call("Wait", &(id,)))
-        .await
-        .unwrap()
-        .unwrap()
-}
-
-async fn status(audio: &Proxy<'_>) -> crate::hw::player::Status {
-    audio.get_property("Status").await.unwrap()
-}
-
-fn configuration(bus: &PrivateBus) -> crate::Config {
-    crate::Config {
-        simulate: true,
-        mqtt_host: "127.0.0.1".into(),
-        mqtt_port: 0,
-        sounds_dirs: vec![bus.directory.clone()],
-        chor_dirs: vec![bus.directory.clone()],
-        gpio_chip: "/unused-in-simulation".into(),
-        button_gpio: 17,
-        ws2811_lib: "/unused-in-simulation".into(),
-        led_brightness: 200,
-        led_strip: "grb".into(),
-    }
-}
-
-fn hardware(bus: &PrivateBus, device: Device) -> Arc<Hw> {
-    let cfg = configuration(bus);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    Arc::new(Hw::open(&cfg, tx, None, Arc::new(Player::new(device))))
-}
+use std::sync::atomic::{AtomicU64, Ordering};
+use zbus::zvariant::{OwnedFd, OwnedObjectPath};
 
 struct PrivateBus {
     child: Child,
     directory: PathBuf,
     address: String,
 }
-
 impl PrivateBus {
     fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nab-core-clients-{}-{}",
+            "nab-hardware-test-{}-{}",
             std::process::id(),
-            fastrand::u64(..)
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&directory).unwrap();
         let address = format!("unix:path={}", directory.join("bus").display());
-        let mut child = Self::spawn(&address);
+        let mut child = Command::new("dbus-daemon")
+            .args([
+                "--session",
+                "--nofork",
+                "--print-address=1",
+                "--address",
+                &address,
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         let mut ready = String::new();
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut ready)
             .unwrap();
-        assert!(ready.starts_with(&address));
+        assert!(
+            ready.starts_with(&address),
+            "private bus must actually start"
+        );
         Self {
             child,
             directory,
             address,
         }
     }
-
-    fn spawn(address: &str) -> Child {
-        Command::new("dbus-daemon")
-            .args([
-                "--session",
-                "--nofork",
-                "--print-address=1",
-                "--address",
-                address,
-            ])
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("dbus-daemon is required for private-bus integration checks")
-    }
-
-    fn restart(&mut self) {
-        self.child.kill().unwrap();
-        self.child.wait().unwrap();
-        let _ = std::fs::remove_file(self.directory.join("bus"));
-        self.child = Self::spawn(&self.address);
-        let mut ready = String::new();
-        BufReader::new(self.child.stdout.take().unwrap())
-            .read_line(&mut ready)
-            .unwrap();
-        assert!(ready.starts_with(&self.address));
+    async fn connect(&self) -> Connection {
+        zbus::connection::Builder::address(self.address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
     }
 }
-
 impl Drop for PrivateBus {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -197,530 +62,349 @@ impl Drop for PrivateBus {
     }
 }
 
-#[tokio::test]
-async fn shared_connection_recovers_after_private_bus_restart() {
-    let mut bus = PrivateBus::new();
-    let device = Device::on_bus(bus.address.clone());
-    let first = device.connection().await.unwrap();
-    let same = device.clone().connection().await.unwrap();
-    assert_eq!(first.unique_name(), same.unique_name());
-    bus.restart();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !first.is_closed() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!device.connection().await.unwrap().is_closed());
-}
-
-#[tokio::test]
-#[ignore = "requires explicit DEVICE_CORE_BIN; run with --ignored"]
-async fn real_audio_ids_cancellation_and_completion() {
-    let bus = PrivateBus::new();
-    let (_server, audio) = daemon(&bus, 200, false).await;
-    let device = Device::on_bus(bus.address.clone());
-    let player = Arc::new(Player::new(device.clone()));
-    let source = bus.directory.join("sound.mp3");
-    std::fs::write(&source, b"simulation media").unwrap();
-    let first = player.start(Source::File(source.clone())).await.unwrap();
-    let second = player.start(Source::File(source.clone())).await.unwrap();
-    assert_ne!(first, second);
-    assert_eq!(wait(&audio, &first).await, "preempted");
-    player.stop(&first).await.unwrap();
-    let status = player.status().await.unwrap();
-    assert_eq!(
-        (status.id.as_str(), status.state.as_str(), status.volume),
-        (second.as_str(), "playing", 100)
-    );
-    assert!(player.wait(&second, &Cancel::never()).await.unwrap());
-    assert_eq!(wait(&audio, &second).await, "completed");
-    assert!(player
-        .start(Source::File(bus.directory.join("missing.mp3")))
-        .await
-        .is_err());
-    assert!(player.wait("unknown", &Cancel::never()).await.is_err());
-
-    let id = player
-        .start(Source::Stream(
-            "http://127.0.0.1:23456/radio/0123456789abcdef".into(),
-        ))
-        .await
-        .unwrap();
-    let (cancel, token) = CancelSource::new();
-    cancel.cancel();
-    assert!(!player.wait(&id, &token).await.unwrap());
-    assert_eq!(wait(&audio, &id).await, "stopped");
-    assert_eq!(player.status().await.unwrap().state, "idle");
-    assert_eq!(
-        device.connection().await.unwrap().unique_name(),
-        device.clone().connection().await.unwrap().unique_name()
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires explicit DEVICE_CORE_BIN; run with --ignored"]
-async fn real_audio_owner_disconnect_and_daemon_restart_are_errors_then_recover() {
-    let bus = PrivateBus::new();
-    let (server, audio) = daemon(&bus, 10000, false).await;
-    let device = Device::on_bus(bus.address.clone());
-    let player = Arc::new(Player::new(device.clone()));
-    let source = bus.directory.join("sound.mp3");
-    std::fs::write(&source, b"simulation media").unwrap();
-    let id = player.start(Source::File(source.clone())).await.unwrap();
-    device.connection().await.unwrap().close().await.unwrap();
-    assert_eq!(wait(&audio, &id).await, "owner-lost");
-    assert!(player
-        .wait(&id, &Cancel::never())
-        .await
-        .unwrap_err()
-        .contains("owner-lost"));
-    let active = player.start(Source::File(source.clone())).await.unwrap();
-    let waiter = {
-        let player = player.clone();
-        let id = active.clone();
-        tokio::spawn(async move { player.wait(&id, &Cancel::never()).await })
-    };
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    drop(server);
-    assert!(tokio::time::timeout(Duration::from_secs(2), waiter)
-        .await
-        .unwrap()
-        .unwrap()
-        .is_err());
-    assert!(player.start(Source::File(source.clone())).await.is_err());
-    let (_replacement, replacement) = daemon(&bus, 100, false).await;
-    let new = player.start(Source::File(source)).await.unwrap();
-    assert_ne!(active, new);
-    assert!(player.stop(&active).await.is_err());
-    assert_eq!(status(&replacement).await.id, new);
-    assert!(player.wait(&new, &Cancel::never()).await.unwrap());
-}
-
-#[tokio::test]
-#[ignore = "requires explicit DEVICE_CORE_BIN; run with --ignored"]
-async fn abandoned_audio_start_is_reaped_without_stopping_a_newer_id() {
-    use std::future::Future;
-    use std::task::Poll;
-    let bus = PrivateBus::new();
-    let (_server, audio) = daemon(&bus, 200, false).await;
-    let player = Arc::new(Player::new(Device::on_bus(bus.address.clone())));
-    let source = bus.directory.join("sound.mp3");
-    std::fs::write(&source, b"simulation media").unwrap();
-    for replace in [false, true] {
-        let mut start = Box::pin(player.start(Source::File(source.clone())));
-        // Dispatch Start, then leave its reply unpolled to model task abortion.
-        std::future::poll_fn(|cx| {
-            assert!(start.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while status(&audio).await.id.is_empty() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap();
-        let abandoned = status(&audio).await.id;
-        let replacement = if replace {
-            Some(player.start(Source::File(source.clone())).await.unwrap())
-        } else {
-            None
-        };
-        drop(start);
-        assert_eq!(
-            wait(&audio, &abandoned).await,
-            if replace { "preempted" } else { "stopped" }
-        );
-        if let Some(id) = replacement {
-            assert_eq!(wait(&audio, &id).await, "completed");
-        }
-    }
-}
-
-struct FailingAudio;
-
-#[zbus::interface(name = "io.github.guilhem.DeviceCore1.Audio")]
-impl FailingAudio {
-    fn start(&self, _kind: &str, _source: &str) -> zbus::fdo::Result<String> {
-        Err(zbus::fdo::Error::Failed("test-audio-failure".into()))
-    }
-}
-
-#[tokio::test]
-async fn dbus_failures_reach_command_outcomes_including_choreography() {
-    use crate::engine::{run_job, Outcome};
-    use crate::protocol::{Action, Item};
-    let bus = PrivateBus::new();
-    let server = zbus::connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name(crate::device::SERVICE)
-        .unwrap()
-        .serve_at(format!("{}/Audio", crate::device::ROOT), FailingAudio)
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    let device = Device::on_bus(bus.address.clone());
-    let hw = hardware(&bus, device);
-    let play = || Action::Play {
-        sequence: vec![Item {
-            stream: Some("http://127.0.0.1:23456/radio/0123456789abcdef".into()),
-            ..Item::default()
-        }],
-        cancelable: true,
-    };
-    assert!(matches!(
-        run_job(hw.clone(), play(), Cancel::never()).await,
-        Outcome::Error("audio_failed")
-    ));
-    std::fs::create_dir(bus.directory.join("choreographies")).unwrap();
-    // The MIDI opcode picks any of its named files. Every pick must resolve.
-    for name in crate::chor::MIDI_LIST {
-        std::fs::write(bus.directory.join(name), b"simulation media").unwrap();
-    }
-    std::fs::write(bus.directory.join("midi.chor"), [0, 16, 0, 19]).unwrap();
-    let choreography = Action::Play {
-        sequence: vec![Item {
-            choreography: Some("midi.chor".into()),
-            ..Item::default()
-        }],
-        cancelable: true,
-    };
-    assert!(matches!(
-        run_job(hw.clone(), choreography, Cancel::never()).await,
-        Outcome::Error("audio_failed")
-    ));
-    server.close().await.unwrap();
-    assert!(matches!(
-        run_job(hw, play(), Cancel::never()).await,
-        Outcome::Error("audio_failed")
-    ));
-}
-
-struct SystemdManager;
-
+struct Systemd(Arc<Mutex<String>>);
 #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
-impl SystemdManager {
+impl Systemd {
     #[zbus(name = "GetUnitByPIDFD")]
-    fn get_unit_by_pidfd(
-        &self,
-        fd: zbus::zvariant::OwnedFd,
-    ) -> (zbus::zvariant::OwnedObjectPath, String, Vec<u8>) {
+    fn get_unit_by_pidfd(&self, fd: OwnedFd) -> (OwnedObjectPath, String, Vec<u8>) {
         use std::os::fd::AsRawFd;
         let info =
             std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd())).unwrap();
         let pid: u32 = info
             .lines()
-            .find_map(|line| line.strip_prefix("Pid:\t"))
+            .find_map(|l| l.strip_prefix("Pid:\t"))
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(pid, std::process::id());
+        assert_eq!(
+            pid,
+            std::process::id(),
+            "the bus must supply a real pinned caller FD"
+        );
         (
-            "/org/freedesktop/systemd1/unit/nab_2dcore_2eservice"
+            "/org/freedesktop/systemd1/unit/nabos_2eservice"
                 .try_into()
                 .unwrap(),
-            "nab-core.service".into(),
+            self.0.lock().unwrap().clone(),
             vec![0; 16],
         )
     }
 }
-
-struct SystemdUnit;
-
-#[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
-impl SystemdUnit {
-    #[zbus(property)]
-    fn id(&self) -> &str {
-        "nab-core.service"
-    }
-}
-
-async fn systemd(bus: &PrivateBus) -> Connection {
-    zbus::connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name("org.freedesktop.systemd1")
-        .unwrap()
-        .serve_at("/org/freedesktop/systemd1", SystemdManager)
-        .unwrap()
-        .serve_at(
-            "/org/freedesktop/systemd1/unit/nab_2dcore_2eservice",
-            SystemdUnit,
-        )
-        .unwrap()
-        .build()
-        .await
-        .unwrap()
-}
-
-#[tokio::test]
-#[ignore = "requires explicit DEVICE_CORE_BIN; run with --ignored"]
-async fn real_network_authorizes_only_fresh_original_gpio_presence() {
-    let bus = PrivateBus::new();
-    let _systemd = systemd(&bus).await;
-    let (_server, _audio) = daemon(&bus, 20, false).await;
-    let network = Device::on_bus(bus.address.clone())
-        .proxy("Network")
-        .await
-        .unwrap();
-    type NetworkStatus = (
-        String,
-        String,
-        bool,
-        String,
-        Vec<u8>,
-        String,
-        u64,
-        String,
-        String,
-    );
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while network
-            .get_property::<NetworkStatus>("Status")
-            .await
-            .unwrap()
-            .0
-            != "hotspot"
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let stale = crate::hw::button::monotonic();
-    let token: String = network.call("Reserve", &("",)).await.unwrap();
-    let presence = crate::network::start(Device::on_bus(bus.address.clone()));
-    presence.press(stale);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!network
-        .call::<_, _, bool>("Authorized", &(token.as_str(),))
-        .await
-        .unwrap());
-    presence.press(crate::hw::button::monotonic());
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !network
-            .call::<_, _, bool>("Authorized", &(token.as_str(),))
-            .await
-            .unwrap()
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires explicit DEVICE_CORE_BIN; run with --ignored"]
-async fn real_manager_without_agents_opens_the_core_barrier() {
-    use crate::{engine::Input, maintenance};
-    let bus = PrivateBus::new();
-    let (_server, _audio) = daemon(&bus, 20, false).await;
-    let device = Device::on_bus(bus.address.clone());
-    let capabilities: Vec<String> = manager(&device)
-        .await
-        .get_property("Capabilities")
-        .await
-        .unwrap();
-    assert!(!capabilities.iter().any(|c| c == "maintenance-agents"));
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    maintenance::start(device, tx);
-    let Input::MaintenanceObserved(observation) =
-        tokio::time::timeout(Duration::from_secs(3), rx.recv())
-            .await
-            .unwrap()
-            .unwrap()
-    else {
-        panic!("unexpected maintenance input")
-    };
-    assert!(observation.connection.is_some());
-    assert!(observation.safe);
-    let mut state = maintenance::State::default();
-    state.observe(observation);
-    assert!(!state.blocked());
-}
-
-#[tokio::test]
-#[ignore = "requires explicit DEVICE_CORE_BIN; run with --ignored"]
-async fn real_coordinator_acquires_and_releases_core_on_simulated_power() {
-    use crate::{engine::Input, maintenance};
-    let bus = PrivateBus::new();
-    let _systemd = systemd(&bus).await;
-    let (_server, _audio) = daemon(&bus, 20, true).await;
-    let device = Device::on_bus(bus.address.clone());
-    let manager = manager(&device).await;
-    let capabilities: Vec<String> = manager.get_property("Capabilities").await.unwrap();
-    assert!(capabilities.iter().any(|c| c == "maintenance-agents"));
-    let system = device.proxy("System").await.unwrap();
-    assert!(
-        system.call::<_, _, ()>("Reboot", &()).await.is_err(),
-        "required core agent is not registered yet"
-    );
-    let hw = hardware(&bus, device.clone());
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mqtt = crate::bus::Bus::start(&configuration(&bus), tx.clone());
-    let engine = tokio::spawn(crate::engine::Engine::new(hw, mqtt, tx.clone()).run(rx));
-    maintenance::start(device, tx.clone());
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while system.call::<_, _, ()>("Reboot", &()).await.is_err() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!manager.get_property::<bool>("Maintenance").await.unwrap());
-    // A second operation succeeds only after the first reservation was released.
-    crate::device::bounded(system.call::<_, _, ()>("PowerOff", &()))
-        .await
-        .unwrap();
-    assert!(!manager.get_property::<bool>("Maintenance").await.unwrap());
-    tx.send(Input::Shutdown)
-        .unwrap_or_else(|_| panic!("engine stopped"));
-    engine.await.unwrap();
-}
-
-#[derive(Clone)]
-struct MockManager {
-    agents: bool,
-    ready: Arc<std::sync::atomic::AtomicBool>,
-    maintenance: Arc<std::sync::atomic::AtomicBool>,
-    registered: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl MockManager {
-    fn new(agents: bool, ready: bool) -> Self {
-        Self {
-            agents,
-            ready: Arc::new(std::sync::atomic::AtomicBool::new(ready)),
-            maintenance: Arc::default(),
-            registered: Arc::default(),
-        }
-    }
-}
-
+struct Manager;
 #[zbus::interface(name = "io.github.guilhem.DeviceCore1.Manager")]
-impl MockManager {
-    #[zbus(property)]
-    fn capabilities(&self) -> Vec<String> {
-        if self.agents {
-            vec!["maintenance-agents".into()]
-        } else {
-            Vec::new()
-        }
-    }
+impl Manager {
     #[zbus(property)]
     fn ready(&self) -> bool {
-        self.ready.load(std::sync::atomic::Ordering::SeqCst)
+        true
     }
     #[zbus(property)]
     fn maintenance(&self) -> bool {
-        self.maintenance.load(std::sync::atomic::Ordering::SeqCst)
+        false
     }
-    fn register_agent(&self, path: zbus::zvariant::OwnedObjectPath) -> zbus::fdo::Result<()> {
-        assert_eq!(path.as_str(), crate::maintenance::PATH);
-        if !self.agents {
-            return Err(zbus::fdo::Error::AccessDenied("agents-disabled".into()));
-        }
-        self.registered
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
+    #[zbus(property)]
+    fn capabilities(&self) -> Vec<String> {
+        vec!["maintenance-agents".into()]
+    }
+    fn register_agent(&self, _path: OwnedObjectPath) {}
+}
+struct Network(Arc<Mutex<Vec<u64>>>);
+#[zbus::interface(name = "io.github.guilhem.DeviceCore1.Network")]
+impl Network {
+    fn report_presence(&self, edge: u64) {
+        self.0.lock().unwrap().push(edge);
     }
 }
-
-#[tokio::test]
-async fn manager_without_agents_still_fences_readiness_and_maintenance() {
-    use crate::engine::Input;
-    use crate::maintenance;
-    use std::sync::atomic::Ordering;
-
-    async fn next(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Input>,
-    ) -> maintenance::Observation {
-        match tokio::time::timeout(Duration::from_secs(3), rx.recv())
+struct Harness {
+    bus: PrivateBus,
+    unit: Arc<Mutex<String>>,
+    _systemd: Connection,
+    daemon: Connection,
+    hardware: Arc<Hardware>,
+    connection: Connection,
+    task: tokio::task::JoinHandle<Result<(), String>>,
+    presence: Arc<Mutex<Vec<u64>>>,
+}
+impl Harness {
+    async fn new() -> Self {
+        let bus = PrivateBus::new();
+        let unit = Arc::new(Mutex::new("nabos.service".into()));
+        let systemd = zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .name("org.freedesktop.systemd1")
+            .unwrap()
+            .serve_at("/org/freedesktop/systemd1", Systemd(unit.clone()))
+            .unwrap()
+            .build()
             .await
+            .unwrap();
+        let presence = Arc::new(Mutex::new(Vec::new()));
+        let daemon = zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
+            .name(crate::device::SERVICE)
             .unwrap()
-        {
-            Input::MaintenanceObserved(observation) => observation,
-            _ => panic!("unexpected maintenance input"),
+            .serve_at(crate::device::ROOT, Manager)
+            .unwrap()
+            .serve_at(
+                format!("{}/Network", crate::device::ROOT),
+                Network(presence.clone()),
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let device = Device::on_bus(bus.address.clone());
+        let connection = device.connection().await.unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = crate::Config {
+            simulate: true,
+            gpio_chip: "/unused".into(),
+            button_gpio: 17,
+            ws2811_lib: "/unused".into(),
+            led_brightness: 200,
+            led_strip: "grb".into(),
+        };
+        let hw = Arc::new(Hw::open(&cfg, tx, None));
+        let hardware = Hardware::new(hw);
+        let h = hardware.clone();
+        let task = tokio::spawn(async move { run(device, h, rx).await });
+        let dbus = fdo::DBusProxy::new(&connection).await.unwrap();
+        eventually(|| async {
+            dbus.name_has_owner(SERVICE.try_into().unwrap())
+                .await
+                .unwrap_or(false)
+        })
+        .await;
+        eventually(|| async { !hardware.state.lock().unwrap().maintenance.blocked() }).await;
+        Self {
+            bus,
+            unit,
+            _systemd: systemd,
+            daemon,
+            hardware,
+            connection,
+            task,
+            presence,
         }
     }
-
-    let bus = PrivateBus::new();
-    let controller = MockManager::new(false, false);
-    let _server = zbus::connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name(crate::device::SERVICE)
-        .unwrap()
-        .serve_at(crate::device::ROOT, controller.clone())
-        .unwrap()
-        .build()
+    async fn api<'a>(&self, bus: &'a Connection) -> Proxy<'a> {
+        Proxy::new(bus, SERVICE, PATH, SERVICE).await.unwrap()
+    }
+    async fn agent<'a>(&'a self, bus: &'a Connection) -> Proxy<'a> {
+        Proxy::new(
+            bus,
+            self.connection.unique_name().unwrap().as_str(),
+            maintenance::PATH,
+            "io.github.guilhem.DeviceCore1.Agent",
+        )
         .await
-        .unwrap();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    maintenance::start(Device::on_bus(bus.address.clone()), tx);
-    let mut state = maintenance::State::default();
-    let observation = next(&mut rx).await;
-    assert!(observation.connection.is_some());
-    state.observe(observation);
-    assert!(state.blocked(), "Ready=false still blocks commands");
-    controller.ready.store(true, Ordering::SeqCst);
-    state.observe(next(&mut rx).await);
-    assert!(!state.blocked());
-    controller.maintenance.store(true, Ordering::SeqCst);
-    state.observe(next(&mut rx).await);
-    assert!(
-        state.blocked(),
-        "maintenance remains enforced without agents"
-    );
-    controller.maintenance.store(false, Ordering::SeqCst);
-    state.observe(next(&mut rx).await);
-    assert!(!state.blocked());
-    assert!(!controller.registered.load(Ordering::SeqCst));
+        .unwrap()
+    }
 }
-
-#[tokio::test]
-async fn manager_owner_fences_lost_acquire_and_repeated_release() {
-    use crate::maintenance;
-    use std::sync::atomic::Ordering;
-    let bus = PrivateBus::new();
-    let controller = MockManager::new(true, true);
-    let server = zbus::connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name(crate::device::SERVICE)
-        .unwrap()
-        .serve_at(crate::device::ROOT, controller.clone())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    let device = Device::on_bus(bus.address.clone());
-    let hw = hardware(&bus, device.clone());
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mqtt = crate::bus::Bus::start(&configuration(&bus), tx.clone());
-    let engine = tokio::spawn(crate::engine::Engine::new(hw, mqtt, tx.clone()).run(rx));
-    maintenance::start(device.clone(), tx.clone());
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while !controller.registered.load(Ordering::SeqCst) {
+impl Drop for Harness {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+async fn eventually<F, Fut>(mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !check().await {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    let client = device.connection().await.unwrap();
-    let destination = client.unique_name().unwrap().to_owned();
-    let agent = zbus::Proxy::new(
-        &server,
-        destination.clone(),
-        maintenance::PATH,
-        "io.github.guilhem.DeviceCore1.Agent",
-    )
-    .await
-    .unwrap();
-    let token: String = agent.call("Acquire", &("update-a",)).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+async fn private_bus_auth_bounds_wire_and_owner_disconnect() {
+    let h = Harness::new().await;
+    let caller = h.bus.connect().await;
+    let other = h.bus.connect().await;
+    let api = h.api(&caller).await;
+    let outsider = h.api(&other).await;
+    assert!(
+        api.get_property::<bool>("Ready").await.unwrap(),
+        "simulation has ears, LEDs and a button without RFID"
+    );
+    let status: Status = api.get_property("Status").await.unwrap();
+    assert_eq!(
+        (&status.0, status.1, status.6.as_str(), status.7, status.8),
+        (&"simulated".into(), true, "none", 0, 0)
+    );
+    assert!(api
+        .call::<_, _, ()>("SetLeds", &(vec![(0u8, 1u8, 2u8, 3u8)],))
+        .await
+        .is_err());
+    *h.unit.lock().unwrap() = "untrusted.service".into();
+    assert!(api.call::<_, _, ()>("Claim", &()).await.is_err());
+    *h.unit.lock().unwrap() = "nabos.service".into();
+    api.call::<_, _, ()>("Claim", &()).await.unwrap();
+    assert!(outsider.call::<_, _, ()>("Claim", &()).await.is_err());
+    api.call::<_, _, ()>("Claim", &()).await.unwrap();
+    api.call::<_, _, ()>("SetLeds", &(vec![(0u8, 1u8, 2u8, 3u8), (4, 4, 5, 6)],))
+        .await
+        .unwrap();
+    assert!(api
+        .call::<_, _, ()>("SetLeds", &(vec![(0u8, 1u8, 2u8, 3u8), (0, 4, 5, 6)],))
+        .await
+        .is_err());
+    assert!(api
+        .call::<_, _, ()>("SetLeds", &(vec![(5u8, 1u8, 2u8, 3u8)],))
+        .await
+        .is_err());
+    assert!(api
+        .call::<_, _, ()>("PulseLed", &(5u8, 0u8, 0u8, 0u8))
+        .await
+        .is_err());
+    assert!(api
+        .call::<_, _, ()>("MoveEar", &(2u8, 0u8, false))
+        .await
+        .is_err());
+    assert!(outsider
+        .call::<_, _, ()>("MoveEar", &(0u8, 3u8, false))
+        .await
+        .is_err());
+    api.call::<_, _, ()>("MoveEar", &(0u8, 255u8, true))
+        .await
+        .unwrap();
+    api.call::<_, _, ()>("StepEar", &(1u8, 255u8, false))
+        .await
+        .unwrap();
+    api.call::<_, _, ()>("WaitEarsIdle", &()).await.unwrap();
+    let positions: (i16, i16) = api.call("ReadEars", &(true,)).await.unwrap();
+    assert_eq!(positions, (0, 0));
+    for (uid, data, timeout) in [
+        (vec![0u8; 7], vec![], 1u32),
+        (vec![0; 8], vec![0; 33], 1),
+        (vec![0; 8], vec![], 0),
+        (vec![0; 8], vec![], 61),
+    ] {
+        assert!(api
+            .call::<_, _, u64>("StartWrite", &("st25tb", uid, 1u8, 2u8, data, timeout))
+            .await
+            .is_err());
+    }
+    let id: u64 = api
+        .call(
+            "StartWrite",
+            &("st25tb", vec![0u8; 8], 1u8, 2u8, vec![0u8; 32], 1u32),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        api.call::<_, _, String>("WaitWrite", &(id,)).await.unwrap(),
+        "no-reader"
+    );
+    assert!(outsider
+        .call::<_, _, String>("WaitWrite", &(id,))
+        .await
+        .is_err());
+    api.call::<_, _, ()>("CancelWrite", &(id,)).await.unwrap();
+    for expected in 2..=MAX_WRITES as u64 {
+        let next: u64 = api
+            .call(
+                "StartWrite",
+                &("st25tb", vec![0u8; 8], 1u8, 2u8, Vec::<u8>::new(), 1u32),
+            )
+            .await
+            .unwrap();
+        assert_eq!(next, expected);
+        assert_eq!(
+            api.call::<_, _, String>("WaitWrite", &(next,))
+                .await
+                .unwrap(),
+            "no-reader"
+        );
+    }
+    assert!(api
+        .call::<_, _, u64>(
+            "StartWrite",
+            &("st25tb", vec![0u8; 8], 1u8, 2u8, Vec::<u8>::new(), 1u32)
+        )
+        .await
+        .is_err());
+    {
+        let mut state = h.hardware.state.lock().unwrap();
+        for write in state.writes.values_mut() {
+            write.completed = Some(Instant::now() - RESULT_TTL);
+        }
+    }
+    h.hardware.cleanup();
+    assert!(h.hardware.state.lock().unwrap().writes.is_empty());
+    h.hardware.state.lock().unwrap().next_write = u64::MAX;
+    assert!(api
+        .call::<_, _, u64>(
+            "StartWrite",
+            &("st25tb", vec![0u8; 8], 1u8, 2u8, Vec::<u8>::new(), 1u32)
+        )
+        .await
+        .is_err());
+    assert!(
+        h.hardware.state.lock().unwrap().writes.is_empty(),
+        "ID exhaustion never wraps or leaves orphan records"
+    );
+    api.call::<_, _, ()>("PulseLed", &(4u8, 255u8, 0u8, 0u8))
+        .await
+        .unwrap();
+    let token = h
+        .hardware
+        .token(caller.unique_name().unwrap().as_str())
+        .unwrap();
+    caller.clone().close().await.unwrap();
+    eventually(|| async { token.is_cancelled() }).await;
+    eventually(|| async { !h.hardware.state.lock().unwrap().draining }).await;
+    outsider.call::<_, _, ()>("Claim", &()).await.unwrap();
+    outsider.call::<_, _, ()>("Release", &()).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+async fn private_bus_maintenance_fences_deferred_mutations_and_authenticates_current_daemon() {
+    let h = Harness::new().await;
+    let caller = h.bus.connect().await;
+    let outsider = h.bus.connect().await;
+    let api = h.api(&caller).await;
+    api.call::<_, _, ()>("Claim", &()).await.unwrap();
+    assert!(h
+        .agent(&outsider)
+        .await
+        .call::<_, _, String>("Acquire", &("update-a",))
+        .await
+        .is_err());
+    let serial = h.hardware.serial.lock().await;
+    let clone = caller.clone();
+    let deferred = tokio::spawn(async move {
+        Proxy::new(&clone, SERVICE, PATH, SERVICE)
+            .await
+            .unwrap()
+            .call::<_, _, ()>("MoveEar", &(0u8, 5u8, false))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let daemon = h.daemon.clone();
+    let destination = h.connection.unique_name().unwrap().to_string();
+    let acquired = tokio::spawn(async move {
+        Proxy::new(
+            &daemon,
+            destination,
+            maintenance::PATH,
+            "io.github.guilhem.DeviceCore1.Agent",
+        )
+        .await
+        .unwrap()
+        .call::<_, _, String>("Acquire", &("update-a",))
+        .await
+    });
+    eventually(|| async { h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
+    drop(serial);
+    assert!(deferred.await.unwrap().is_err());
+    let token = acquired.await.unwrap().unwrap();
+    let agent = h.agent(&h.daemon).await;
     assert_eq!(
         agent
             .call::<_, _, String>("Acquire", &("update-a",))
@@ -729,58 +413,141 @@ async fn manager_owner_fences_lost_acquire_and_repeated_release() {
         token
     );
     assert!(agent
-        .call::<_, _, ()>("Abort", &("wrong-operation",))
+        .call::<_, _, String>("Acquire", &("update-b",))
         .await
         .is_err());
-    let attacker = zbus::connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
+    assert!(api
+        .call::<_, _, ()>("MoveEar", &(0u8, 5u8, false))
+        .await
+        .is_err());
+    assert!(agent
+        .call::<_, _, ()>("Release", &("wrong-token",))
+        .await
+        .is_err());
+    agent.call::<_, _, ()>("Release", &(&token,)).await.unwrap();
+    agent.call::<_, _, ()>("Release", &(&token,)).await.unwrap();
+    eventually(|| async { !h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
+    api.call::<_, _, ()>("MoveEar", &(0u8, 2u8, false))
         .await
         .unwrap();
-    let unauthorized = zbus::Proxy::new(
-        &attacker,
-        destination,
-        maintenance::PATH,
-        "io.github.guilhem.DeviceCore1.Agent",
+    let positions: (i16, i16) = api.call("ReadEars", &(false,)).await.unwrap();
+    assert_eq!(positions, (2, 0));
+    let old_owner = h.daemon.unique_name().unwrap().to_string();
+    h.daemon.release_name(crate::device::SERVICE).await.unwrap();
+    eventually(|| async { h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
+    assert!(maintenance::authorize(&h.connection, &old_owner)
+        .await
+        .is_err());
+    assert!(agent
+        .call::<_, _, String>("Acquire", &("stale-daemon",))
+        .await
+        .is_err());
+    h.daemon.request_name(crate::device::SERVICE).await.unwrap();
+    eventually(|| async { !h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+async fn private_bus_simulation_emits_hardware_interface_and_preserves_presence() {
+    let h = Harness::new().await;
+    let caller = h.bus.connect().await;
+    let api = h.api(&caller).await;
+    let mut button = api.receive_signal("Button").await.unwrap();
+    let mut ears = api.receive_signal("EarMoved").await.unwrap();
+    let mut tags = api.receive_signal("Tag").await.unwrap();
+    let sim = Proxy::new(
+        &caller,
+        SERVICE,
+        PATH,
+        "io.github.guilhem.NabHardware1.Simulation",
     )
     .await
     .unwrap();
-    assert!(unauthorized
-        .call::<_, _, ()>("Abort", &("update-a",))
-        .await
-        .is_err());
-    // Ignore the acquired token: rollback must work even when that reply was lost.
-    agent
-        .call::<_, _, ()>("Abort", &("update-a",))
+    sim.call::<_, _, ()>("Button", &("down", 123456789u64))
         .await
         .unwrap();
-    agent
-        .call::<_, _, ()>("Abort", &("update-a",))
+    let message = tokio::time::timeout(Duration::from_secs(2), button.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        message.body().deserialize::<(String, u64)>().unwrap(),
+        ("down".into(), 123456789)
+    );
+    eventually(|| async { h.presence.lock().unwrap().as_slice() == [123456789] }).await;
+    assert!(sim
+        .call::<_, _, ()>("Button", &("click", 123u64))
+        .await
+        .is_err());
+    sim.call::<_, _, ()>("EarMoved", &(1u8,)).await.unwrap();
+    let message = tokio::time::timeout(Duration::from_secs(2), ears.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.body().deserialize::<u8>().unwrap(), 1);
+    let tag = (
+        false,
+        "st25tb",
+        vec![0u8; 8],
+        "formatted",
+        false,
+        true,
+        42u8,
+        255u8,
+        vec![0u8, 255, 128],
+    );
+    sim.call::<_, _, ()>("Tag", &tag).await.unwrap();
+    let message = tokio::time::timeout(Duration::from_secs(2), tags.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let received: (bool, String, Vec<u8>, String, bool, bool, u8, u8, Vec<u8>) =
+        message.body().deserialize().unwrap();
+    assert_eq!(received.7, 255);
+    assert_eq!(received.8, vec![0, 255, 128]);
+}
+
+#[tokio::test]
+#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+async fn private_bus_explicit_address_survives_redirected_system_environment() {
+    const TEST: &str =
+        "bus::tests::private_bus_explicit_address_survives_redirected_system_environment";
+    if let Ok(expected) = std::env::var("NABOS_TEST_PRIVATE_BUS_ID") {
+        let address = std::env::var("NABOS_DEVICE_BUS_ADDRESS").unwrap();
+        assert_eq!(std::env::var("DBUS_SYSTEM_BUS_ADDRESS").unwrap(), address);
+        let device = Device::open(true).await.unwrap();
+        let connection = device.connection().await.unwrap();
+        assert_eq!(
+            fdo::DBusProxy::new(&connection)
+                .await
+                .unwrap()
+                .get_id()
+                .await
+                .unwrap(),
+            expected.as_str()
+        );
+        return;
+    }
+    let bus = PrivateBus::new();
+    let connection = bus.connect().await;
+    let id = fdo::DBusProxy::new(&connection)
+        .await
+        .unwrap()
+        .get_id()
         .await
         .unwrap();
-    for _ in 0..2 {
-        agent
-            .call::<_, _, ()>("Release", &(token.as_str(),))
-            .await
-            .unwrap();
-    }
-    let second: String = agent.call("Acquire", &("update-b",)).await.unwrap();
-    assert_ne!(token, second);
-    assert!(agent
-        .call::<_, _, ()>("Release", &(token.as_str(),))
-        .await
-        .is_err());
-    assert!(agent
-        .call::<_, _, ()>("Abort", &("update-a",))
-        .await
-        .is_err());
-    for _ in 0..2 {
-        agent
-            .call::<_, _, ()>("Release", &(second.as_str(),))
-            .await
-            .unwrap();
-    }
-    tx.send(crate::engine::Input::Shutdown)
-        .unwrap_or_else(|_| panic!("engine stopped"));
-    engine.await.unwrap();
+    // A child isolates the redirected environment from concurrently running tests.
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--ignored"])
+        .env("DBUS_SYSTEM_BUS_ADDRESS", &bus.address)
+        .env("NABOS_DEVICE_BUS_ADDRESS", &bus.address)
+        .env("NABOS_TEST_PRIVATE_BUS_ID", id.to_string())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "redirected simulation failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

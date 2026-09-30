@@ -232,6 +232,9 @@ const (
 type healthCase struct {
 	deviceUnready       bool
 	deviceInactive      bool
+	hardwareUnready     bool
+	hardwareInactive    bool
+	appInactive         bool
 	slot                string
 	healthyAfter        int
 	own, other, otherFS string
@@ -258,7 +261,7 @@ func mounts(changes map[string]string) map[string]string {
 }
 
 // checkHealth runs the health check and returns its output, the commands it
-// ran and the boot health marker left for nab-service.
+// ran and the boot health marker left for nabos.
 func checkHealth(t *testing.T, c healthCase) (string, []string, string) {
 	t.Helper()
 	def := func(v *string, d string) {
@@ -287,9 +290,19 @@ func checkHealth(t *testing.T, c healthCase) (string, []string, string) {
 		cases += k + ") echo \"" + v + "\";; "
 	}
 	fake := newFakes(t, tmp, map[string]string{
-		"systemctl": fmt.Sprintf(`[ "$*" != "is-active --quiet device-core.service" ] || [ %t = false ]`, c.deviceInactive),
-		"busctl":    fmt.Sprintf(`[ "$*" = "--system --timeout=5 get-property io.github.guilhem.DeviceCore1 /io/github/guilhem/DeviceCore1 io.github.guilhem.DeviceCore1.Manager Ready" ] || exit 1; echo 'b %t'`, !c.deviceUnready),
-		"curl":      fmt.Sprintf("n=$(($(cat %s) + 1)); echo $n > %s; [ $n -gt %d ]", counter, counter, c.healthyAfter),
+		"systemctl": fmt.Sprintf(`case "$*" in
+"is-active --quiet device-core.service") [ %t = false ] ;;
+"is-active --quiet nab-hardware.service") [ %t = false ] ;;
+"is-active --quiet nabos.service") [ %t = false ] ;;
+"reboot") exit 0 ;;
+*) exit 1 ;;
+esac`, c.deviceInactive, c.hardwareInactive, c.appInactive),
+		"busctl": fmt.Sprintf(`case "$*" in
+"--system --timeout=5 get-property io.github.guilhem.DeviceCore1 /io/github/guilhem/DeviceCore1 io.github.guilhem.DeviceCore1.Manager Ready") echo 'b %t' ;;
+"--system --timeout=5 get-property io.github.guilhem.NabHardware1 /io/github/guilhem/NabHardware1 io.github.guilhem.NabHardware1 Ready") echo 'b %t' ;;
+*) exit 1 ;;
+esac`, !c.deviceUnready, !c.hardwareUnready),
+		"curl": fmt.Sprintf("n=$(($(cat %s) + 1)); echo $n > %s; [ $n -gt %d ]", counter, counter, c.healthyAfter),
 		// runuser -u nabos -- env ... pactl list KIND
 		"runuser": `[ "$1 $2 $3" = "-u nabos --" ] || exit 1; shift 3; exec "$@"`,
 		"pactl":   `[ "$XDG_RUNTIME_DIR $LC_ALL $1" = "/run/user/1000 C list" ] && cat ` + tmp + "/$2",
@@ -355,6 +368,13 @@ func TestHealth(t *testing.T) {
 	})
 	for _, c := range []healthCase{{deviceUnready: true}, {deviceInactive: true}} {
 		check(fmt.Sprintf("device-core inactive=%t unready=%t", c.deviceInactive, c.deviceUnready), func(t *testing.T) {
+			_, calls, _ := checkHealth(t, c)
+			confirmed(t, calls, false)
+			rebooted(t, calls, true)
+		})
+	}
+	for _, c := range []healthCase{{hardwareUnready: true}, {hardwareInactive: true}, {appInactive: true}} {
+		check(fmt.Sprintf("hardware inactive=%t unready=%t app inactive=%t", c.hardwareInactive, c.hardwareUnready, c.appInactive), func(t *testing.T) {
 			_, calls, _ := checkHealth(t, c)
 			confirmed(t, calls, false)
 			rebooted(t, calls, true)

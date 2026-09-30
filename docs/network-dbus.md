@@ -2,8 +2,8 @@
 
 The independent system bus service `io.github.guilhem.DeviceCore1`, object
 `/io/github/guilhem/DeviceCore1/Network`, implements
-`io.github.guilhem.DeviceCore1.Network`. nab-core and nab-service are direct
-D-Bus clients; nab-core has no NetworkManager controller. The production policy admits only the
+`io.github.guilhem.DeviceCore1.Network`. nab-hardware and nabos are direct
+D-Bus clients; nab-hardware has no NetworkManager controller. The production policy admits only the
 NabOS service user; the HTTP service enforces administrator authentication.
 NetworkManager owns the radio, connection profiles and secrets.
 
@@ -26,10 +26,10 @@ profile with autoconnect enabled. Reconciliation removes orphaned candidates
 when no checkpoint protects them, including candidates saved before a restart.
 Candidates are excluded from the saved-profile list and automatic retries.
 
-If the final save reply is lost, the core rediscovers NetworkManager and checks
+If the final save reply is lost, device-core rediscovers NetworkManager and checks
 the profile by UUID before reporting success or cleaning up. Promotion and
 cleanup use NetworkManager's `VersionId` and conditional `Update2` so a late
-promotion cannot race with candidate deletion, even after a core restart. An
+promotion cannot race with candidate deletion, even after a device-core restart. An
 empty successful update also [increments the version in NetworkManager 1.52](https://github.com/NetworkManager/NetworkManager/blob/1.52.0/src/core/settings/nm-settings.c#L1161-L1183).
 An unavailable or inconclusive result reports `commit-unconfirmed` and leaves
 recovery to reconciliation. A crash between checkpoint destruction and promotion can discard
@@ -66,15 +66,15 @@ client network, open `/setup`, then press the button again. Go serializes this
 readiness check and arming with connection submission: only `mode=client` with a
 usable address and `phase != connecting` can arm setup. Unavailable or nonready
 status disarms it. Reloads and form errors do not rearm or clear fresh proof.
-The optional MQTT `down.edge_monotonic_ns` decimal string carries the original
-GPIO `CLOCK_MONOTONIC` edge (see [protocol-v1.md](protocol-v1.md)). Admin proof must
-be newer than the arming cutoff, not in the future, and less than five minutes
-old; missing metadata, other gestures, delayed old edges and duplicates cannot
-renew proof. Service restarts require opening setup and a new press.
+The typed hardware `Button(gesture:s, edge:t)` signal carries the original
+GPIO `CLOCK_MONOTONIC` edge (see [hardware-dbus.md](hardware-dbus.md)). Admin proof
+must be newer than the arming cutoff, not in the future, and less than five
+minutes old; zero timestamps, other gestures, delayed old edges and duplicates
+cannot renew proof. Service restarts require opening setup and a new press.
 
 `ReportPresence(monotonic_ns:t)` is D-Bus-only. The daemon resolves the actual
-sender from bus credentials and systemd, and accepts only `nab-core.service`
-configured through `DEVICE_CORE_PRESENCE_UNIT`. MQTT delivery alone does not
+sender from bus credentials and systemd, and accepts only `nab-hardware.service`
+configured through `DEVICE_CORE_PRESENCE_UNIT`. A relayed application event does not
 prove presence to the Linux network controller. HTTP never exposes this method.
 
 `AcquireGuard(expected_generation:s)→h` checks a ready client connection and

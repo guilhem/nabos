@@ -17,10 +17,8 @@ import (
 type systemdIdentity struct{ harness *harness }
 
 func unitPath(unit string) dbus.ObjectPath {
-	if unit == "nab-core.service" {
-		return "/org/freedesktop/systemd1/unit/nab_2dcore_2eservice"
-	}
-	return "/org/freedesktop/systemd1/unit/nab_2dservice_2eservice"
+	name := strings.NewReplacer("-", "_2d", ".", "_2e").Replace(unit)
+	return dbus.ObjectPath("/org/freedesktop/systemd1/unit/" + name)
 }
 
 func (s systemdIdentity) GetUnitByPIDFD(fd dbus.UnixFD) (dbus.ObjectPath, string, []byte, *dbus.Error) {
@@ -59,7 +57,7 @@ func (h *harness) startSystemdIdentity(t *testing.T) {
 	if err := conn.Export(systemdIdentity{h}, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager"); err != nil {
 		t.Fatal(err)
 	}
-	for _, unit := range []string{"nab-core.service", "nab-service.service"} {
+	for _, unit := range []string{"nab-hardware.service", "nabos.service", "device-core.service"} {
 		if _, err := prop.Export(conn, unitPath(unit), prop.Map{
 			"org.freedesktop.systemd1.Unit": {"Id": {Value: unit}},
 		}); err != nil {

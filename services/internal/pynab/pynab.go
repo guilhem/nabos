@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/guilhem/nabos/services/internal/rabbit"
 )
 
 var Languages = []string{"default", "fr_FR", "de_DE", "en_US", "en_GB", "it_IT", "es_ES", "ja_JP", "pt_BR"}
@@ -57,7 +59,7 @@ func prefix(language string) string {
 	return language + "/"
 }
 
-func Surprise(now time.Time, language, kind string) map[string]any {
+func Surprise(now time.Time, language, kind string) rabbit.Command {
 	p := prefix(language) + "surprise/"
 	var resource string
 	if kind == "" {
@@ -67,13 +69,12 @@ func Surprise(now time.Time, language, kind string) map[string]any {
 	} else {
 		resource = p + kind + "/*.mp3"
 	}
-	return map[string]any{"signature": map[string]any{"audio": []string{"surprise/respirations/*.mp3"}},
-		"body": []any{map[string]any{"audio": []string{resource}}}}
+	return rabbit.Command{Action: rabbit.Message, Cancelable: true, Signature: &rabbit.Item{Audio: []string{"surprise/respirations/*.mp3"}}, Body: []rabbit.Item{{Audio: []string{resource}}}}
 }
 
-func Eightball(language string) map[string]any {
+func Eightball(language string) rabbit.Command {
 	// The upstream catalogue has no answers in Italian, Japanese or Portuguese.
-	return map[string]any{"body": []any{map[string]any{"audio": []string{prefix(language) + "eightball/answers/*.mp3;fr_FR/eightball/answers/*.mp3"}}}}
+	return rabbit.Command{Action: rabbit.Message, Cancelable: true, Body: []rabbit.Item{{Audio: []string{prefix(language) + "eightball/answers/*.mp3;fr_FR/eightball/answers/*.mp3"}}}}
 }
 
 // Delay follows the original frequencies; the caller persists the deadline.
@@ -185,4 +186,26 @@ func ChapterExists(roots []string, voice, isbn string, chapter int) bool {
 		}
 	}
 	return false
+}
+
+// Tag application numbers belong to the product, including the older AQI id.
+var tagApps = map[uint8]string{1: "eightball", 2: "airquality", 3: "scenario", 4: "book", 5: "clock", 6: "mastodon", 7: "surprise", 8: "taichi", 9: "weather", 10: "ifttt", 11: "airquality", 12: "radio", 13: "webhook", 255: "none"}
+
+func TagApp(id uint8) string {
+	if name, ok := tagApps[id]; ok {
+		return name
+	}
+	return fmt.Sprint(id)
+}
+func TagAppID(name string) (uint8, error) {
+	// New AQI tags use 11; 2 remains readable.
+	if name == "airquality" {
+		return 11, nil
+	}
+	for id, app := range tagApps {
+		if app == name {
+			return id, nil
+		}
+	}
+	return 0, errors.New("application d'étiquette inconnue")
 }

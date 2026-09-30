@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
@@ -14,13 +15,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/network"
 )
 
 // Start the real daemon on a private bus; simulation changes no host services.
 func (h *harness) startDeviceCore(t *testing.T) {
-	daemon := exec.Command(which(t, "dbus-daemon"), "--session", "--nofork", "--print-address=1")
+	busDaemon := os.Getenv("DBUS_DAEMON")
+	if busDaemon == "" {
+		busDaemon = which(t, "dbus-daemon")
+	}
+	daemon := exec.Command(busDaemon, "--session", "--nofork", "--print-address=1")
 	out, err := daemon.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -63,9 +69,13 @@ func (h *harness) startDeviceCore(t *testing.T) {
 	})
 }
 func (h *harness) startDeviceDaemon() {
+	audioMS := h.simAudioMS
+	if audioMS == 0 {
+		audioMS = 200
+	}
 	units := ""
 	if h.requireAgents {
-		units = "nab-core.service:nab-service.service"
+		units = "nabos.service:nab-hardware.service"
 	}
 	assets := os.Getenv("NABOS_TEST_ASSETS")
 	if assets == "" {
@@ -73,11 +83,12 @@ func (h *harness) startDeviceDaemon() {
 	}
 	h.spawn("device", append(h.device, "--simulate"),
 		"DEVICE_CORE_BUS_ADDRESS="+os.Getenv("DBUS_SYSTEM_BUS_ADDRESS"),
+		"DEVICE_CORE_PRESENCE_UNIT=nab-hardware.service",
 		"DEVICE_CORE_DATA_DIR="+filepath.Join(h.tmp, "device-data"),
 		"DEVICE_CORE_NETWORK_GUARD="+filepath.Join(h.tmp, "network-guard"),
 		"DEVICE_CORE_HTTP_ADDR=", "DEVICE_CORE_LVA_UNIT=", "DEVICE_CORE_UPDATE_REPO=", "DEVICE_CORE_UPDATE_ASSET=",
 		"DEVICE_CORE_MAINTENANCE_UNITS="+units,
-		"DEVICE_CORE_AUDIO_ROOTS="+filepath.Join(assets, "sounds"), "DEVICE_CORE_SIM_AUDIO_MS=200",
+		"DEVICE_CORE_AUDIO_ROOTS="+filepath.Join(assets, "sounds"), fmt.Sprintf("DEVICE_CORE_SIM_AUDIO_MS=%d", audioMS),
 		"DEVICE_CORE_IMAGE_VERSION=v0.0.1", "DEVICE_CORE_DEFAULT_LOCALE=fr_FR", "DEVICE_CORE_DEFAULT_VOLUME=100")
 }
 
@@ -89,9 +100,9 @@ func TestDeviceCore(t *testing.T) {
 	}
 	binary := os.Getenv("DEVICE_CORE_BIN")
 	if binary == "" {
-		binary = filepath.Join(repo, "build/device-core/target/debug/device-core")
+		binary = filepath.Join(repo, "build/cargo/device-core-tests/debug/device-core")
 	}
-	h := &harness{t: t, tmp: t.TempDir(), device: commandLine(binary), procs: map[string]*exec.Cmd{}}
+	h := &harness{t: t, tmp: t.TempDir(), device: commandLine(binary), procs: map[string]*exec.Cmd{}, simAudioMS: 2000}
 	t.Cleanup(func() { h.stop("device", syscall.SIGTERM); h.stop("dbus", syscall.SIGTERM) })
 	h.startDeviceCore(t)
 	ctx := context.Background()
@@ -130,6 +141,21 @@ func TestDeviceCore(t *testing.T) {
 	}
 	if outcome, err := h.deviceAPI.WaitAudio(ctx, audio); err != nil || outcome != "completed" {
 		t.Fatal(outcome, err)
+	}
+	// The connection owns audio, independently of the settings connection.
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &device.Client{Conn: conn}
+	owned, err := owner.StartAudio(ctx, "file", filepath.Join(assets, "sounds/system/abort.wav"))
+	if err != nil {
+		owner.Close()
+		t.Fatal(err)
+	}
+	owner.Close()
+	if outcome, err := h.deviceAPI.WaitAudio(ctx, owned); err != nil || outcome != "owner-lost" {
+		t.Fatal("orphan audio after connection close", outcome, err)
 	}
 	net := &network.Client{Client: h.deviceAPI}
 	snapshot, err := net.Read(ctx)

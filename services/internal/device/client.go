@@ -1,10 +1,11 @@
-// Package device is the typed client of device-core. All domains share one
+// Package device is the typed client of device-core. Each client owns a
 // permanent D-Bus connection; application code never implements OS policy.
 package device
 
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -21,7 +22,13 @@ var ErrRefused = errors.New("opération système refusée")
 type Client struct{ Conn *dbus.Conn }
 
 func Open() (*Client, error) {
-	conn, err := dbus.ConnectSystemBus()
+	var conn *dbus.Conn
+	var err error
+	if address := os.Getenv("NABOS_DEVICE_BUS_ADDRESS"); address != "" {
+		conn, err = dbus.Connect(address)
+	} else {
+		conn, err = dbus.ConnectSystemBus()
+	}
 	if err != nil {
 		return nil, ErrUnavailable
 	}

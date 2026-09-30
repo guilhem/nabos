@@ -112,7 +112,7 @@ impl Fsm {
 pub fn spawn(chip: &str, line: u32, tx: Tx, presence: Option<crate::network::Presence>) -> bool {
     let req = gpiocdev::Request::builder()
         .on_chip(chip)
-        .with_consumer("nab-core")
+        .with_consumer("nab-hardware")
         .with_line(line)
         .as_input()
         .with_edge_detection(gpiocdev::line::EdgeDetection::BothEdges)

@@ -2,10 +2,10 @@
 //! Messages: 'p' poll once, 'P' poll repeat, 'i' idle, 'u'+uid(8, LE),
 //! 'R'/'W' + uid + count + addresses (+ data), answered by 'R'/'W' + count + data.
 
+use super::Tech;
 use super::{
     decode_st25tb, poll_readable, send, st25tb_compatible, HwEvent, TagEvent, Tx, WriteReq,
 };
-use crate::protocol::Tech;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::sync::mpsc::Receiver;
@@ -83,6 +83,10 @@ impl Reader {
                 .send(Err("unsupported tag technology for this reader".into()));
             return Ok(());
         }
+        if let Err(e) = req.admit() {
+            let _ = req.reply.send(Err(e));
+            return Ok(());
+        }
         let mut uid_le = req.uid.clone();
         uid_le.reverse();
         let count = (req.payload.len() / 4) as u8;
@@ -153,6 +157,7 @@ impl Reader {
                     } else {
                         Err("written data mismatch".into())
                     };
+                    req.control.finish();
                     let _ = req.reply.send(r);
                 }
                 // Tag is still there: keep it as current, avoid a new event.
@@ -165,13 +170,8 @@ impl Reader {
 
     fn tick(&mut self) -> std::io::Result<()> {
         let now = Instant::now();
-        if let Some((req, _)) = &self.pending {
-            if now >= req.deadline {
-                let (req, _) = self.pending.take().unwrap();
-                let _ = req.reply.send(Err("timeout".into()));
-                return self.poll_once();
-            }
-        }
+        // Once W is transmitted, only its answer proves completion. A deadline
+        // cannot return the reader to polling or authorize another write.
         if self.deadline.is_some_and(|d| now >= d) {
             self.deadline = None;
             self.removed();
@@ -194,15 +194,79 @@ pub fn run(requests: Receiver<WriteReq>, tx: Tx) -> std::io::Result<()> {
     r.poll_once()?;
     info!("CR14 reader ready");
     loop {
-        while let Ok(req) = requests.try_recv() {
-            if let Some((old, _)) = r.pending.take() {
-                let _ = old.reply.send(Err("superseded".into()));
+        if r.pending.is_none() {
+            if let Ok(req) = requests.try_recv() {
+                r.start_write(req)?;
             }
-            r.start_write(req)?;
         }
         if poll_readable(&r.f, Duration::from_millis(100)) {
             r.packet()?;
         }
         r.tick()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hw::{Cancel, WriteControl};
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    fn request() -> (WriteReq, tokio::sync::oneshot::Receiver<Result<(), String>>) {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        (
+            WriteReq {
+                tech: Tech::St25tb,
+                uid: vec![0; 8],
+                payload: vec![1; 8],
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancel: Cancel::default(),
+                control: WriteControl::default(),
+                reply,
+            },
+            rx,
+        )
+    }
+    #[test]
+    fn canceled_expired_or_dropped_requests_never_write_and_admitted_write_finishes() {
+        let (driver, mut chip) = UnixStream::pair().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut reader = Reader {
+            f: File::from(OwnedFd::from(driver)),
+            tx,
+            state: State::PollingOnce,
+            current: None,
+            deadline: None,
+            pending: None,
+        };
+        let (req, _rx) = request();
+        req.cancel.cancel();
+        reader.start_write(req).unwrap();
+        let (mut req, _rx) = request();
+        req.deadline = Instant::now();
+        reader.start_write(req).unwrap();
+        let (req, rx) = request();
+        drop(rx);
+        reader.start_write(req).unwrap();
+        assert!(!poll_readable(&chip, Duration::from_millis(5)));
+        let (req, mut rx) = request();
+        let control = req.control.clone();
+        reader.start_write(req).unwrap();
+        let mut command = [0u8; 20];
+        chip.read_exact(&mut command).unwrap();
+        assert_eq!(command[0], b'W');
+        control.cancel();
+        reader.pending.as_mut().unwrap().0.deadline = Instant::now();
+        reader.tick().unwrap();
+        assert!(
+            reader.pending.is_some(),
+            "timeout does not abort an admitted driver W"
+        );
+        assert!(control.uncertain());
+        chip.write_all(&[b'W', 2, 1, 1, 1, 1, 1, 1, 1, 1]).unwrap();
+        reader.packet().unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Ok(()));
+        assert!(!control.uncertain());
     }
 }

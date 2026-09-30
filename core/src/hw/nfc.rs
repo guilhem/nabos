@@ -2,10 +2,10 @@
 //! Reader state machine:
 //! discover+select, read ST25TB blocks or T2T NDEF, removal detection, writes.
 
+use super::Tech;
 use super::{
     decode_st25tb, poll_readable, send, st25tb_compatible, HwEvent, TagEvent, Tx, WriteReq,
 };
-use crate::protocol::Tech;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
@@ -120,18 +120,20 @@ impl Dev {
         Ok(Some((h[0], payload)))
     }
 
-    fn go_idle(&mut self) -> Io<()> {
+    fn go_idle(&mut self) -> Io<bool> {
         if self.idle {
-            return Ok(());
+            return Ok(true);
         }
         self.send(IDLE_REQUEST, &[])?;
         let end = Instant::now() + Duration::from_secs(1);
         while !self.idle && Instant::now() < end {
             self.recv(Duration::from_millis(100))?;
         }
-        // The driver does not acknowledge when it already was idle.
+        // Discovery may resume without an ACK when the driver was already idle;
+        // that assumption cannot prove completion of an admitted physical write.
+        let confirmed = self.idle;
         self.idle = true;
-        Ok(())
+        Ok(confirmed)
     }
 
     fn discover(&mut self, protocols: u64, select: bool) -> Io<()> {
@@ -181,7 +183,7 @@ impl Dev {
         Ok(out)
     }
 
-    fn st25tb_write(&mut self, payload: &[u8]) -> Io<()> {
+    fn st25tb_write(&mut self, payload: &[u8], control: &super::WriteControl) -> Io<()> {
         for (i, chunk) in payload.chunks(4).enumerate() {
             let mut tx = vec![0x09, 7 + i as u8];
             tx.extend_from_slice(chunk);
@@ -191,6 +193,9 @@ impl Dev {
             }
         }
         let back = self.st25tb_read(7..7 + (payload.len() / 4) as u8)?;
+        // Every block and the verification read have answered, even when the
+        // bytes differ. Physical completion is separate from write success.
+        control.finish();
         if back != payload {
             return Err(io_err("written data mismatch"));
         }
@@ -198,9 +203,12 @@ impl Dev {
     }
 
     /// Read count blocks from start (4 blocks per READ).
-    fn t2t_read(&mut self, start: usize, count: usize) -> Io<Vec<u8>> {
+    fn t2t_read(&mut self, start: usize, count: usize, pending: Option<&WriteReq>) -> Io<Vec<u8>> {
         let (mut b, mut left, mut out) = (start, count, Vec::new());
         while left > 0 {
+            if let Some(reason) = pending.and_then(WriteReq::stopped) {
+                return Err(io_err(reason));
+            }
             if b > 255 {
                 // ponytail: no T2T sector select, tags above 1 KiB are reported as unknown
                 return Err(io_err("T2T sector select unsupported"));
@@ -218,25 +226,27 @@ impl Dev {
     }
 
     /// Capability container and TLV area (starting at block 4).
-    fn t2t_area(&mut self) -> Io<([u8; 4], Vec<u8>)> {
-        let first = self.t2t_read(3, 4)?;
+    fn t2t_area(&mut self, pending: Option<&WriteReq>) -> Io<([u8; 4], Vec<u8>)> {
+        let first = self.t2t_read(3, 4, pending)?;
         let cc = [first[0], first[1], first[2], first[3]];
         if cc[0] != 0xE1 || cc[1] != 0x10 || !(cc[3] == 0x00 || cc[3] == 0x0F) {
             return Err(io_err("not an NDEF formatted T2T"));
         }
         let size = cc[2] as usize * 8;
         let mut area = first[4..].to_vec();
-        area.extend(self.t2t_read(7, size.saturating_sub(12) / 4)?);
+        area.extend(self.t2t_read(7, size.saturating_sub(12) / 4, pending)?);
         Ok((cc, area))
     }
 
-    fn t2t_write(&mut self, payload: &[u8]) -> Io<()> {
-        let (cc, area) = self.t2t_area()?;
+    fn t2t_write(&mut self, req: &WriteReq) -> Io<()> {
+        let (cc, area) = self.t2t_area(Some(req))?;
         if cc[3] != 0 {
             return Err(io_err("tag is read-only"));
         }
-        let new = ndef::rewrite_area(&area, &ndef::record(NABAZTAG_NDEF_TYPE, payload))
+        let new = ndef::rewrite_area(&area, &ndef::record(NABAZTAG_NDEF_TYPE, &req.payload))
             .ok_or_else(|| io_err("no space on tag"))?;
+        req.admit().map_err(|e| io_err(&e))?;
+        // All pages form one indivisible write after this admission point.
         for (i, (old, new)) in area.chunks(4).zip(new.chunks(4)).enumerate() {
             if old == new {
                 continue;
@@ -445,7 +455,7 @@ impl Reader {
                 .map(|d| decode_st25tb(&d, &mut ev)),
             TYPE_T2T => self
                 .dev
-                .t2t_area()
+                .t2t_area(None)
                 .map(|(cc, area)| decode_t2t(cc, &area, &mut ev)),
             _ => Ok(()),
         };
@@ -463,7 +473,15 @@ impl Reader {
             Tech::St25tb => (TYPE_ST25TB, uid_for_event(TYPE_ST25TB, &req.uid)),
             Tech::T2t => (TYPE_T2T, req.uid.clone()),
         };
+        if let Some(reason) = req.stopped() {
+            let _ = req.reply.send(Err(reason.into()));
+            return Ok(Next::Discover);
+        }
         self.dev.go_idle()?;
+        if let Some(reason) = req.stopped() {
+            let _ = req.reply.send(Err(reason.into()));
+            return Ok(Next::Discover);
+        }
         let mut sel = vec![tag_type];
         if tag_type == TYPE_T2T {
             sel.push(id.len() as u8);
@@ -471,7 +489,7 @@ impl Reader {
         sel.extend_from_slice(&id);
         self.dev.send(SELECT, &sel)?;
         let mut selected = false;
-        while Instant::now() < req.deadline {
+        while req.stopped().is_none() {
             if let Some((typ, _)) = self.dev.recv(Duration::from_millis(100))? {
                 if typ == SELECTED {
                     selected = true;
@@ -479,16 +497,27 @@ impl Reader {
                 }
             }
         }
-        let result = if !selected {
+        let result = if let Some(reason) = req.stopped() {
+            Err(reason.to_string())
+        } else if !selected {
             Err("timeout".to_string())
         } else if tag_type == TYPE_ST25TB {
-            self.dev
-                .st25tb_write(&req.payload)
-                .map_err(|e| e.to_string())
+            req.admit().and_then(|_| {
+                self.dev
+                    .st25tb_write(&req.payload, &req.control)
+                    .map_err(|e| e.to_string())
+            })
         } else {
-            self.dev.t2t_write(&req.payload).map_err(|e| e.to_string())
+            self.dev.t2t_write(&req).map_err(|e| e.to_string())
         };
-        self.dev.go_idle()?;
+        if result.is_ok() {
+            req.control.finish();
+        }
+        if self.dev.go_idle()? {
+            // A failed readback is still completed work when physical idle is
+            // acknowledged. Preserve write-failed, but release the barrier.
+            req.control.finish();
+        }
         let _ = req.reply.send(result);
         Ok(Next::Removal(tag_type, id))
     }
@@ -598,5 +627,145 @@ mod tests {
         decode_t2t([0xE1, 0x10, 2, 0], &uri, &mut ev);
         assert_eq!(ev.support, "foreign-data");
         assert!(ndef::rewrite_area(&uri, &ndef::record(NABAZTAG_NDEF_TYPE, &payload)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use crate::hw::{Cancel, WriteControl};
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    fn request() -> (WriteReq, tokio::sync::oneshot::Receiver<Result<(), String>>) {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        (
+            WriteReq {
+                tech: Tech::St25tb,
+                uid: vec![0; 8],
+                payload: vec![1; 36],
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancel: Cancel::default(),
+                control: WriteControl::default(),
+                reply,
+            },
+            rx,
+        )
+    }
+    fn reader(driver: UnixStream) -> Reader {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_requests, requests) = std::sync::mpsc::channel();
+        Reader {
+            dev: Dev {
+                f: File::from(OwnedFd::from(driver)),
+                idle: true,
+            },
+            tx,
+            requests,
+        }
+    }
+    fn packet(chip: &mut UnixStream) -> (u8, Vec<u8>) {
+        let mut h = [0u8; 3];
+        chip.read_exact(&mut h).unwrap();
+        let mut payload = vec![0; u16::from_le_bytes([h[1], h[2]]) as usize];
+        chip.read_exact(&mut payload).unwrap();
+        (h[0], payload)
+    }
+    fn answer(chip: &mut UnixStream, typ: u8, payload: &[u8]) {
+        let mut message = vec![typ];
+        message.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        message.extend_from_slice(payload);
+        chip.write_all(&message).unwrap();
+    }
+    #[test]
+    fn pending_selection_and_preparation_cancel_before_write_admission() {
+        let (driver, mut chip) = UnixStream::pair().unwrap();
+        let mut reader = reader(driver);
+        let (req, mut rx) = request();
+        req.cancel.cancel();
+        reader.write(req).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Err("canceled".into()));
+        assert!(!poll_readable(&chip, Duration::from_millis(5)));
+        let (req, mut rx) = request();
+        let control = req.control.clone();
+        let server = std::thread::spawn(move || {
+            assert_eq!(packet(&mut chip).0, SELECT);
+            control.cancel();
+            answer(&mut chip, SELECTED, &[]);
+            assert_eq!(packet(&mut chip).0, IDLE_REQUEST);
+            answer(&mut chip, IDLE_ACK, &[]);
+        });
+        reader.write(req).unwrap();
+        server.join().unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Err("canceled".into()));
+    }
+    #[test]
+    fn cancellation_after_first_admission_finishes_all_tag_blocks() {
+        let (driver, mut chip) = UnixStream::pair().unwrap();
+        let mut reader = reader(driver);
+        let (req, mut rx) = request();
+        let control = req.control.clone();
+        let completed = control.clone();
+        let server = std::thread::spawn(move || {
+            assert_eq!(packet(&mut chip).0, SELECT);
+            answer(&mut chip, SELECTED, &[]);
+            let mut written = 0;
+            loop {
+                let (typ, payload) = packet(&mut chip);
+                if typ == IDLE_REQUEST {
+                    answer(&mut chip, IDLE_ACK, &[]);
+                    break;
+                }
+                assert_eq!(typ, TRANSCEIVE);
+                if payload[5] == 0x09 {
+                    written += 1;
+                    control.cancel();
+                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[0, 0, 0]);
+                } else {
+                    assert_eq!(payload[5], 0x08);
+                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[6, 0, 0, 1, 1, 1, 1, 0, 0]);
+                }
+            }
+            assert_eq!(
+                written, 9,
+                "cancel cannot interrupt an admitted complete tag write"
+            );
+        });
+        reader.write(req).unwrap();
+        server.join().unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Ok(()));
+        assert!(!completed.uncertain());
+    }
+    #[test]
+    fn acknowledged_readback_mismatch_is_failed_but_physically_completed() {
+        let (driver, mut chip) = UnixStream::pair().unwrap();
+        let mut reader = reader(driver);
+        let (req, mut rx) = request();
+        let control = req.control.clone();
+        let server = std::thread::spawn(move || {
+            assert_eq!(packet(&mut chip).0, SELECT);
+            answer(&mut chip, SELECTED, &[]);
+            loop {
+                let (typ, payload) = packet(&mut chip);
+                if typ == IDLE_REQUEST {
+                    answer(&mut chip, IDLE_ACK, &[]);
+                    break;
+                }
+                assert_eq!(typ, TRANSCEIVE);
+                if payload[5] == 0x09 {
+                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[0, 0, 0]);
+                } else {
+                    assert_eq!(payload[5], 0x08);
+                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[6, 0, 0, 2, 2, 2, 2, 0, 0]);
+                }
+            }
+        });
+        reader.write(req).unwrap();
+        server.join().unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Err("written data mismatch".into()));
+        assert!(
+            !control.uncertain(),
+            "a verified failure must not hold the hardware forever"
+        );
     }
 }

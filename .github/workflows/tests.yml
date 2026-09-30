@@ -80,8 +80,9 @@ jobs:
           cargo test --locked --manifest-path "$source/Cargo.toml"
           cargo build --locked --manifest-path "$source/Cargo.toml"
           printf 'DEVICE_CORE_BIN=%s/debug/device-core\n' "$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
-      - name: Native clients and MQTT interactions
+      - name: Native D-Bus clients and Home Assistant MQTT fixtures
         run: |
           cargo build --locked --manifest-path core/Cargo.toml
+          export NABOS_HARDWARE_BIN="$PWD/core/target/debug/nab-hardware"
           cargo test --locked --manifest-path core/Cargo.toml -- --ignored
-          NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./tests/integration ./cmd/nab-service
+          NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./tests/integration ./cmd/nabos ./internal/rabbit ./internal/devicetest

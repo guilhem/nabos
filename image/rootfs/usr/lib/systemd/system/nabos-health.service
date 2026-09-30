@@ -1,6 +1,6 @@
 [Unit]
 Description=Confirm the booted RAUC slot once local services are healthy
-After=mosquitto.service device-core.service nab-core.service nab-service.service user@1000.service
+After=device-core.service nab-hardware.service nabos.service user@1000.service
 
 [Service]
 Type=exec

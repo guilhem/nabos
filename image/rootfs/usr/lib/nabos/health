@@ -3,7 +3,7 @@
 # Unhealthy after the timeout: reboot so U-Boot spends another attempt and falls
 # back to the other slot when this one runs out. When no installed slot has
 # attempts left, stay up (reachable for repair or update) and keep checking.
-# The verdict for nab-service goes to a root-owned, world-readable marker:
+# The verdict for nabos goes to a root-owned, world-readable marker:
 # "good SLOT" once RAUC confirmed the slot, "stranded SLOT" while left
 # unconfirmed. A previous verdict of this boot is removed first.
 set -u
@@ -26,7 +26,7 @@ B) other=A other_part=/dev/mmcblk0p2 ;;
 esac
 
 # True when PipeWire exposes the TagTagTag WM8960 card itself: a real ALSA sink
-# for "sinks", a non-monitor capture source for "sources". The core opens ALSA
+# for "sinks", a non-monitor capture source for "sources". Device-core opens ALSA
 # lazily, so this is what proves the audio hardware; a null sink never matches.
 audio_card() {
 	runuser -u nabos -- env XDG_RUNTIME_DIR=/run/user/1000 LC_ALL=C pactl list "$1" 2> /dev/null | awk '
@@ -51,14 +51,17 @@ persistent() {
 
 healthy() {
 	persistent || return 1
-	for unit in mosquitto.service device-core.service nab-core.service nab-service.service; do
+	for unit in device-core.service nab-hardware.service nabos.service; do
 		systemctl is-active --quiet "$unit" || { reason="$unit is not active"; return 1; }
 	done
 	[ "$(busctl --system --timeout=5 get-property io.github.guilhem.DeviceCore1 \
 		/io/github/guilhem/DeviceCore1 io.github.guilhem.DeviceCore1.Manager Ready 2>/dev/null)" = "b true" ] ||
 		{ reason="device-core D-Bus is not ready"; return 1; }
+	[ "$(busctl --system --timeout=5 get-property io.github.guilhem.NabHardware1 \
+		/io/github/guilhem/NabHardware1 io.github.guilhem.NabHardware1 Ready 2>/dev/null)" = "b true" ] ||
+		{ reason="nab-hardware D-Bus is not ready"; return 1; }
 	curl -fsS --max-time 5 -o /dev/null http://127.0.0.1/healthz ||
-		{ reason="nab-service /healthz is not ready"; return 1; }
+		{ reason="nabos /healthz is not ready"; return 1; }
 	audio_card sinks || { reason="no tagtagtag-sound playback sink in PipeWire"; return 1; }
 	audio_card sources || { reason="no tagtagtag-sound capture source in PipeWire"; return 1; }
 }

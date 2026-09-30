@@ -6,10 +6,12 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -45,6 +47,32 @@ type Fixture struct {
 	AgentRegistrations             int
 	RejectAgent                    bool
 	Audio                          device.AudioStatus
+}
+
+// RequireProcessFD probes the fixture connection, not a service's authentication.
+// Integration CI requires this capability; older unit-test hosts may skip.
+func RequireProcessFD(t *testing.T, conn *dbus.Conn) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
+	defer cancel()
+	var credentials map[string]dbus.Variant
+	if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetConnectionCredentials", 0, conn.Names()[0]).Store(&credentials); err != nil {
+		t.Fatal(err)
+	}
+	v, ok := credentials["ProcessFD"]
+	if !ok {
+		if os.Getenv("NABOS_INTEGRATION") == "1" {
+			t.Fatal("integration fixtures require D-Bus ProcessFD credentials")
+		}
+		t.Skip("host D-Bus does not provide ProcessFD credentials")
+	}
+	var fd dbus.UnixFD
+	if err := v.Store(&fd); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Close(int(fd)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func New(t *testing.T) *Fixture {

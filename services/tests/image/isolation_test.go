@@ -79,9 +79,9 @@ printf '%s\n' "$2"
 			write(t, filepath.Join(checkout, "build/iot/keep"), "another build")
 			for name, script := range map[string]string{
 				filepath.Join(payload, "src/uboot/scripts/config"):                        "exit 0",
-				filepath.Join(fixture, "usr/bin/nab-core"):                                "echo shipped-core",
+				filepath.Join(fixture, "usr/bin/nab-hardware"):                            "echo shipped-core",
 				filepath.Join(fixture, "usr/bin/device-core"):                             "echo shipped-device-core",
-				filepath.Join(fixture, "usr/bin/nab-service"):                             "echo shipped-service",
+				filepath.Join(fixture, "usr/bin/nabos"):                                   "echo shipped-service",
 				filepath.Join(fixture, "usr/bin/dtoverlay"):                               "exit 0",
 				filepath.Join(fixture, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"): "set -eu\n[ \"$1\" = --library-path ]\nshift 2\nexec \"$@\"",
 			} {
@@ -185,14 +185,15 @@ chmod 755 "$out/u-boot"`,
 				"go": `set -eu
 work=$(dirname "$(cat "$STATE/copy")")
 case "$PATH" in "$work/test-bus":*) ;; *) exit 1 ;; esac
+[ "$DBUS_DAEMON" = "$work/test-bus/dbus-daemon" ]
 [ "$GOCACHE" = "$work/go-cache" ]
 [ "$GOMODCACHE" = "$work/go-modcache" ]
 [ "$TMPDIR" = "$work/tmp" ]
 case "$*" in
   *'./tests/integration ./tests/image')
     [ "$NABOS_TEST_ASSETS" = "$work/root/usr/share/nabos" ]
-    [ "$("$NAB_CORE_BIN" --version)" = shipped-core ]
-    [ "$("$NAB_SERVICE_BIN" --version)" = shipped-service ]
+    [ "$("$NABOS_HARDWARE_BIN" --version)" = shipped-core ]
+    [ "$("$NABOS_BIN" --version)" = shipped-service ]
     [ "$("$DEVICE_CORE_BIN" --version)" = shipped-device-core ]
     [ "$NABOS_IMAGE_BOOT" = "$work/boot" ]
     [ "$NABOS_VENDOR_DTBS" = "$work/root/boot/dtb" ]

@@ -74,7 +74,7 @@ monitor=$!
 if [[ -n $replay ]]; then
   "$nab_image" extract "$replay" "$payload/inputs"
   cmp "$lock" "$payload/inputs/sources.lock.json"
-  cmp "$repo/core/Cargo.lock" "$payload/inputs/nab-core/Cargo.lock"
+  cmp "$repo/core/Cargo.lock" "$payload/inputs/nab-hardware/Cargo.lock"
   cmp "$repo/services/go.sum" "$payload/inputs/go.sum"
   cmp "$repo/image/lva-requirements.lock" "$payload/inputs/lva-requirements.lock"
 fi
@@ -103,7 +103,7 @@ for component in go rust device-core uboot; do
 done
 "$nab_image" fetch "$lock" "$target" "$payload/inputs"
 cp "$lock" "$payload/inputs/sources.lock.json"
-cp "$repo/core/Cargo.lock" "$payload/inputs/nab-core/"
+cp "$repo/core/Cargo.lock" "$payload/inputs/nab-hardware/"
 cp "$repo/services/go.sum" "$payload/inputs/"
 cp "$repo/image/lva-requirements.lock" "$payload/inputs/"
 "$nab_image" unpack "$payload/inputs/sources.lock.json" "$payload/inputs" "$payload/src"
@@ -169,11 +169,11 @@ mount_image "$work/base.img"
 in_target packages
 sudo cp -a "$payload/runtime/." "$root/"
 sudo rm -rf "$payload/runtime"
-sudo install -m755 "$work/components/rust/nab-core" "$root/usr/bin/nab-core"
+sudo install -m755 "$work/components/rust/nab-hardware" "$root/usr/bin/nab-hardware"
 sudo install -m755 "$work/components/device-core/device-core" "$root/usr/bin/device-core"
 sudo install -Dm644 "$payload/src/device_core/LICENSE" "$root/usr/share/doc/device-core/copyright"
 sudo install -Dm644 "$payload/src/device_core/NOTICE" "$root/usr/share/doc/device-core/NOTICE"
-sudo install -m755 "$work/components/go/nab-service" "$root/usr/bin/nab-service"
+sudo install -m755 "$work/components/go/nabos" "$root/usr/bin/nabos"
 # Git checkout ownership/umask must not grant the runner write access to system units.
 tar --create --file=- --directory="$repo/image/rootfs" --owner=0 --group=0 --mode=go-w . |
   sudo tar --extract --file=- --directory="$root"

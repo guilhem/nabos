@@ -10,7 +10,7 @@ After=user@1000.service network-online.target
 Type=exec
 User=nabos
 Group=nabos
-# Same PipeWire session as the core.
+# Same PipeWire session as device-core.
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=HOME=/var/lib/nabos
 # Run from the source tree like upstream's script/run so sounds/ and wakewords/ resolve.

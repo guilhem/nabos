@@ -13,7 +13,8 @@ func TestDeviceCoreImageContract(t *testing.T) {
 	for _, required := range []string{
 		"User=nabos", "Environment=HOME=/var/lib/nabos", "Environment=XDG_RUNTIME_DIR=/run/user/1000",
 		"Environment=DEVICE_CORE_DATA_DIR=/data/device-core", "Environment=DEVICE_CORE_NETWORK_GUARD=/run/lock/device-core/network",
-		"Environment=DEVICE_CORE_PRESENCE_UNIT=nab-core.service", "RuntimeDirectory=device-core", "WorkingDirectory=/run/device-core",
+		"Environment=DEVICE_CORE_PRESENCE_UNIT=nab-hardware.service",
+		"Environment=DEVICE_CORE_MAINTENANCE_UNITS=nabos.service:nab-hardware.service", "RuntimeDirectory=device-core", "WorkingDirectory=/run/device-core",
 		"CapabilityBoundingSet=", "ProtectSystem=strict", "ReadWritePaths=/data/device-core /var/lib/nabos /run/device-core /run/lock/device-core",
 	} {
 		if !strings.Contains(unit, required+"\n") {
@@ -25,7 +26,7 @@ func TestDeviceCoreImageContract(t *testing.T) {
 			t.Errorf("unexpected %q", forbidden)
 		}
 	}
-	for _, file := range []string{"usr/lib/systemd/system/nab-core.service", "usr/lib/systemd/system/nab-service.service", "usr/lib/systemd/system/nabos-health.service"} {
+	for _, file := range []string{"usr/lib/systemd/system/nab-hardware.service", "usr/lib/systemd/system/nabos.service", "usr/lib/systemd/system/nabos-health.service"} {
 		if !strings.Contains(read(t, filepath.Join(rootfsDir, file)), "device-core.service") {
 			t.Errorf("missing dependency in %s", file)
 		}
@@ -53,10 +54,51 @@ func TestDeviceCoreImageContract(t *testing.T) {
 		}
 	}
 	makefile := read(t, filepath.Join(repo, "Makefile"))
-	for _, required := range []string{"$$out/inputs/$$component", "$$inputs/$$component/Cargo.lock", "$$inputs/$$component/cargo-vendor", "$$repo/build/sysroot/$$component/$$target", "--locked --offline", "--exclude=./.source", "cc_key=CC_$${rust_target//-/_}", `"$$cc_key=$$linker"`} {
+	for _, required := range []string{"$$out/inputs/$$component", "$$inputs/$$component/Cargo.lock", "$$inputs/$$component/cargo-vendor", "$$repo/build/sysroot/$$component/$$target", "--locked --offline", "export RUST_COMPONENT = nab-hardware", `"$$out/nabos" ./cmd/nabos`, "if [[ $$component == nab-hardware ]]", "--exclude=./.source", "cc_key=CC_$${rust_target//-/_}", `"$$cc_key=$$linker"`} {
 		if !strings.Contains(makefile, required) {
 			t.Errorf("Make lacks %q", required)
 		}
+	}
+}
+
+func TestHardwareApplicationImageContract(t *testing.T) {
+	for name, required := range map[string][]string{
+		"nab-hardware": {"Type=dbus", "BusName=io.github.guilhem.NabHardware1", "SupplementaryGroups=gpio video kmem", "AmbientCapabilities=CAP_SYS_RAWIO", "CapabilityBoundingSet=CAP_SYS_RAWIO", "RuntimeDirectory=nab-hardware", "WorkingDirectory=/run/nab-hardware"},
+		"nabos":        {"AmbientCapabilities=CAP_NET_BIND_SERVICE", "CapabilityBoundingSet=CAP_NET_BIND_SERVICE", "Environment=NABOS_HTTP_ADDR=:80", "Environment=NABOS_DATA_DIR=/data/nabos", "ReadWritePaths=/data/nabos", "RuntimeDirectory=nabos", "WorkingDirectory=/run/nabos", "PrivateDevices=yes"},
+	} {
+		unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system", name+".service"))
+		for _, line := range append(required, "User=nabos", "ExecStart=/usr/bin/"+name, "ProtectSystem=strict", "NoNewPrivileges=yes") {
+			if !strings.Contains(unit, line+"\n") {
+				t.Errorf("%s missing %q", name, line)
+			}
+		}
+		for _, line := range strings.Split(unit, "\n") {
+			if strings.HasPrefix(line, "ReadWritePaths=") && name == "nab-hardware" || strings.HasPrefix(line, "SupplementaryGroups=") && name == "nabos" || strings.Contains(line, "mosquitto") {
+				t.Errorf("%s unexpected %q", name, line)
+			}
+		}
+	}
+	for _, file := range []string{"etc/mosquitto/mosquitto.conf", "usr/lib/systemd/system/nab-core.service", "usr/lib/systemd/system/nab-service.service"} {
+		if _, err := os.Stat(filepath.Join(rootfsDir, file)); !os.IsNotExist(err) {
+			t.Errorf("obsolete file remains: %s", file)
+		}
+	}
+	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
+	if !strings.Contains(prepare, "usermod -G audio nabos") {
+		t.Error("shared account must not inherit hardware groups")
+	}
+	udev := read(t, filepath.Join(rootfsDir, "etc/udev/rules.d/60-nabos.rules"))
+	if !strings.Contains(udev, `KERNEL=="ear[01]|rfid0|nfc0", GROUP="gpio", MODE="0660"`) {
+		t.Error("ear/RFID access must require hardware group")
+	}
+	policy := read(t, filepath.Join(rootfsDir, "etc/dbus-1/system.d/io.github.guilhem.NabHardware1.conf"))
+	for _, rule := range []string{`<deny own="io.github.guilhem.NabHardware1"/>`, `<deny send_destination="io.github.guilhem.NabHardware1"/>`, `<policy user="nabos">`, `<allow own="io.github.guilhem.NabHardware1"/>`, `<allow send_destination="io.github.guilhem.NabHardware1"/>`} {
+		if !strings.Contains(policy, rule) {
+			t.Errorf("missing hardware bus policy %s", rule)
+		}
+	}
+	if !strings.Contains(read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/nabos-rfid.service")), "Before=nab-hardware.service\n") {
+		t.Error("RFID probe must precede hardware")
 	}
 }
 
@@ -129,14 +171,14 @@ const decide = (id, subject, unit='', verb='') => polkit.rules[0]({id,lookup:k=>
 const core = {user:'nabos',system_unit:'device-core.service',no_new_privileges:true};
 for (const id of ['org.freedesktop.login1.reboot','org.freedesktop.login1.power-off', 'org.freedesktop.timedate1.set-time']) {
   assert.equal(decide(id,core),'yes');
-  for (const unit of ['nab-core.service','nab-service.service','user@1000.service',''])
+  for (const unit of ['nab-hardware.service','nabos.service','user@1000.service',''])
     assert.equal(decide(id,{...core,system_unit:unit}),'no');
   assert.equal(decide(id,{...core,no_new_privileges:false}),'no');
 }
 for (const unit of ['linux-voice-assistant.service','ssh.service','systemd-timesyncd.service']) {
   const id='org.freedesktop.systemd1.manage-units';
   assert.equal(decide(id,core,unit,'start'),'yes');
-  assert.equal(decide(id,{...core,system_unit:'nab-service.service'},unit,'start'),'no');
+  assert.equal(decide(id,{...core,system_unit:'nabos.service'},unit,'start'),'no');
   assert.equal(decide(id,core,unit,'enable'),'no');
 }
 `)

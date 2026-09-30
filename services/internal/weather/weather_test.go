@@ -33,7 +33,7 @@ func TestFetchAndAnnounce(t *testing.T) {
 		t.Fatal("wrong infos")
 	}
 	m := Message(cfg, f, 1)
-	audio := m["body"].([]any)[0].(map[string]any)["audio"].([]string)
+	audio := m.Body[0].Audio
 	want := []string{"weather/tomorrow.mp3", "weather/sky/sunny.mp3", "weather/temp/-3.mp3", "weather/degree.mp3"}
 	for i := range want {
 		if audio[i] != want[i] {
@@ -55,7 +55,7 @@ func TestNoInternet(t *testing.T) {
 	}
 	cfg := config.Defaults().Weather
 	cfg.Location = "Paris"
-	audio := Message(cfg, nil, 0)["body"].([]any)[0].(map[string]any)["audio"].([]string)
+	audio := Message(cfg, nil, 0).Body[0].Audio
 	if audio[0] != "weather/no-data-error.mp3" {
 		t.Fatalf("got %v", audio)
 	}

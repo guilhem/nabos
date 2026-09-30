@@ -158,9 +158,9 @@ func (b *Bridge) announce(ctx context.Context, cm *autopaho.ConnectionManager, p
 	cm.Subscribe(ctx, &paho.Subscribe{Subscriptions: []paho.SubscribeOptions{{Topic: b.topic("+/set"), QoS: 1}, {Topic: b.topic("+/press"), QoS: 1}}})
 	cm.Publish(ctx, &paho.Publish{Topic: b.topic("availability"), QoS: 1, Retain: true, Payload: []byte("online")})
 	b.mu.Lock()
-	last := b.last
+	raw, ok := b.last["state"]
 	b.mu.Unlock()
-	if raw, ok := last["state"]; ok {
+	if ok {
 		cm.Publish(ctx, &paho.Publish{Topic: b.topic("state"), QoS: 1, Retain: true, Payload: raw})
 	}
 }

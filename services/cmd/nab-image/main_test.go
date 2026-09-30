@@ -257,7 +257,7 @@ func TestReplayArchiveWithReadOnlyTree(t *testing.T) {
 }
 
 func TestComponentArchive(t *testing.T) {
-	for _, name := range []string{"nab-core", "../nab-core"} {
+	for _, name := range []string{"nab-hardware", "../nab-hardware"} {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
 			tw := tar.NewWriter(&buf)
@@ -269,7 +269,7 @@ func TestComponentArchive(t *testing.T) {
 			os.WriteFile(archive, buf.Bytes(), 0o644)
 			out := filepath.Join(dir, "out")
 			err := run([]string{"extract", archive, out})
-			if name != "nab-core" {
+			if name != "nab-hardware" {
 				if err == nil {
 					t.Fatal("component archive escaped its destination")
 				}

@@ -17,7 +17,7 @@ go package-go: export OUT ?= $(CURDIR)/build/go/$(TARGET)
 rust package-rust: export OUT ?= $(CURDIR)/build/rust/$(TARGET)
 device-core package-device-core: export OUT ?= $(CURDIR)/build/device-core-build/$(TARGET)
 device-core-source: export OUT ?= $(CURDIR)/build/device-core-source
-rust package-rust: export RUST_COMPONENT = nab-core
+rust package-rust: export RUST_COMPONENT = nab-hardware
 device-core package-device-core: export RUST_COMPONENT = device-core
 uboot package-uboot: export OUT ?= $(CURDIR)/build/uboot/$(TARGET)
 
@@ -49,7 +49,7 @@ go:
 	$$GO mod download
 	CGO_ENABLED=0 GOOS=linux GOARCH=$$(jq -r --arg t "$$target" '.targets[$$t].goarch' "$$lock") \
 	  GOARM=$$(jq -r --arg t "$$target" '.targets[$$t].goarm' "$$lock") \
-	  $$GO build -trimpath -ldflags="-s -w -X main.version=$$version" -o "$$out/nab-service" ./cmd/nab-service
+	  $$GO build -trimpath -ldflags="-s -w -X main.version=$$version" -o "$$out/nabos" ./cmd/nabos
 	# Keep setup-go's module cache in place; archive the inputs needed for replay.
 	cp -a "$$($$GO env GOMODCACHE)/cache/download" "$$out/inputs/go-modcache/cache/"
 	cp go.sum "$$out/inputs/go.sum"
@@ -138,7 +138,7 @@ rust device-core:
 	  build --locked --offline --release --manifest-path "$$source/Cargo.toml" --target "$$rust_target"
 	install -m755 "$$CARGO_TARGET_DIR/$$rust_target/release/$$component" "$$out/$$component"
 	cp "$$source/Cargo.lock" "$$component_inputs/"
-	if [[ $$component == nab-core ]]; then git -C "$$repo" rev-parse HEAD > "$$component_inputs/source-revision"; fi
+	if [[ $$component == nab-hardware ]]; then git -C "$$repo" rev-parse HEAD > "$$component_inputs/source-revision"; fi
 	cp "$$repo/image/rust-sysroots.lock.json" "$$out/inputs/"
 	printf '%s\n' "$$target" "$$(git -C "$$repo" rev-parse HEAD)" > "$$out/build-info"
 	if [[ $$component == device-core ]]; then

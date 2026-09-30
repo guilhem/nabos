@@ -49,3 +49,26 @@ func TestLegacyTagsAndContent(t *testing.T) {
 		t.Fatal("tai-chi frequency")
 	}
 }
+
+func TestTagApplicationNumbers(t *testing.T) {
+	for _, id := range []uint8{2, 11} {
+		if TagApp(id) != "airquality" {
+			t.Fatal("AQI tag mapping", id)
+		}
+	}
+	for _, name := range []string{"clock", "weather", "book", "radio", "ifttt", "webhook", "taichi", "surprise", "eightball", "airquality"} {
+		id, err := TagAppID(name)
+		if err != nil || TagApp(id) != name {
+			t.Fatal(name, id, err)
+		}
+	}
+	if id, err := TagAppID("airquality"); id != 11 || err != nil {
+		t.Fatal(id, err)
+	}
+	if TagApp(42) != "42" {
+		t.Fatal("unknown identifier lost")
+	}
+	if _, err := TagAppID("unknown"); err == nil {
+		t.Fatal("unknown tag application accepted")
+	}
+}

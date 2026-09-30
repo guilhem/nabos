@@ -2,16 +2,16 @@
 //! loaded at runtime with dlopen (no link-time dependency). Software pulsing
 //! uses a 100 ms period and 10 steps.
 
+use super::Cancel;
 use crate::Config;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 
-pub const NOSE: usize = 0;
-pub const LEFT: usize = 1;
-pub const CENTER: usize = 2;
-pub const RIGHT: usize = 3;
-pub const BOTTOM: usize = 4;
 pub const COUNT: usize = 5;
 
 pub type Rgb = [u8; 3];
@@ -20,19 +20,25 @@ const PULSING_RATE: Duration = Duration::from_millis(100);
 const PULSING_STEPS: f32 = 10.0;
 
 enum Cmd {
-    Set(usize, Rgb),
-    Pulse(usize, Rgb),
+    Set(
+        Vec<(usize, Rgb)>,
+        Cancel,
+        oneshot::Sender<Result<(), String>>,
+    ),
+    Pulse(usize, Rgb, Cancel, oneshot::Sender<Result<(), String>>),
 }
 
 pub struct Leds {
     tx: mpsc::Sender<Cmd>,
-    pub ok: bool,
+    ok: Arc<AtomicBool>,
 }
 
 impl Leds {
     pub fn open(cfg: &Config) -> Leds {
         let (tx, rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
+        let ok = Arc::new(AtomicBool::new(false));
+        let available = ok.clone();
         let sim = cfg.simulate;
         let lib = cfg.ws2811_lib.clone();
         let brightness = cfg.led_brightness;
@@ -49,33 +55,45 @@ impl Leds {
                     }
                 }
             };
-            let _ = ready_tx.send(sim || strip.is_some());
+            available.store(sim || strip.is_some(), Ordering::Relaxed);
+            let _ = ready_tx.send(());
             run(rx, |frame| {
-                if let Some(s) = strip.as_mut() {
+                let result = if let Some(s) = strip.as_mut() {
                     s.show(frame)
-                }
+                } else if sim {
+                    Ok(())
+                } else {
+                    Err("leds-unavailable".into())
+                };
+                available.store(result.is_ok(), Ordering::Relaxed);
+                result
             });
         });
-        let ok = ready_rx.recv().unwrap_or(false);
+        let _ = ready_rx.recv();
         Leds { tx, ok }
     }
 
-    pub fn set(&self, led: usize, rgb: Rgb) {
-        let _ = self.tx.send(Cmd::Set(led, rgb));
+    pub fn available(&self) -> bool {
+        self.ok.load(Ordering::Relaxed)
     }
-    pub fn pulse(&self, led: usize, rgb: Rgb) {
-        let _ = self.tx.send(Cmd::Pulse(led, rgb));
+
+    pub async fn set(&self, colors: Vec<(usize, Rgb)>, cancel: Cancel) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Cmd::Set(colors, cancel, reply))
+            .map_err(|_| "leds-stopped")?;
+        rx.await.map_err(|_| "leds-stopped")?
     }
-    pub fn set_all(&self, rgb: Rgb) {
-        for led in 0..COUNT {
-            self.set(led, rgb);
-        }
+    pub async fn pulse(&self, led: usize, rgb: Rgb, cancel: Cancel) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Cmd::Pulse(led, rgb, cancel, reply))
+            .map_err(|_| "leds-stopped")?;
+        rx.await.map_err(|_| "leds-stopped")?
     }
-    /// nose, left, center, right, bottom
-    pub fn set5(&self, colors: [Rgb; 5]) {
-        for (led, c) in [NOSE, LEFT, CENTER, RIGHT, BOTTOM].into_iter().zip(colors) {
-            self.set(led, c);
-        }
+    pub async fn clear(&self) -> Result<(), String> {
+        self.set((0..COUNT).map(|i| (i, [0; 3])).collect(), Cancel::default())
+            .await
     }
 }
 
@@ -85,7 +103,7 @@ struct Pulse {
     up: bool,
 }
 
-fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT])) {
+fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT]) -> Result<(), String>) {
     let mut frame = [0u32; COUNT];
     let mut pulses: [Option<Pulse>; COUNT] = Default::default();
     let mut next_pulse: Option<Instant> = None;
@@ -104,24 +122,38 @@ fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT])) {
         };
         let mut pending: Vec<Cmd> = cmd.into_iter().collect();
         pending.extend(rx.try_iter());
-        let mut changed = !pending.is_empty();
+        let mut changed = false;
+        let mut replies = Vec::new();
         for c in pending {
-            match c {
-                Cmd::Set(led, [r, g, b]) if led < COUNT => {
-                    pulses[led] = None;
-                    frame[led] = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+            let (cancel, reply) = match &c {
+                Cmd::Set(_, c, r) | Cmd::Pulse(_, _, c, r) => (c, r),
+            };
+            let admitted = !reply.is_closed() && cancel.admit();
+            let reply = match c {
+                Cmd::Set(colors, _, reply) => {
+                    if admitted {
+                        for (led, [r, g, b]) in colors {
+                            pulses[led] = None;
+                            frame[led] = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+                        }
+                    }
+                    reply
                 }
-                Cmd::Pulse(led, [r, g, b]) if led < COUNT => {
-                    frame[led] = 0;
-                    pulses[led] = Some(Pulse {
-                        target: [r as f32, g as f32, b as f32],
-                        current: [0.0; 3],
-                        up: true,
-                    });
-                    next_pulse.get_or_insert_with(Instant::now);
+                Cmd::Pulse(led, [r, g, b], _, reply) => {
+                    if admitted {
+                        frame[led] = 0;
+                        pulses[led] = Some(Pulse {
+                            target: [r as f32, g as f32, b as f32],
+                            current: [0.0; 3],
+                            up: true,
+                        });
+                        next_pulse.get_or_insert_with(Instant::now);
+                    }
+                    reply
                 }
-                _ => {}
-            }
+            };
+            changed |= admitted;
+            replies.push((reply, admitted));
         }
         if pulses.iter().all(Option::is_none) {
             next_pulse = None;
@@ -148,8 +180,13 @@ fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT])) {
             changed = true;
             next_pulse = next_pulse.map(|t| t + PULSING_RATE);
         }
-        if changed {
-            show(&frame);
+        let rendered = if changed { show(&frame) } else { Ok(()) };
+        for (reply, admitted) in replies {
+            let _ = reply.send(if admitted {
+                rendered.clone()
+            } else {
+                Err("canceled".into())
+            });
         }
     }
 }
@@ -250,23 +287,28 @@ impl Ws2811 {
         }
     }
 
-    fn show(&mut self, frame: &[u32; COUNT]) {
+    fn show(&mut self, frame: &[u32; COUNT]) -> Result<(), String> {
         unsafe {
             let leds = self.raw.channel[1].leds;
             if leds.is_null() {
-                return;
+                return Err("LED buffer unavailable".into());
             }
             for (i, c) in frame.iter().enumerate() {
                 *leds.add(i) = *c;
             }
             let rc = (self.render)(&mut *self.raw);
-            if rc != 0 && self.failures < 5 {
-                self.failures += 1;
-                error!(
+            if rc != 0 {
+                let reason = format!(
                     "ws2811_render: {}",
                     CStr::from_ptr((self.strerr)(rc)).to_string_lossy()
                 );
+                if self.failures < 5 {
+                    self.failures += 1;
+                    error!("{reason}");
+                }
+                return Err(reason);
             }
+            Ok(())
         }
     }
 }
@@ -275,22 +317,55 @@ impl Ws2811 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pulse_goes_up_and_down() {
+    #[tokio::test]
+    async fn batch_is_one_frame_and_canceled_commands_never_render() {
         let (tx, rx) = mpsc::channel();
         let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let f = frames.clone();
-        let t = std::thread::spawn(move || run(rx, |fr| f.lock().unwrap().push(fr[BOTTOM])));
-        tx.send(Cmd::Pulse(BOTTOM, [200, 0, 100])).unwrap();
-        std::thread::sleep(Duration::from_millis(2300));
-        tx.send(Cmd::Set(BOTTOM, [0, 0, 0])).unwrap();
-        drop(tx);
-        t.join().unwrap();
-        let v = frames.lock().unwrap().clone();
-        let max = v.iter().max().copied().unwrap();
-        assert_eq!(max, (200 << 16) | 100, "reaches target");
-        let peak = v.iter().position(|x| *x == max).unwrap();
-        assert!(v[peak..].iter().any(|x| *x < max), "then fades");
-        assert_eq!(*v.last().unwrap(), 0, "set stops the pulse");
+        let worker = std::thread::spawn(move || {
+            run(rx, |fr| {
+                f.lock().unwrap().push(*fr);
+                Ok(())
+            })
+        });
+        let leds = Leds {
+            tx,
+            ok: Arc::new(AtomicBool::new(true)),
+        };
+        leds.set(vec![(0, [1, 2, 3]), (4, [4, 5, 6])], Cancel::default())
+            .await
+            .unwrap();
+        assert_eq!(frames.lock().unwrap().len(), 1);
+        let cancel = Cancel::default();
+        cancel.cancel();
+        assert!(leds.pulse(4, [255; 3], cancel).await.is_err());
+        assert_eq!(frames.lock().unwrap().len(), 1);
+        leds.pulse(4, [200, 0, 100], Cancel::default())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2300)).await;
+        leds.clear().await.unwrap();
+        drop(leds);
+        worker.join().unwrap();
+        let v = frames.lock().unwrap();
+        let peak = v.iter().map(|f| f[4]).max().unwrap();
+        assert_eq!(peak, (200 << 16) | 100);
+        assert_eq!(*v.last().unwrap(), [0; COUNT]);
+    }
+    #[tokio::test]
+    async fn failed_clear_propagates_the_render_error() {
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || run(rx, |_| Err("render-failed".into())));
+        let leds = Leds {
+            tx,
+            ok: Arc::new(AtomicBool::new(true)),
+        };
+        assert_eq!(
+            leds.clear().await,
+            Err("render-failed".into()),
+            "cleanup cannot declare quiescence after a failed frame"
+        );
+        drop(leds);
+        worker.join().unwrap();
     }
 }

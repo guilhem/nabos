@@ -1,22 +1,19 @@
 [package]
-name = "nab-core"
+name = "nab-hardware"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-description = "NabOS hardware core: ears, LEDs, button, RFID/NFC, audio and choreographies driven over MQTT 5"
+description = "NabOS physical hardware service over typed local D-Bus"
 
 [[bin]]
-name = "nab-core"
+name = "nab-hardware"
 path = "src/main.rs"
 
 [dependencies]
-rumqttc = { version = "0.24", default-features = false }
-tokio = { version = "1", features = ["rt", "macros", "time", "process", "sync", "signal", "io-util"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "time", "sync", "signal"] }
 gpiocdev = "0.7"
 libc = "0.2"
-fastrand = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [profile.release]
