@@ -61,6 +61,10 @@ There is no migration of the former MQTT protocol, API names or settings.
 | `NABOS_WEATHER_URL` / `NABOS_GEOCODING_URL` | Open-Meteo endpoints |
 | `NABOS_DEVICE_BUS_ADDRESS` | System bus in production; explicit private bus for tests |
 
+An explicit address applies to hardware and every Go device-core connection,
+including the dedicated audio owner, settings and maintenance. Connection
+failure never falls back to the system bus.
+
 Hardware retains `NABOS_GPIO_CHIP` (`/dev/gpiochip0`), `NABOS_BUTTON_GPIO` (`17`),
 `NABOS_WS2811_LIB` (`libws2811.so`), `NABOS_LED_BRIGHTNESS` (`200`) and
 `NABOS_LED_STRIP` (`grb`). `NABOS_LOG=debug` enables detailed logs.

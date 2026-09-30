@@ -16,6 +16,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/device"
+	"github.com/guilhem/nabos/services/internal/devicetest"
 	"github.com/guilhem/nabos/services/internal/hardware"
 )
 
@@ -64,6 +65,7 @@ func newBus(t *testing.T) *busFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
+	devicetest.RequireProcessFD(t, conn)
 	f := &busFixture{conn: conn, status: hardware.Status{Model: "test", Simulated: true, LeftEar: "ok", RightEar: "ok", Leds: true, Button: true, RFID: "st25tb", Left: 0, Right: 0}}
 	for _, name := range []string{hardware.Destination, device.Destination, "org.freedesktop.systemd1"} {
 		reply, err := conn.RequestName(name, dbus.NameFlagDoNotQueue)

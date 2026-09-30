@@ -8,7 +8,6 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/device"
-	"github.com/guilhem/nabos/services/internal/hardware"
 )
 
 type source struct{ kind, value string }
@@ -20,10 +19,11 @@ type audio struct {
 }
 
 func (a *audio) connect() error {
-	conn, err := hardware.Connect()
+	client, err := device.Open()
 	if err != nil {
 		return err
 	}
+	conn := client.Conn
 	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
 	defer cancel()
 	signals := make(chan *dbus.Signal, 16)
@@ -37,7 +37,6 @@ func (a *audio) connect() error {
 		conn.Close()
 		return err
 	}
-	client := &device.Client{Conn: conn}
 	a.client = client
 	a.loss = nil
 	go func() {

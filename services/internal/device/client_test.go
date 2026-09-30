@@ -3,6 +3,8 @@ package device_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,6 +12,58 @@ import (
 	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/devicetest"
 )
+
+func TestOpenSelectsExplicitBusWithoutSystemFallback(t *testing.T) {
+	system := devicetest.New(t)
+	systemAddress := os.Getenv("DBUS_SYSTEM_BUS_ADDRESS")
+	private := devicetest.New(t)
+	privateAddress := os.Getenv("DBUS_SYSTEM_BUS_ADDRESS")
+	system.Mu.Lock()
+	system.Settings.Volume = 7
+	system.Mu.Unlock()
+	private.Mu.Lock()
+	private.Settings.Volume = 42
+	private.Mu.Unlock()
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", systemAddress)
+	for _, tc := range []struct {
+		name, address string
+		fixture       *devicetest.Fixture
+	}{
+		{"system default", "", system},
+		{"explicit private", privateAddress, private},
+		{"explicit unavailable", "unix:path=" + filepath.Join(t.TempDir(), "missing-bus"), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NABOS_DEVICE_BUS_ADDRESS", tc.address)
+			client, err := device.Open()
+			if tc.fixture == nil {
+				if client != nil {
+					client.Close()
+					t.Fatal("unavailable explicit bus reached the system bus")
+				}
+				if !errors.Is(err, device.ErrUnavailable) {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			if _, settings, err := client.ReadConfig(context.Background()); err != nil || settings.Volume != tc.fixture.Settings.Volume {
+				t.Fatal("settings reached the wrong bus", settings, err)
+			}
+			if _, err := client.Call(context.Background(), "Manager", "RegisterAgent", device.Path("Agent")); err != nil {
+				t.Fatal(err)
+			}
+			tc.fixture.Mu.Lock()
+			defer tc.fixture.Mu.Unlock()
+			if tc.fixture.AgentSender != client.Conn.Names()[0] {
+				t.Fatal("maintenance registration used another connection")
+			}
+		})
+	}
+}
 
 func TestTypedDomainsOnOnePrivateConnection(t *testing.T) {
 	fixture := devicetest.New(t)
