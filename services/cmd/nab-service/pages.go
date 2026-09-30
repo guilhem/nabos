@@ -217,10 +217,11 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Core": core, "Online": online, "MQTT": connected, "Network": a.network,
 		"Forecast": a.forecast, "WeatherError": a.wxErr, "HA": a.ha.Connected(), "HAError": a.haErr,
-		"Voice": a.voiceEnabled(), "Recovered": a.store.Recovered, "Version": a.env.Version,
-		"Clock": clk, "Now": a.clockNow().In(a.location()).Format("15:04"),
+		"Recovered": a.store.Recovered, "Version": a.env.Version, "Clock": clk,
 	}
 	a.mu.Unlock()
+	data["Voice"] = a.voiceEnabled()
+	data["Now"] = a.clockNow().In(a.location()).Format("15:04")
 	data["Update"] = a.proposedUpdate()
 	a.render(w, r, "home", "Nabaztag", data)
 }

@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/clock"
+	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/devicetest"
 )
 
@@ -76,6 +79,52 @@ func TestSystemAndApplicationSettingsSaveIndependently(t *testing.T) {
 	if w = serviceRequest(h, "POST", "/settings/system", form, cookie); !strings.Contains(w.Header().Get("Location"), "err=") {
 		t.Fatal("stale revision accepted")
 	}
+}
+
+func TestHomeAllowsProductStateWhileDeviceReadIsBlocked(t *testing.T) {
+	a := testApp(t)
+	revision, settings, err := a.device.ReadConfig(a.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, resume := make(chan struct{}, 1), make(chan struct{})
+	read := func() (string, device.Settings, *dbus.Error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-resume
+		return revision, settings, nil
+	}
+	if err := appFixture(t, a).Conn.ExportMethodTable(map[string]interface{}{"Read": read}, device.Path("Config"), device.Interface("Config")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	w := httptest.NewRecorder()
+	go func() {
+		a.home(w, httptest.NewRequest("GET", "/", nil))
+		close(done)
+	}()
+	defer func() {
+		close(resume)
+		select {
+		case <-done:
+			if w.Code != http.StatusOK {
+				t.Error("home did not complete", w.Code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("home did not resume after device reply")
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("home did not reach device read")
+	}
+	if !a.mu.TryLock() {
+		t.Fatal("blocked device read holds the product state mutex")
+	}
+	a.mu.Unlock()
 }
 
 func TestEveryPageRenders(t *testing.T) {
