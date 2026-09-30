@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,8 @@ type App struct {
 	airQuery      airquality.Query
 	mastodonMu    sync.Mutex
 	sshMu         sync.Mutex
+	wifiMu        sync.Mutex
+	wifi          *wifiSession
 	mastodonKick  chan struct{}
 	oauth         *oauthLogin
 
@@ -306,7 +309,11 @@ func (a *App) onEvent(e appEvent) {
 	kind, p := e.kind, e.data
 	if kind == "button" {
 		a.ha.Button(str(p, "event"))
-		a.auth.MarkPresence()
+		if str(p, "event") == "down" {
+			if edge, err := strconv.ParseUint(str(p, "edge_monotonic_ns"), 10, 64); err == nil {
+				a.auth.MarkPresence(edge)
+			}
+		}
 		if str(p, "event") == "double_click_and_hold" {
 			a.stopInteraction()
 			a.serviceError("admin", a.auth.Reset())

@@ -8,7 +8,7 @@
 // CSRF, authenticated actions, settings persistence, /healthz).
 //
 // Run from services/: NABOS_INTEGRATION=1 go test -count=1 ./tests/integration
-// Requirements: mosquitto, mosquitto_pub, mosquitto_sub, cargo, go.
+// Requirements: mosquitto, mosquitto_pub, mosquitto_sub, dbus-daemon, cargo, go.
 // Overrides: an existing path is used as is (spaces allowed); anything else
 // is split on spaces, so emulator command lines work:
 //
@@ -36,6 +36,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const prefix = "nabos/v1"
@@ -501,6 +503,7 @@ func TestEndToEnd(t *testing.T) {
 		expect(h.status("blocker"), "ok")
 	})
 
+	readyNetworkBus(t)
 	h.startService()
 	var cookie string
 	post := func(path string, form url.Values, cookie string, origin bool) (int, http.Header) {
@@ -513,13 +516,46 @@ func TestEndToEnd(t *testing.T) {
 		if code != 303 || header.Get("Location") != "/setup" {
 			h.fatalf("%d %v", code, header)
 		}
+		mono := func() uint64 {
+			var ts unix.Timespec
+			if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+				h.fatalf("monotonic clock: %v", err)
+			}
+			return uint64(ts.Nano())
+		}
+		button := func(event string, edge any) {
+			raw, _ := json.Marshal(map[string]any{"v": 1, "event": event,
+				"edge_monotonic_ns": edge, "time": float64(time.Now().UnixNano()) / 1e9})
+			if !h.publish(prefix+"/core/event/button", string(raw), false) {
+				h.fatalf("button injection failed")
+			}
+		}
+		oldEdge := strconv.FormatUint(mono(), 10)
+		button("down", oldEdge)
+		time.Sleep(500 * time.Millisecond)
+		if code, _, _ := h.http(http.MethodGet, "/setup", nil, "", true); code != 200 {
+			h.fatalf("setup page: %d", code)
+		}
 		password := url.Values{"password": {"carotte-42"}, "confirm": {"carotte-42"}}
 		if _, header := post("/setup", password, "", true); !strings.Contains(header.Get("Location"), "err=") {
-			h.fatalf("setup accepted without a button press")
+			h.fatalf("setup accepted a down from before opening the page")
 		}
-		h.publish(prefix+"/core/event/button", fmt.Sprintf(`{"v": 1, "event": "click", "time": %f}`,
-			float64(time.Now().UnixNano())/1e9), false)
+		button("down", oldEdge) // delayed MQTT delivery must not freshen it
+		button("down", nil)
+		button("down", "malformed")
+		button("down", strconv.FormatUint(mono()+uint64(time.Hour), 10))
+		button("up", strconv.FormatUint(mono(), 10))
+		button("click", strconv.FormatUint(mono(), 10))
+		button("hold", strconv.FormatUint(mono(), 10))
 		time.Sleep(500 * time.Millisecond)
+		if _, header := post("/setup", password, "", true); !strings.Contains(header.Get("Location"), "err=") {
+			h.fatalf("setup accepted stale/missing/invalid metadata or a non-down")
+		}
+		button("down", strconv.FormatUint(mono(), 10))
+		time.Sleep(500 * time.Millisecond)
+		if code, _, _ := h.http(http.MethodGet, "/setup", nil, "", true); code != 200 {
+			h.fatalf("setup reload: %d", code)
+		}
 		code, header = post("/setup", password, "", true)
 		if code != 303 || header.Get("Location") != "/settings" {
 			h.fatalf("%d %v", code, header)

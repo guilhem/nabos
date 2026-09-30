@@ -1,7 +1,7 @@
 [Unit]
-Description=Nabaztag core (LEDs, ears, button, RFID, audio)
-Wants=mosquitto.service user@1000.service
-After=mosquitto.service user@1000.service nabos-rfid.service tagtagtag-mixerd.service
+Description=Nabaztag core (hardware and Wi-Fi)
+Wants=mosquitto.service user@1000.service NetworkManager.service
+After=mosquitto.service user@1000.service nabos-rfid.service tagtagtag-mixerd.service NetworkManager.service
 
 [Service]
 Type=exec

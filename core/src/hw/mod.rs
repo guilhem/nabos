@@ -21,7 +21,7 @@ pub type Tx = UnboundedSender<Input>;
 
 #[derive(Debug)]
 pub enum HwEvent {
-    Button(&'static str),
+    Button(&'static str, Option<u64>),
     /// Manual ear movement: 0 left, 1 right.
     EarMoved(usize),
     Tag(TagEvent),
@@ -189,8 +189,11 @@ pub struct Hw {
 }
 
 impl Hw {
-    pub fn open(cfg: &Config, tx: Tx) -> Hw {
+    pub fn open(cfg: &Config, tx: Tx, presence: Option<crate::network::Presence>) -> Hw {
         let sim = cfg.simulate;
+        // Physical setup confirmation remains available while LED initialization
+        // waits for its hardware thread.
+        let button = !sim && button::spawn(&cfg.gpio_chip, cfg.button_gpio, tx.clone(), presence);
         let leds = leds::Leds::open(cfg);
         let ears = ears::Ears::open(sim, tx.clone());
         let player = Arc::new(player::Player::new(
@@ -198,7 +201,6 @@ impl Hw {
             sim.then_some(cfg.sim_audio_ms),
         ));
         let res = Resources::new(cfg.sounds_dirs.clone(), cfg.chor_dirs.clone());
-        let button = !sim && button::spawn(&cfg.gpio_chip, cfg.button_gpio, tx.clone());
         let spawn_reader =
             |kind: &'static str,
              run: fn(std::sync::mpsc::Receiver<WriteReq>, Tx) -> std::io::Result<()>| {

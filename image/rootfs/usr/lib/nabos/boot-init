@@ -8,7 +8,7 @@ DISK=${NABOS_DISK:-/dev/mmcblk0}
 SYSFS=${NABOS_SYSFS:-/sys}
 DATA=${DISK}p4
 # Directories on the read-only root whose content lives in /data/system.
-PERSIST="/etc/NetworkManager/system-connections /var/lib/NetworkManager /var/lib/comitup /var/lib/systemd/timesync /var/lib/tagtagtag-sound /var/lib/nabos"
+PERSIST="/etc/NetworkManager/system-connections /var/lib/NetworkManager /var/lib/systemd/timesync /var/lib/tagtagtag-sound /var/lib/nabos"
 GROWN=/data/system/.data-grown
 KMSG=${NABOS_KMSG:-/dev/kmsg}
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,17 +22,19 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/config"
+	"github.com/guilhem/nabos/services/internal/network"
 	"github.com/guilhem/nabos/services/internal/pynab"
 	"github.com/guilhem/nabos/services/internal/system"
 	"github.com/guilhem/nabos/services/internal/web"
 )
 
-//go:embed ui.html
+//go:embed ui.html wifi.js
 var uiFS embed.FS
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
-	"hm":   func(h config.HM) string { return fmt.Sprintf("%02d:%02d", h.Hour, h.Min) },
-	"json": func(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) },
+	"ssid64": func(s network.SSID) string { return base64.StdEncoding.EncodeToString(s) },
+	"hm":     func(h config.HM) string { return fmt.Sprintf("%02d:%02d", h.Hour, h.Min) },
+	"json":   func(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) },
 	"days": func() []string {
 		return []string{"Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"}
 	},
@@ -79,9 +82,15 @@ func (a *App) routes() http.Handler {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
+		if !a.setupNetwork(w, r) {
+			return
+		}
 		a.render(w, r, "setup", "Bienvenue", nil)
 	})
 	m.HandleFunc("POST /setup", func(w http.ResponseWriter, r *http.Request) {
+		if !a.setupNetwork(w, r) {
+			return
+		}
 		if r.FormValue("password") != r.FormValue("confirm") {
 			back(w, r, "/setup", errors.New("les mots de passe diffèrent"), "")
 			return
@@ -119,6 +128,7 @@ func (a *App) routes() http.Handler {
 	})
 	m.HandleFunc("POST /settings", a.saveSettings)
 	m.HandleFunc("POST /settings/ssh", a.saveSSHKeys)
+	a.wifiRoutes(m)
 	a.serviceRoutes(m)
 	m.HandleFunc("POST /clock", func(w http.ResponseWriter, r *http.Request) {
 		t, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("now"), a.location())
@@ -155,7 +165,7 @@ func (a *App) routes() http.Handler {
 		}
 		back(w, r, "/sounds", err, "Son supprimé")
 	})
-	return a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback")
+	return a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback", "/wifi", "/wifi/", "/wifi.js")
 }
 
 func (a *App) healthz(w http.ResponseWriter, r *http.Request) {

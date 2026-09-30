@@ -25,7 +25,7 @@ pub struct Fsm {
 }
 
 /// CLOCK_MONOTONIC, the clock of the GPIO edge timestamps.
-fn monotonic() -> Duration {
+pub(crate) fn monotonic() -> Duration {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -109,7 +109,7 @@ impl Fsm {
     }
 }
 
-pub fn spawn(chip: &str, line: u32, tx: Tx) -> bool {
+pub fn spawn(chip: &str, line: u32, tx: Tx, presence: Option<crate::network::Presence>) -> bool {
     let req = gpiocdev::Request::builder()
         .on_chip(chip)
         .with_consumer("nab-core")
@@ -138,8 +138,16 @@ pub fn spawn(chip: &str, line: u32, tx: Tx) -> bool {
                     // Button pulls the line low when pressed.
                     Ok(e) => {
                         let down = e.kind == gpiocdev::line::EdgeKind::Falling;
+                        if down && !fsm.down {
+                            if let Some(presence) = &presence {
+                                presence.press(Duration::from_nanos(e.timestamp_ns));
+                            }
+                        }
                         for ev in fsm.edge(down, Duration::from_nanos(e.timestamp_ns)) {
-                            send(&tx, HwEvent::Button(ev));
+                            send(
+                                &tx,
+                                HwEvent::Button(ev, (ev == "down").then_some(e.timestamp_ns)),
+                            );
                         }
                     }
                     Err(e) => error!("button read: {e}"),
@@ -148,7 +156,7 @@ pub fn spawn(chip: &str, line: u32, tx: Tx) -> bool {
                 // edge is always read before a timer that it precedes.
                 Ok(false) => {
                     if let Some(ev) = fsm.timeout(start + wait) {
-                        send(&tx, HwEvent::Button(ev));
+                        send(&tx, HwEvent::Button(ev, None));
                     }
                 }
                 Err(e) => {

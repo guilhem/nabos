@@ -13,7 +13,7 @@ input,select,textarea,button{font-size:1em;padding:.4em;max-width:100%}textarea{
 .actions form{display:inline}.ok{background:#dff5e1;padding:.6em;border-radius:.4em}.err{background:#fde2e2;padding:.6em;border-radius:.4em}
 table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pre{overflow:auto;font-size:.8em}
 </style></head><body>
-<header><b>🐰 NabOS</b>{{if .Auth}}<nav aria-label="Navigation principale"><a href="/">Accueil</a><a href="/settings">Réglages</a><a href="/services">Services</a><a href="/tags">Étiquettes</a><a href="/sounds">Sons</a><a href="/updates">Mises à jour</a></nav>
+<header><b>🐰 NabOS</b>{{if .Auth}}<nav aria-label="Navigation principale"><a href="/">Accueil</a><a href="/settings">Réglages</a><a href="/wifi">Wi-Fi</a><a href="/services">Services</a><a href="/tags">Étiquettes</a><a href="/sounds">Sons</a><a href="/updates">Mises à jour</a></nav>
 <form method="post" action="/logout"><button>Déconnexion</button></form>{{end}}</header>
 <main><h1>{{.Title}}</h1>{{if .Flash}}<p class="ok">{{.Flash}}</p>{{end}}{{if .Error}}<p class="err">{{.Error}}</p>{{end}}
 {{end}}
@@ -22,8 +22,8 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 
 {{define "setup"}}{{template "top" .}}
 <section><h2>Premier démarrage</h2>
-<p>Choisissez le mot de passe d'administration du lapin.</p>
-<p><b>Appuyez une fois sur le bouton de la tête du lapin</b>, puis validez dans les 5 minutes. Cela prouve que vous avez le lapin sous la main.</p>
+<p>Le Wi-Fi est connecté. Choisissez maintenant le mot de passe d'administration du lapin.</p>
+<p><b>Cette page étant ouverte, appuyez à nouveau sur le bouton de la tête du lapin</b>, puis validez dans les 5 minutes. L'appui utilisé pour connecter le Wi-Fi ne permet pas de créer le mot de passe.</p>
 <form method="post" action="/setup">
 <label>Mot de passe (8 à 128 caractères)<br><input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
 <label>Confirmation<br><input type="password" name="confirm" minlength="8" maxlength="128" required autocomplete="new-password"></label>
@@ -66,6 +66,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{template "bottom" .}}{{end}}
 
 {{define "settings"}}{{template "top" .}}
+<section><h2>Wi-Fi</h2><p><a href="/wifi">Configurer le réseau et les profils Wi-Fi</a></p></section>
 <section><h2>Heure</h2><p>{{template "clock" .Data.Clock}}</p>
 {{if ne .Data.Clock "ntp"}}<form method="post" action="/clock"><label>Date et heure <input type="datetime-local" name="now" value="{{.Data.Now}}" required></label>
 <button>Régler l'heure</button></form><p>Le lapin n'a pas d'horloge sauvegardée par pile : sans Internet, l'heure réglée à la main vaut jusqu'au prochain redémarrage.</p>{{end}}</section>
@@ -271,3 +272,48 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{template "bottom" .}}{{end}}
 
 {{define "clock"}}{{if eq . "ntp"}}synchronisée par Internet{{else if eq . "manual"}}réglée à la main{{else if eq . "restored"}}approximative (dernière heure connue, sans Internet) : sommeil et réveil actifs, heure non annoncée{{else}}inconnue : programmation suspendue{{end}}{{end}}
+
+{{define "wifi"}}{{template "top" .}}
+{{if .Data.Unavailable}}<section><p role="alert">La configuration Wi-Fi est temporairement indisponible. Rechargez la page lorsque le cœur du lapin est prêt.</p></section>
+{{else}}{{$s := .Data.Snapshot}}
+<div id="wifi" data-mode="{{$s.Status.Mode}}" data-setup="{{.Data.Setup}}">
+<section><h2>{{if .Data.Setup}}1. Connecter le lapin au Wi-Fi{{else}}Connexion Wi-Fi{{end}}</h2>
+<p id="wifi-status" role="status">{{if eq $s.Status.Mode "hotspot"}}Hotspot de secours{{else if eq $s.Status.Mode "client"}}Connecté à {{$s.Status.SSID}}{{else}}Reconnexion en cours{{end}}{{if $s.Status.Address}} — {{$s.Status.Address}}{{end}}</p>
+{{if eq $s.Status.Mode "hotspot"}}<p>Le hotspot utilise la même radio que votre réseau Wi-Fi. Il disparaîtra pendant la tentative ; cette coupure est normale et la connexion continue.</p>
+{{if .Data.Setup}}
+{{if .Data.Reserved}}<p><b>Appuyez maintenant sur le bouton de la tête du lapin</b> pour autoriser une tentative pendant cinq minutes. La réservation du formulaire ne prolonge pas cette autorisation.</p>
+{{else}}<form method="post" action="/wifi/reserve"><p>Préparez ce formulaire, puis appuyez sur le bouton de la tête du lapin.</p><button>Préparer la connexion</button></form>{{end}}
+<p id="wifi-authorization" role="status">{{if .Data.Authorized}}Confirmation physique reçue.{{else}}Confirmation physique attendue.{{end}}</p>
+<p>Ce hotspot est ouvert et l’interface utilise HTTP : la confirmation physique autorise la configuration, sans chiffrer les échanges.</p>
+{{end}}
+<form method="post" action="/wifi/release"><button>Libérer le hotspot</button></form>{{end}}
+<p>Après la connexion, rejoignez le même réseau que le lapin et ouvrez <a href="http://nabaztag.local/">nabaztag.local</a> ou son adresse dans votre routeur. En cas d’échec, rejoignez à nouveau le hotspot du lapin puis <a href="http://10.41.0.1/wifi">10.41.0.1</a>.</p></section>
+<section><h2>Réseau à rejoindre</h2>
+<form method="post" action="/wifi/scan"><button>Rechercher les réseaux</button></form>
+<p>Si le scan est indisponible pendant le hotspot, les derniers résultats restent utilisables. Vous pouvez aussi saisir le nom d’un réseau masqué.</p>
+<form method="post" action="/wifi/connect" id="wifi-form">
+<label>Réseaux détectés <select name="ssid_bytes" id="wifi-network"><option value="">Saisir le nom manuellement</option>{{range $s.Networks}}<option value="{{ssid64 .SSID}}" data-security="{{.Security}}"{{if or (eq .Security "unsupported") (eq (len .SSID) 0)}} disabled{{end}}>{{.SSID}} — {{.Strength}} % ({{.Security}})</option>{{end}}</select></label>
+<label>Nom du réseau (SSID, 32 octets maximum) <input name="ssid" id="wifi-ssid" maxlength="32" autocomplete="off" spellcheck="false"></label>
+<label>Sécurité <select name="security" id="wifi-security"><option value="wpa-psk">WPA / WPA2 personnel</option><option value="sae">WPA3 personnel</option><option value="open">Réseau ouvert</option></select></label>
+<label>Mot de passe Wi-Fi <input type="password" name="password" id="wifi-password" maxlength="64" autocomplete="new-password"></label>
+<p>Une seule tentative à la fois. Les anciens profils fonctionnels sont conservés ; le retour à la connexion précédente ou au hotspot est automatique après un échec.</p>
+<button data-wifi-connect{{if and .Data.Setup (not .Data.Authorized)}} disabled{{end}}>Connecter (la page peut se déconnecter)</button></form></section>
+<section><h2>Profils enregistrés</h2>{{range $s.Profiles}}
+<div class="actions"><p>{{.SSID}}</p><form method="post" action="/wifi/connect"><input type="hidden" name="uuid" value="{{.UUID}}"><button data-wifi-connect{{if and $.Data.Setup (not $.Data.Authorized)}} disabled{{end}}>Utiliser ce profil</button></form>
+{{if not $.Data.Setup}}<form method="post" action="/wifi/forget"><input type="hidden" name="uuid" value="{{.UUID}}"><button>Oublier</button></form>{{end}}</div>{{else}}<p>Aucun réseau enregistré.</p>{{end}}</section>
+{{if eq $s.Status.Phase "connecting"}}<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{$s.Status.AttemptID}}"><button>Annuler la tentative</button></form>{{end}}
+</div><script src="/wifi.js" defer></script>{{end}}
+{{template "bottom" .}}{{end}}
+
+{{define "wifi-transition"}}{{template "top" .}}
+<section id="wifi-transition" data-attempt="{{.Data.Attempt}}"><p role="status" id="wifi-status">Tentative {{.Data.Attempt}} lancée. Le lapin passe sur le réseau choisi. La coupure de cette page est attendue et ne l’annule pas.</p>
+<p>Rejoignez le même réseau que le lapin, puis ouvrez <a href="http://nabaztag.local/">nabaztag.local</a> ou son adresse indiquée par votre routeur. Le réseau local suffit ; Internet n’est pas nécessaire.</p>
+{{if .Data.Setup}}<p>Après reconnexion, ouvrez la <a href="/setup">page de création du mot de passe d’administration</a>, puis appuyez à nouveau sur le bouton du lapin avant de valider.</p>{{end}}
+<p>En cas d’échec, le lapin revient à son ancienne connexion ou au hotspot. Rejoignez ce hotspot et ouvrez <a href="http://10.41.0.1/wifi">10.41.0.1</a> pour réessayer.</p>
+<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{.Data.Attempt}}"><button>Annuler si le lapin est encore accessible</button></form>
+<p><a href="/wifi">Revenir au Wi-Fi</a></p></section><script src="/wifi.js" defer></script>
+{{template "bottom" .}}{{end}}
+
+{{define "wifi-released"}}{{template "top" .}}
+<section><p>Le formulaire ne réserve plus le hotspot. Le lapin peut réessayer ses réseaux connus.</p><p><a href="/wifi">Configurer à nouveau le Wi-Fi</a></p></section>
+{{template "bottom" .}}{{end}}

@@ -54,7 +54,7 @@ healthy() {
 	for unit in mosquitto.service nab-core.service nab-service.service; do
 		systemctl is-active --quiet "$unit" || { reason="$unit is not active"; return 1; }
 	done
-	curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8080/healthz ||
+	curl -fsS --max-time 5 -o /dev/null http://127.0.0.1/healthz ||
 		{ reason="nab-service /healthz is not ready"; return 1; }
 	audio_card sinks || { reason="no tagtagtag-sound playback sink in PipeWire"; return 1; }
 	audio_card sources || { reason="no tagtagtag-sound capture source in PipeWire"; return 1; }

@@ -391,13 +391,17 @@ impl Engine {
 
     fn hardware(&mut self, ev: HwEvent) {
         match ev {
-            HwEvent::Button(e) => {
+            HwEvent::Button(e, edge_monotonic_ns) => {
                 if let Some(j) = self.job.as_ref().filter(|j| e == "click" && j.cancelable) {
                     j.feedback.store(true, Ordering::Relaxed);
                     j.cancel.cancel();
                     return;
                 }
-                self.bus.event("button", json!({"event": e}));
+                let mut payload = json!({"event": e});
+                if let Some(edge) = edge_monotonic_ns.filter(|_| e == "down") {
+                    payload["edge_monotonic_ns"] = json!(edge.to_string());
+                }
+                self.bus.event("button", payload);
             }
             HwEvent::EarMoved(ear) => {
                 let ear = if ear == 0 { "left" } else { "right" };

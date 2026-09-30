@@ -6,7 +6,7 @@ Logiciel libre pour les Nabaztag équipés d'une carte **TagTagTag 2019/2021** o
 
 NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et un bus MQTT 5 local. Le cœur matériel est en Rust ; l'interface, la configuration et les services sont en Go. Les réglages sont enregistrés atomiquement dans un fichier JSON versionné : aucun serveur de base de données n'est nécessaire.
 
-Les outils de fabrication et les tests propres à NabOS sont aussi en Go. Les projets externes Comitup et Linux Voice Assistant sont conservés avec leurs dépendances Python.
+Les outils de fabrication et les tests propres à NabOS sont aussi en Go. Linux Voice Assistant conserve ses dépendances Python.
 
 La qualification du démarrage, des pilotes et du rollback sur les deux matériels est requise avant diffusion en release stable. Les constructions de développement et les tests de simulation ne constituent pas cette qualification.
 
@@ -14,8 +14,8 @@ La qualification du démarrage, des pilotes et du rollback sur les deux matérie
 
 1. Télécharger l'image `.img.xz` correspondant au matériel dans une [release qualifiée](https://github.com/guilhem/nabos/releases) : `zero-armv6` pour le Zero original, `zero2-arm64` pour le Zero 2.
 2. Vérifier `SHA256SUMS`, puis flasher une carte microSD de **16 Go minimum**.
-3. Démarrer le lapin et configurer le Wi-Fi depuis le point d'accès Comitup.
-4. Ouvrir `http://nabaztag.local:8080` et terminer la configuration de l'administration avec le bouton du lapin.
+3. Démarrer le lapin, rejoindre son point d'accès Nabaztag et ouvrir `http://10.41.0.1`. Appuyer sur le bouton quand le formulaire le demande, puis configurer le Wi-Fi.
+4. Ouvrir `http://nabaztag.local` et terminer la configuration de l'administration avec le bouton du lapin.
 
 L'installation se fait par flash d'une carte SD. L'administration locale utilise HTTP sur le réseau de confiance.
 
@@ -41,11 +41,11 @@ RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis le
 
 | Composant | Rôle |
 |---|---|
-| `core/` — `nab-core` | Matériel, états, séquences, chorégraphies, synchronisation avec le son |
+| `core/` — `nab-core` | Matériel, Wi-Fi, états, séquences, chorégraphies, synchronisation avec le son |
 | `services/` — `nab-service` | Interface locale, réglages, services pynab en Go, Home Assistant, mises à jour |
 | Mosquitto | Transport MQTT 5 local ; [contrat JSON v1](docs/protocol-v1.md) |
 | PipeWire + WirePlumber | Lecture et capture ALSA ; compatibilité PulseAudio pour la voix |
-| NetworkManager + Comitup | Connexion Wi-Fi et configuration initiale |
+| NetworkManager | Radio Wi-Fi, profils et secrets ; [API D-Bus du cœur](docs/network-dbus.md) |
 | RAUC + U-Boot | Installation signée A/B et retour à la version précédente |
 
 Linux Voice Assistant est préinstallé uniquement sur ARM64 et **désactivé par défaut**. Son activation utilise Home Assistant pour la reconnaissance et la synthèse. Le bouton précède la qualification du mot d'activation et de l'annulation d'écho. L'API de périphériques reste en boucle locale.
@@ -64,7 +64,7 @@ L’onglet **Services** configure le tai-chi, les surprises (langues, anniversai
 - Un clic puis maintien active l’écoute de la boule magique ; le relâchement déclenche la réponse. Pour réinitialiser l’administration, faire **deux clics puis maintenir un troisième appui pendant 10 secondes**. Trois clics brefs restent l’extinction.
 - Mastodon utilise OAuth et les messages directs `NabPairing`, compatibles avec pynab. Le jumelage, les positions et le curseur des messages sont persistants ; le flux se reconnecte et rattrape les messages après une coupure.
 
-Home Assistant expose les annonces comme boutons, utilisables depuis LVA. LVA, Comitup et NabBlockly restent des projets externes.
+Home Assistant expose les annonces comme boutons, utilisables depuis LVA. LVA et NabBlockly restent des projets externes.
 
 ## Développement
 
