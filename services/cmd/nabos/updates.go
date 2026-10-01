@@ -158,6 +158,10 @@ func (a *App) receiveUpdate(w http.ResponseWriter, r *http.Request) error {
 			if err != nil {
 				return errors.New("impossible de stocker la mise à jour")
 			}
+			// Keep only the descriptor so interruptions cannot leave a named partial file.
+			if err := os.Remove(bundle.Name()); err != nil {
+				return errors.New("impossible de préparer le fichier temporaire de la mise à jour")
+			}
 			n, err := io.Copy(bundle, io.LimitReader(part, maxUpdateBundle+1))
 			if n > maxUpdateBundle {
 				return errors.New("le fichier de mise à jour dépasse la limite de 2 Gio")

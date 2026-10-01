@@ -111,6 +111,33 @@ func (b *pausedUpdateBody) Read(p []byte) (int, error) {
 	return b.ReadCloser.Read(p)
 }
 
+func TestManualUpdateHasNoNamedFileWhileReceiving(t *testing.T) {
+	a := testApp(t)
+	appFixture(t, a)
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	body := &pausedUpdateBody{io.NopCloser(strings.NewReader("bundle")), started, release}
+	r := manualUpdateRequest(t, updatePart{"bundle", "update.rauc", body})
+	r.AddCookie(serviceSession(t, a))
+	w := httptest.NewRecorder()
+	go func() {
+		a.routes().ServeHTTP(w, r)
+		close(done)
+	}()
+	defer func() {
+		close(release)
+		<-done
+		if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "ok=") {
+			t.Error("anonymous upload failed", w.Code, w.Header())
+		}
+	}()
+	select {
+	case <-started:
+	case <-done:
+		t.Fatal("upload ended before receiving the file", w.Header())
+	}
+	assertNoUpdateStaging(t, a)
+}
+
 func TestManualUpdateRefusesConcurrentUploadBeforeReadingBody(t *testing.T) {
 	a := testApp(t)
 	f := appFixture(t, a)
