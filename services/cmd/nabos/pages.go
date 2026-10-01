@@ -60,6 +60,7 @@ var locales = []string{"fr_FR", "en_US", "en_GB", "de_DE", "es_ES", "it_IT", "ja
 
 type page struct {
 	Title, Flash, Error string
+	Page                string
 	Auth                bool
 	App                 *App
 	System              *device.Settings
@@ -71,7 +72,8 @@ type page struct {
 }
 
 func (a *App) render(w http.ResponseWriter, r *http.Request, name, title string, data map[string]any) {
-	p := page{Title: title, App: a, Auth: a.auth.Valid(r), S: a.store.Get(), Data: data, Flash: r.URL.Query().Get("ok"), Error: r.URL.Query().Get("err")}
+	active, _, _ := strings.Cut(name, "-")
+	p := page{Title: title, Page: active, App: a, Auth: a.auth.Valid(r), S: a.store.Get(), Data: data, Flash: r.URL.Query().Get("ok"), Error: r.URL.Query().Get("err")}
 	p.SSHRevision, _ = data["SSHRevision"].(string)
 	revision, settings, err := a.device.ReadConfig(r.Context())
 	p.Revision, p.SystemError = revision, err
