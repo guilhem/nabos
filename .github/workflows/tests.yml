@@ -65,7 +65,8 @@ jobs:
       - name: Install runtime test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y dbus libglib2.0-bin openssh-client mosquitto mosquitto-clients
+          sudo apt-get install -y dbus libglib2.0-bin openssh-client mosquitto mosquitto-clients \
+            rauc squashfs-tools openssl
           # The distro service profile only permits its system configuration paths.
           # Test brokers use private generated configurations and an isolated executable.
           cp /usr/sbin/mosquitto "$RUNNER_TEMP/nabos-test-mosquitto"

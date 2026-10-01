@@ -1,6 +1,11 @@
 package device
 
-import "context"
+import (
+	"context"
+	"os"
+
+	"github.com/godbus/dbus/v5"
+)
 
 // Field order is the D-Bus contract, including RFC3339 timestamps.
 type Release struct {
@@ -66,6 +71,20 @@ func (c *Client) CheckUpdates(ctx context.Context) ([]Release, error) {
 }
 func (c *Client) InstallUpdate(ctx context.Context, tag, channel string, automatic, retry bool) (string, error) {
 	call, err := c.Call(ctx, "Updates", "Install", tag, channel, automatic, retry)
+	var operation string
+	if err == nil && (call.Store(&operation) != nil || operation == "") {
+		err = ErrUnavailable
+	}
+	return operation, err
+}
+
+// InstallBundle leaves the local file owned by the caller. The daemon owns a
+// duplicate of the transferred descriptor before acknowledging the request.
+func (c *Client) InstallBundle(ctx context.Context, bundle *os.File, ignoreCertificate, retry bool) (string, error) {
+	if bundle == nil {
+		return "", ErrRefused
+	}
+	call, err := c.Call(ctx, "Updates", "InstallBundle", dbus.UnixFD(bundle.Fd()), ignoreCertificate, retry)
 	var operation string
 	if err == nil && (call.Store(&operation) != nil || operation == "") {
 		err = ErrUnavailable

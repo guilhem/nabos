@@ -175,7 +175,7 @@ for (const id of ['org.freedesktop.login1.reboot','org.freedesktop.login1.power-
     assert.equal(decide(id,{...core,system_unit:unit}),'no');
   assert.equal(decide(id,{...core,no_new_privileges:false}),'no');
 }
-for (const unit of ['linux-voice-assistant.service','ssh.service','systemd-timesyncd.service']) {
+for (const unit of ['linux-voice-assistant.service','ssh.service','systemd-timesyncd.service','nabos-rauc-manual.service']) {
   const id='org.freedesktop.systemd1.manage-units';
   assert.equal(decide(id,core,unit,'start'),'yes');
   assert.equal(decide(id,{...core,system_unit:'nabos.service'},unit,'start'),'no');

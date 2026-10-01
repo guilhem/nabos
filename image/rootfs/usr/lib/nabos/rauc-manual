@@ -1,0 +1,59 @@
+#!/bin/sh
+# Only device-core may start this root service. Its output and temporary trust
+# remain available until the updater confirms the same RAUC owner is idle.
+set -eu
+umask 077
+work=/data/nabos-rauc-manual
+runtime=/run/nabos-rauc-manual
+trust=/run/nabos-rauc-trust
+source=/data/device-core/updates/manual.raucb
+
+if [ "${1:-}" = cleanup ]; then
+	rm -f "$work/input.raucb" "$work/bundle.raucb"
+	rm -f "$trust"/*.0
+	exit 0
+fi
+
+install -d -m 0750 -o root -g nabos "$work"
+# Snapshot before verifying: the source directory belongs to the unprivileged updater.
+[ ! -L "$source" ] && [ -f "$source" ]
+size=$(stat -c %s "$source")
+[ "$size" -gt 8 ] && [ "$size" -le 2147483648 ]
+# Bound a growing source and refuse symlinks/FIFO blocking even after the checks.
+dd if="$source" of="$work/input.raucb" bs=64K iflag=nonblock,nofollow,count_bytes \
+	count=2147483649 status=none
+size=$(stat -c %s "$work/input.raucb")
+[ "$size" -gt 8 ] && [ "$size" -le 2147483648 ]
+
+# RAUC's extract-signature command itself requires a trusted certificate.
+# Its documented bundle trailer is an eight-byte big-endian CMS length.
+sigsize=$(od -An -tu1 -N8 -j "$((size - 8))" "$work/input.raucb" |
+	awk '{ for (i=1; i<=NF; i++) n=n*256+$i } END { printf "%.0f\n", n }')
+[ "$sigsize" -gt 0 ] && [ "$sigsize" -le 1048576 ] && [ "$sigsize" -lt "$((size - 8))" ]
+dd if="$work/input.raucb" of="$runtime/signature.der" bs=64K iflag=skip_bytes,count_bytes \
+	skip="$((size - 8 - sigsize))" count="$sigsize" status=none
+
+# Skip certificate validation, but verify the original attached CMS signature.
+# Detached (plain) and encrypted bundles are deliberately rejected here.
+openssl cms -verify -binary -inform DER -in "$runtime/signature.der" -noverify \
+	-out "$runtime/manifest.raucm" -signer "$runtime/signers.pem"
+[ "$(grep -c '^-----BEGIN CERTIFICATE-----$' "$runtime/signers.pem")" = 1 ]
+awk '
+	/^\[/ { bundle = ($0 ~ /^\[bundle\][[:space:]]*$/) }
+	bundle && /^[[:space:]]*format[[:space:]]*=/ {
+		value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); sub(/[[:space:]]*$/, "", value)
+		seen++; valid=(value == "verity")
+	}
+	END { exit !(seen == 1 && valid) }
+' "$runtime/manifest.raucm"
+
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=NabOS manual update/' \
+	-keyout "$runtime/key.pem" -out "$runtime/cert.pem"
+rauc resign --no-verify --cert="$runtime/cert.pem" --key="$runtime/key.pem" \
+	"$work/input.raucb" "$work/bundle.raucb"
+rm -f "$runtime/key.pem" "$work/input.raucb"
+chown root:nabos "$work/bundle.raucb"
+chmod 0640 "$work/bundle.raucb"
+hash=$(openssl x509 -in "$runtime/cert.pem" -hash -noout)
+install -m 0644 "$runtime/cert.pem" "$trust/$hash.new"
+mv "$trust/$hash.new" "$trust/$hash.0"

@@ -5,7 +5,9 @@ package devicetest
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -40,6 +42,14 @@ type Fixture struct {
 	CheckDelay                     time.Duration
 	InstallTag, InstallChannel     string
 	InstallAutomatic, InstallRetry bool
+	Bundle                         *os.File
+	BundleSize                     int64
+	BundleDigest                   [32]byte
+	BundleIgnoreCertificate        bool
+	BundleRetry                    bool
+	BundleCalls                    int
+	RejectBundle, FailReleases     bool
+	FailUpdateStatus               bool
 	AgentSender                    string
 	AgentPath                      dbus.ObjectPath
 	MaintenanceAgents              bool
@@ -106,6 +116,13 @@ func Attach(t *testing.T, conn *dbus.Conn) *Fixture {
 	f := &Fixture{Conn: conn, Revision: "instance:1", Settings: device.Settings{Locale: "fr_FR", Timezone: "Europe/Paris", Volume: 100, AutoCheck: true, Updates: device.Updates{Channel: "stable", Start: device.HM{Hour: 3}, End: device.HM{Hour: 5}}}, ClockQuality: "ntp", ClockUnix: time.Now().Unix(), ConnectivityState: "ok", VoiceSupported: true, VoiceStatus: "idle", UpdateState: device.UpdateStatus{Current: "v1.0.0", State: "idle"}, Audio: device.AudioStatus{State: "idle", Volume: 100}}
 	f.MaintenanceAgents, f.ManagerReady = true, true
 	f.SSHRevision = "ssh-instance:1"
+	t.Cleanup(func() {
+		f.Mu.Lock()
+		defer f.Mu.Unlock()
+		if f.Bundle != nil {
+			f.Bundle.Close()
+		}
+	})
 	for _, domain := range []string{"Config", "System", "Voice", "Updates", "Manager", "Audio"} {
 		if err := conn.Export(f, device.Path(domain), device.Interface(domain)); err != nil {
 			t.Fatal(err)
@@ -192,6 +209,9 @@ func (f *Fixture) RegisterAgent(sender dbus.Sender, path dbus.ObjectPath) *dbus.
 func (f *Fixture) Releases(channel string) ([]device.Release, *dbus.Error) {
 	f.Mu.Lock()
 	defer f.Mu.Unlock()
+	if f.FailReleases {
+		return nil, dbus.MakeFailedError(errors.New("catalogue unavailable"))
+	}
 	return f.Catalog, nil
 }
 func (f *Fixture) Check() ([]device.Release, *dbus.Error) {
@@ -209,6 +229,41 @@ func (f *Fixture) Install(tag, channel string, automatic, retry bool) (string, *
 	defer f.Mu.Unlock()
 	f.InstallTag, f.InstallChannel, f.InstallAutomatic, f.InstallRetry = tag, channel, automatic, retry
 	f.UpdateState.OperationID = "operation:" + strconv.Itoa(f.Checked)
+	return f.UpdateState.OperationID, nil
+}
+func (f *Fixture) InstallBundle(fd dbus.UnixFD, ignoreCertificate, retry bool) (string, *dbus.Error) {
+	// Keep our own descriptor after replying, just like the daemon. The received
+	// descriptor and the caller's staging file have separate lifetimes.
+	owned, err := syscall.Dup(int(fd))
+	syscall.Close(int(fd))
+	if err != nil {
+		return "", dbus.MakeFailedError(err)
+	}
+	syscall.CloseOnExec(owned)
+	bundle := os.NewFile(uintptr(owned), "manual-update")
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	f.BundleCalls++
+	if f.RejectBundle {
+		bundle.Close()
+		return "", dbus.MakeFailedError(errors.New("secret bundle refusal"))
+	}
+	digest := sha256.New()
+	size, err := io.Copy(digest, bundle)
+	if err == nil {
+		_, err = bundle.Seek(0, io.SeekStart)
+	}
+	if err != nil {
+		bundle.Close()
+		return "", dbus.MakeFailedError(err)
+	}
+	if f.Bundle != nil {
+		f.Bundle.Close()
+	}
+	f.Bundle, f.BundleSize = bundle, size
+	copy(f.BundleDigest[:], digest.Sum(nil))
+	f.BundleIgnoreCertificate, f.BundleRetry = ignoreCertificate, retry
+	f.UpdateState.OperationID = "manual:" + strconv.Itoa(f.BundleCalls)
 	return f.UpdateState.OperationID, nil
 }
 func (f *Fixture) Start(kind, source string) (string, *dbus.Error) {
@@ -246,6 +301,9 @@ func (p properties) Get(iface, name string) (dbus.Variant, *dbus.Error) {
 	case "Voice.Status":
 		value = p.f.VoiceStatus
 	case "Updates.Status":
+		if p.f.FailUpdateStatus {
+			return dbus.Variant{}, dbus.MakeFailedError(errors.New("status unavailable"))
+		}
 		value = p.f.UpdateState
 	case "Updates.Configured":
 		value = p.f.Configured
