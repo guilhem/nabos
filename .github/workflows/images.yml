@@ -42,6 +42,8 @@ jobs:
     uses: ./.github/workflows/device-core.yml
   uboot:
     uses: ./.github/workflows/uboot.yml
+  uboot-sandbox:
+    uses: ./.github/workflows/uboot-sandbox.yml
   build:
     needs: [test, go, rust, device-core, uboot]
     strategy:
@@ -54,10 +56,6 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
-    env:
-      GOCACHE: ${{ github.workspace }}/build/cache/image-tests/${{ matrix.target }}/go
-      CCACHE_DIR: ${{ github.workspace }}/build/cache/image-tests/${{ matrix.target }}/ccache
-      CCACHE_MAXSIZE: 512M
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -80,12 +78,6 @@ jobs:
         with:
           path: build/cache/base/${{ matrix.target }}
           key: prepared-base-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-cache.outputs.key }}
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: image-tests-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('image/test.sh', 'image/sources.lock.json') }}-${{ github.sha }}
-          restore-keys: |
-            image-tests-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('image/test.sh', 'image/sources.lock.json') }}-
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: '*-${{ matrix.target }}'
@@ -102,16 +94,16 @@ jobs:
           test -n "$SIGNING_CERT"
           printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/rauc-key.pem"
           printf '%s\n' "$SIGNING_CERT" > "$RUNNER_TEMP/rauc-cert.pem"
-      - name: Assemble clean image, test disposable copy and sign
+      - name: Assemble, sign and compress image
         env:
           TARGET: ${{ matrix.target }}
           RAUC_KEY: ${{ runner.temp }}/rauc-key.pem
           RAUC_CERT: ${{ runner.temp }}/rauc-cert.pem
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            bash image/build.sh "$TARGET" "$GITHUB_REF_NAME" --components build/components
+            bash image/build.sh "$TARGET" "$GITHUB_REF_NAME" --components build/components --defer-tests
           else
-            bash image/build.sh "$TARGET" "dev-${GITHUB_SHA:0:12}" --development --components build/components
+            bash image/build.sh "$TARGET" "dev-${GITHUB_SHA:0:12}" --development --components build/components --defer-tests
           fi
       - name: Remove signing key
         if: always()
@@ -129,9 +121,53 @@ jobs:
           name: diagnostics-${{ matrix.target }}
           path: dist/${{ matrix.target }}/*.txt
           retention-days: 7
+  image-test:
+    needs: [build, uboot-sandbox]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: zero-armv6
+            runner: ubuntu-24.04
+          - target: zero2-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      GOCACHE: ${{ github.workspace }}/build/cache/image-tests/${{ matrix.target }}/go
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.GOCACHE }}
+          key: image-tests-go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-1.27.1-${{ hashFiles('services/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            image-tests-go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-1.27.1-${{ hashFiles('services/go.sum') }}-
+      - name: Test dependencies
+        run: bash image/host-deps.sh
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: nabos-${{ matrix.target }}
+          path: dist/${{ matrix.target }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: uboot-${{ matrix.target }}
+          path: build/components
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: uboot-sandbox-${{ matrix.target }}
+          path: build/components
+      - name: Verify the built image with the prebuilt sandbox
+        env:
+          TARGET: ${{ matrix.target }}
+        run: bash image/test-artifact.sh "$TARGET" "dist/$TARGET" build/components
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, image-test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

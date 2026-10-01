@@ -12,15 +12,17 @@ fi
 repo=$(cd "$(dirname "$0")/.." && pwd)
 GO=${GO:-go}
 export GO
-target=${1:?Usage: image/build.sh TARGET VERSION [--development] [--replay INPUTS.tar.xz | --components DIR]}
+target=${1:?Usage: image/build.sh TARGET VERSION [--development] [--defer-tests] [--replay INPUTS.tar.xz | --components DIR]}
 version=${2:?release version required}
 shift 2
 development=false
+defer_tests=false
 replay=
 components=
 while (( $# )); do
   case $1 in
     --development) development=true; shift ;;
+    --defer-tests) defer_tests=true; shift ;;
     --replay) replay=$(realpath "${2:?archive required}"); shift 2 ;;
     --components) components=$(realpath "${2:?component directory required}"); shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -272,8 +274,14 @@ mkenvimage -r -s 0x10000 -o "$work/images/uboot.env" "$repo/image/boot/uboot.env
 mkdir "$work/empty"
 genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" --inputpath "$work/images" --outputpath "$work/images" --tmppath "$work/genimage-tmp"
 chmod a-w "$work/images/sdcard.img" "$work/images/rootfs.ext4" "$work/images/boot.vfat"
-echo "$(date -u +%FT%TZ) Testing a disposable copy of the assembled SD image"
-bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" "$payload" "$work/components/uboot/u-boot.bin"
+if $defer_tests; then
+  echo 'Image verification deferred to the separate CI job'
+  # Preserve the offline replay inputs even when verification runs elsewhere.
+  bash "$repo/image/test-bus.sh" "$payload/inputs/test-bus" "$work/test-bus" >/dev/null
+else
+  echo "$(date -u +%FT%TZ) Testing a disposable copy of the assembled SD image"
+  bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" "$payload" "$work/components/uboot/u-boot.bin"
+fi
 sudo rm -rf "$payload/src/uboot"
 mkdir "$work/bundle"
 ln "$work/images/rootfs.ext4" "$work/bundle/rootfs.ext4"
