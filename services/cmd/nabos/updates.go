@@ -2,7 +2,11 @@ package main
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/guilhem/nabos/services/internal/device"
 )
@@ -47,25 +51,21 @@ func updateStateLabel(state string) string {
 
 func (a *App) updateRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /updates", func(w http.ResponseWriter, r *http.Request) {
-		status, err := a.device.UpdateStatus(r.Context())
+		status, statusErr := a.device.UpdateStatus(r.Context())
 		settings, configErr := a.systemSettings(r.Context())
 		configured, configuredErr := a.device.UpdatesConfigured(r.Context())
 		var releases []device.Release
-		if err == nil {
-			err = configErr
+		catalogErr := errors.Join(configErr, configuredErr)
+		if catalogErr == nil && configured {
+			releases, catalogErr = a.device.Releases(r.Context(), settings.Updates.Channel)
 		}
-		if err == nil {
-			err = configuredErr
-		}
-		if err == nil && configured {
-			releases, err = a.device.Releases(r.Context(), settings.Updates.Channel)
-		}
-		busy := status.State == "installing" || status.State == "downloading" || status.State == "reboot" || status.State == "confirming" || err != nil
+		busy := statusErr != nil || updateBusy(status)
 		a.render(w, r, "updates", "Mises à jour", map[string]any{
 			"Status": status, "StateLabel": updateStateLabel(status.State), "Configured": configured,
-			"Releases": releases, "Busy": busy, "LastError": err,
+			"Releases": releases, "Busy": busy, "LastError": errors.Join(statusErr, catalogErr),
 		})
 	})
+	m.HandleFunc("POST /updates/upload", a.uploadUpdate)
 	m.HandleFunc("POST /updates/settings", a.saveUpdateSettings)
 	m.HandleFunc("POST /updates/check", func(w http.ResponseWriter, r *http.Request) {
 		_, err := a.device.CheckUpdates(r.Context())
@@ -78,6 +78,134 @@ func (a *App) updateRoutes(m *http.ServeMux) {
 		}
 		back(w, r, "/updates", err, "Installation demandée ; le redémarrage restera manuel")
 	})
+}
+
+func updateBusy(status device.UpdateStatus) bool {
+	return status.State == "installing" || status.State == "downloading" || status.State == "reboot" || status.State == "confirming"
+}
+
+const maxUpdateBundle = 2 << 30
+const maxUpdateRequest = maxUpdateBundle + (64 << 10)
+
+func (a *App) uploadUpdate(w http.ResponseWriter, r *http.Request) {
+	err := a.receiveUpdate(w, r)
+	back(w, r, "/updates", err, "Installation demandée ; le redémarrage restera manuel")
+}
+
+func (a *App) receiveUpdate(w http.ResponseWriter, r *http.Request) error {
+	dir, err := filepath.Abs(a.env.DataDir)
+	if err != nil {
+		return errors.New("impossible de vérifier le stockage de la mise à jour")
+	}
+	// boot-init marks the shared data mount when it falls back to its 64 MiB tmpfs.
+	for ; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, ".volatile")); err == nil {
+			return errors.New("l’import est indisponible en mode de secours : le stockage de données est volatile")
+		} else if !os.IsNotExist(err) {
+			return errors.New("impossible de vérifier le stockage de la mise à jour")
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	// Reserve staging before RAUC knows about this upload.
+	if !a.updateUploadMu.TryLock() {
+		return errors.New("un import de mise à jour est déjà en cours ; réessayez après sa fin")
+	}
+	defer a.updateUploadMu.Unlock()
+	if r.ContentLength > maxUpdateRequest {
+		return errors.New("le fichier de mise à jour dépasse la limite de 2 Gio")
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpdateRequest)
+	parts, err := r.MultipartReader()
+	if err != nil {
+		return errors.New("formulaire d’import de mise à jour invalide")
+	}
+	status, err := a.device.UpdateStatus(r.Context())
+	if err != nil {
+		return err
+	}
+	if updateBusy(status) {
+		return errors.New("une mise à jour est déjà en cours ; attendez sa fin et le redémarrage")
+	}
+	var bundle *os.File
+	defer func() {
+		if bundle != nil {
+			bundle.Close()
+			os.Remove(bundle.Name())
+		}
+	}()
+	flags := map[string]bool{}
+	for {
+		part, err := parts.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return updateUploadReadError(err)
+		}
+		switch part.FormName() {
+		case "bundle":
+			ext := strings.ToLower(filepath.Ext(part.FileName()))
+			if bundle != nil || (ext != ".rauc" && ext != ".raucb") {
+				return errors.New("sélectionnez un seul fichier de mise à jour .rauc ou .raucb")
+			}
+			dir := filepath.Join(a.env.DataDir, "updates")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				return errors.New("impossible de préparer le stockage de la mise à jour")
+			}
+			bundle, err = os.CreateTemp(dir, "upload-*")
+			if err != nil {
+				return errors.New("impossible de stocker la mise à jour")
+			}
+			// Keep only the descriptor so interruptions cannot leave a named partial file.
+			if err := os.Remove(bundle.Name()); err != nil {
+				return errors.New("impossible de préparer le fichier temporaire de la mise à jour")
+			}
+			n, err := io.Copy(bundle, io.LimitReader(part, maxUpdateBundle+1))
+			if n > maxUpdateBundle {
+				return errors.New("le fichier de mise à jour dépasse la limite de 2 Gio")
+			}
+			if err != nil {
+				return updateUploadReadError(err)
+			}
+			if n == 0 {
+				return errors.New("le fichier de mise à jour est vide")
+			}
+		case "ignore_certificate", "retry":
+			name := part.FormName()
+			_, duplicate := flags[name]
+			value, err := io.ReadAll(io.LimitReader(part, 6))
+			if err != nil {
+				return updateUploadReadError(err)
+			}
+			if duplicate || part.FileName() != "" || (string(value) != "true" && string(value) != "false") {
+				return errors.New("option d’import de mise à jour invalide ou répétée")
+			}
+			flags[name] = string(value) == "true"
+		default:
+			return errors.New("champ d’import de mise à jour invalide")
+		}
+	}
+	if bundle == nil {
+		return errors.New("sélectionnez un fichier de mise à jour .rauc ou .raucb")
+	}
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		return updateUploadReadError(err)
+	}
+	if _, err := bundle.Seek(0, io.SeekStart); err != nil {
+		return errors.New("impossible de lire le fichier de mise à jour")
+	}
+	_, err = a.device.InstallBundle(r.Context(), bundle, flags["ignore_certificate"], flags["retry"])
+	return err
+}
+
+func updateUploadReadError(err error) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return errors.New("le formulaire dépasse la limite d’import de 2 Gio")
+	}
+	return errors.New("impossible de recevoir la mise à jour : fichier ou formulaire incomplet, ou stockage insuffisant")
 }
 
 func (a *App) saveUpdateSettings(w http.ResponseWriter, r *http.Request) {

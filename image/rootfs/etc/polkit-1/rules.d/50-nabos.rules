@@ -20,7 +20,7 @@ polkit.addRule(function (action, subject) {
 			["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0) {
 			return polkit.Result.YES;
 		}
-		if (["systemd-timesyncd.service", "ssh.service"].indexOf(action.lookup("unit")) >= 0 &&
+		if (["systemd-timesyncd.service", "ssh.service", "nabos-rauc-manual.service"].indexOf(action.lookup("unit")) >= 0 &&
 			["start", "stop"].indexOf(action.lookup("verb")) >= 0) {
 			return polkit.Result.YES;
 		}

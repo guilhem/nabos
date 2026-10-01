@@ -1,0 +1,23 @@
+[Unit]
+Description=Prepare an explicitly trusted local NabOS update
+After=rauc.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=nabos-rauc-manual nabos-rauc-trust
+RuntimeDirectoryMode=0755
+WorkingDirectory=/run/nabos-rauc-manual
+Environment=HOME=/run/nabos-rauc-manual
+ExecStartPre=/usr/lib/nabos/rauc-manual cleanup
+ExecStart=/usr/lib/nabos/rauc-manual
+ExecStopPost=/usr/lib/nabos/rauc-manual cleanup
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/data/nabos-rauc-manual /run/nabos-rauc-manual /run/nabos-rauc-trust

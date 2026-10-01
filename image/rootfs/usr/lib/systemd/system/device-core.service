@@ -18,6 +18,8 @@ Environment=DEVICE_CORE_MAINTENANCE_UNITS=nabos.service:nab-hardware.service
 Environment=DEVICE_CORE_HOTSPOT_PREFIX=Nabaztag-
 Environment=DEVICE_CORE_HOTSPOT_UUID=4e61624f-5300-4000-8000-000000000001
 Environment=DEVICE_CORE_BOOT_HEALTH=/run/nabos-boot-health
+Environment=DEVICE_CORE_UPDATE_PREPARE_UNIT=nabos-rauc-manual.service
+Environment=DEVICE_CORE_UPDATE_PREPARED_BUNDLE=/data/nabos-rauc-manual/bundle.raucb
 EnvironmentFile=/etc/nabos/release.env
 RuntimeDirectory=device-core
 WorkingDirectory=/run/device-core

@@ -145,9 +145,20 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{if .Data.Waiting}}<p>{{.Data.Waiting}}</p>{{end}}
 {{if .Data.Configured}}
 <form method="post" action="/updates/check"><button{{if or .Data.Busy .Data.Status.Checking}} disabled{{end}}>Vérifier maintenant</button></form>
+{{else}}<p>Le catalogue GitHub des mises à jour n’est pas configuré sur cette image. Vous pouvez importer un fichier manuellement.</p>{{end}}
 {{if eq .Data.Status.State "reboot"}}<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><input type="hidden" name="back" value="/updates"><button>Redémarrer sur la nouvelle version</button></form>{{end}}
-{{else}}<p>Les mises à jour ne sont pas configurées sur cette image.</p>{{end}}
 <p>La nouvelle version s'installe sur la partition inactive. Si elle ne démarre pas correctement, le lapin revient tout seul à la version précédente.</p></section>
+<section><h2>Importer une mise à jour</h2>
+<p>Choisissez un fichier .rauc ou .raucb (2 Gio maximum). L’installation est manuelle, sans recherche sur GitHub ni redémarrage automatique.</p>
+<form method="post" action="/updates/upload" enctype="multipart/form-data">
+<fieldset{{if .Data.Busy}} disabled{{end}}><legend>Fichier et vérification</legend>
+<label>Fichier de mise à jour <input type="file" name="bundle" accept=".rauc,.raucb" required></label>
+<label><input type="checkbox" name="ignore_certificate" value="true" aria-describedby="certificate-warning"> Ignorer la validation du certificat</label>
+<p id="certificate-warning">Cette option ignore la chaîne de confiance, les dates de validité et l’usage du certificat. L’authenticité du fichier n’est pas garantie. La signature et la compatibilité restent vérifiées.</p>
+{{if .Data.Status.RetryRequired}}<input type="hidden" name="retry" value="true">{{end}}
+<button>{{if .Data.Status.RetryRequired}}Réessayer l’installation manuellement{{else}}Importer et installer{{end}}</button>
+</fieldset></form>
+{{if .Data.Busy}}<p>Import indisponible pendant la mise à jour ou dans l’attente du redémarrage.</p>{{end}}</section>
 {{if .Data.Configured}}
 {{if .System}}<section><h2>Préférences</h2><form method="post" action="/updates/settings"><input type="hidden" name="revision" value="{{.Revision}}">
 <label>Mode <select name="mode">
