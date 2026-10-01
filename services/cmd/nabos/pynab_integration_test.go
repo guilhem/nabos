@@ -245,7 +245,7 @@ func startNativeDispatch(t *testing.T, a *App, dispatch func(appEvent)) *nativeF
 	ctx, cancel := context.WithCancel(context.Background())
 	a.ctx = ctx
 	root := t.TempDir()
-	for _, name := range []string{"fr_FR/book/intro.mp3", "fr_FR/book/interrupt.mp3", "fr_FR/book/outro-noalt.mp3", "book/next.mp3", "book/previous.mp3", "book/books/9782092512593/default/1.mp3", "book/books/9782092512593/default/2.mp3", "eightball/listen.mp3", "eightball/acquired.mp3", "fr_FR/eightball/answers/yes.mp3", "clock/signature.mp3", "clock/12/chime.mp3", "system/abort.wav", "radio/start.mp3", "rfid/rfid.wav"} {
+	for _, name := range []string{"fr_FR/book/intro.mp3", "fr_FR/book/interrupt.mp3", "fr_FR/book/outro-noalt.mp3", "book/next.mp3", "book/previous.mp3", "book/books/9782092512593/default/1.mp3", "book/books/9782092512593/default/2.mp3", "eightball/listen.mp3", "eightball/acquired.mp3", "fr_FR/eightball/answers/yes.mp3", "clock/signature.mp3", "clock/12/chime.mp3", "sleep/sleep.mp3", "wakeup/wakeup.mp3", "system/abort.wav", "radio/start.mp3", "rfid/rfid.wav"} {
 		p := filepath.Join(root, name)
 		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 			t.Fatal(err)

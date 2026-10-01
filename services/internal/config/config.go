@@ -39,7 +39,7 @@ type Clock struct {
 	Wakeup      HM     `json:"wakeup"`
 	Sleep       HM     `json:"sleep"`
 	Days        [7]Day `json:"days"` // Monday first
-	// Override forces sleep (true) or awake (false) until the schedule agrees.
+	// Override forces sleep (true) or awake (false) until the schedule agrees or the app restarts.
 	Override *bool `json:"override"`
 }
 

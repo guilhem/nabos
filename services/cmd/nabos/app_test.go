@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,8 +15,10 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/clock"
+	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/devicetest"
+	"github.com/guilhem/nabos/services/internal/rabbit"
 )
 
 func testApp(t *testing.T) *App {
@@ -54,6 +57,102 @@ func TestClockUsesRemoteQuality(t *testing.T) {
 		t.Fatal("announced coarse clock")
 	}
 }
+
+func TestRestartAppliesClockSchedule(t *testing.T) {
+	for _, tc := range []struct {
+		name, source string
+		hour         int
+		perDay       bool
+	}{
+		{"night", "ntp", 2, false},
+		{"restored time", "restored", 2, false},
+		{"day", "ntp", 12, false},
+		{"after midnight", "ntp", 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testApp(t)
+			now := time.Date(2026, 9, 29, tc.hour, 45, 0, 0, time.UTC)
+			settings := a.store.Get().Clock
+			settings.PerDay = tc.perDay
+			settings.Days[0] = config.Day{Wakeup: config.HM{Hour: 8}, Sleep: config.HM{Hour: 1, Min: 30}}
+			asleep := clock.ShouldSleep(settings, now)
+			override := !asleep
+			settings.Override = &override
+			if _, err := a.store.Update(func(s *config.Settings) error { s.Clock = settings; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			f := appFixture(t, a)
+			f.Mu.Lock()
+			f.ClockQuality, f.ClockUnix, f.Settings.Timezone = tc.source, now.Unix(), "UTC"
+			f.Mu.Unlock()
+			restarted, err := NewApp(a.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(restarted.device.Close)
+			if restarted.store.Get().Clock.Override != nil {
+				t.Fatal("restart retained the previous manual override")
+			}
+			saved, err := config.Open(filepath.Join(a.env.DataDir, "application.json"))
+			if err != nil || saved.Get().Clock.Override != nil {
+				t.Fatal("restart did not persist the cleared override", err)
+			}
+			native := startNative(t, restarted)
+			ctx, cancel := context.WithCancel(restarted.ctx)
+			done := make(chan struct{})
+			go func() { defer close(done); restarted.clockLoop(ctx) }()
+			t.Cleanup(func() { cancel(); <-done })
+			// Recovery already kicks the clock when hardware is ready.
+			restarted.agent.holdRecovery()
+			restarted.agent.recover(ctx)
+			want := "idle"
+			if asleep {
+				want = "asleep"
+			}
+			pynabWait(t, "startup schedule", 3*time.Second, func() bool {
+				state, _ := restarted.rabbit.State()
+				return state.State == want
+			})
+			if native.length() != 0 {
+				t.Fatal("startup played sleep or wakeup sounds")
+			}
+			// A new manual command still takes precedence during this boot.
+			restarted.setOverride(!asleep)
+			if asleep {
+				want = "idle"
+			} else {
+				want = "asleep"
+			}
+			pynabWait(t, "new manual override", 3*time.Second, func() bool {
+				state, _ := restarted.rabbit.State()
+				return state.State == want
+			})
+		})
+	}
+}
+
+func TestManualClockOverrideSurvivesTimeRecovery(t *testing.T) {
+	a := testApp(t)
+	f := appFixture(t, a)
+	now := time.Date(2026, 9, 29, 2, 45, 0, 0, time.UTC)
+	f.Mu.Lock()
+	f.ClockUnix, f.Settings.Timezone = now.Unix(), "UTC"
+	f.Mu.Unlock()
+	for _, source := range []string{"unknown", "restored", "ntp"} {
+		f.Mu.Lock()
+		f.ClockQuality = source
+		f.Mu.Unlock()
+		if source == "unknown" {
+			a.setOverride(false)
+		}
+		a.onState(rabbit.State{State: "idle"})
+		a.clockTick(now)
+		if override := a.store.Get().Clock.Override; override == nil || *override {
+			t.Fatalf("%s: cleared a manual wakeup requested during this boot", source)
+		}
+	}
+}
+
 func TestSystemAndApplicationSettingsSaveIndependently(t *testing.T) {
 	a := testApp(t)
 	cookie := serviceSession(t, a)
