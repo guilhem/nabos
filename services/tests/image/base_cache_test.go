@@ -15,8 +15,8 @@ func TestPreparedBaseCache(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(checkout, "image"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	files := []string{"base-cache.sh", "build.sh", "prepare.sh", "sources.lock.json", "lva-requirements.lock",
-		"build-config/99nabos-build", "build-config/policy-rc.d"}
+	files := []string{"image/base-cache.sh", "image/build.sh", "image/prepare.sh", "image/sources.lock.json", "image/lva-requirements.lock",
+		"image/build-config/99nabos-build", "image/build-config/policy-rc.d", "services/go.mod"}
 	patches, err := filepath.Glob(filepath.Join(imageDir, "patches", "*.patch"))
 	if err != nil || len(patches) == 0 {
 		t.Fatalf("patch fixtures: %v, %v", patches, err)
@@ -25,13 +25,20 @@ func TestPreparedBaseCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, patch := range patches {
-		files = append(files, filepath.Join("patches", filepath.Base(patch)))
+		files = append(files, filepath.Join("image", "patches", filepath.Base(patch)))
+	}
+	helperSources, err := filepath.Glob(filepath.Join(imageDir, "..", "services", "cmd", "nab-image", "*.go"))
+	if err != nil || len(helperSources) == 0 {
+		t.Fatalf("nab-image fixtures: %v, %v", helperSources, err)
+	}
+	for _, source := range helperSources {
+		files = append(files, filepath.Join("services", "cmd", "nab-image", filepath.Base(source)))
 	}
 	for _, name := range files {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(checkout, "image", name)), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(checkout, name)), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		write(t, filepath.Join(checkout, "image", name), read(t, filepath.Join(imageDir, name)))
+		write(t, filepath.Join(checkout, name), read(t, filepath.Join(imageDir, "..", name)))
 	}
 	script := filepath.Join(checkout, "image", "base-cache.sh")
 	t.Setenv("NABOS_BASE_CACHE_EPOCH", "2026-09-30")
@@ -143,18 +150,15 @@ func TestPreparedBaseCache(t *testing.T) {
 					t.Fatalf("cache miss used the archive: exit %d\n%s%s", r.code, r.stdout, r.stderr)
 				}
 			}
-			for _, change := range []string{"epoch", "prepare", "build-config"} {
+			for _, change := range []string{"epoch", "image/prepare.sh", "image/build-config/policy-rc.d", "services/cmd/nab-image/main.go", "services/go.mod"} {
 				t.Run(change, func(t *testing.T) {
-					prepare := filepath.Join(checkout, "image", "prepare.sh")
-					if change == "build-config" {
-						prepare = filepath.Join(checkout, "image", "build-config", "policy-rc.d")
-					}
 					if change == "epoch" {
 						t.Setenv("NABOS_BASE_CACHE_EPOCH", "2026-10-01")
 					} else {
-						original := read(t, prepare)
-						write(t, prepare, original+"\n# changed preparation\n")
-						t.Cleanup(func() { write(t, prepare, original) })
+						input := filepath.Join(checkout, change)
+						original := read(t, input)
+						write(t, input, original+"\n# changed preparation\n")
+						t.Cleanup(func() { write(t, input, original) })
 					}
 					if key(t, target) == identity {
 						t.Fatalf("%s did not invalidate the key", change)
