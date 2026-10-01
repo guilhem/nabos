@@ -77,9 +77,11 @@ work=$(mktemp -d "$repo/build/iot/test-$target.XXXXXX")
 root=$work/root
 boot=$work/boot
 mkdir -p "$root" "$boot" "$work/tmp"
-export TMPDIR="$work/tmp" GOCACHE="$work/go-cache" GOMODCACHE="$work/go-modcache"
-export GOPROXY=off GOTOOLCHAIN=local GOENV=off GOWORK=off GOFLAGS=-mod=readonly
-# Keep build caches and any upstream build writes disposable as well.
+export TMPDIR="$work/tmp" GOMODCACHE="$work/go-modcache"
+export GOCACHE=${GOCACHE:-$repo/build/cache/image-tests/$target/go}
+mkdir -p "$GOCACHE"
+export GOPROXY=off GOTOOLCHAIN=local GOENV=off GOWORK=off GOFLAGS='-mod=readonly -trimpath'
+# Modules remain archived/offline inputs; upstream build writes stay disposable.
 cp -a --reflink=auto "$payload/inputs/go-modcache" "$GOMODCACHE"
 cp -a --reflink=auto "$payload/src/uboot" "$work/uboot-src"
 cp --reflink=auto --sparse=always -- "$sd_image" "$work/sdcard.img"
@@ -365,12 +367,31 @@ dd if="$work/sdcard.img" of="$work/uboot.env" bs=65536 skip=16 count=1 status=no
 dd if="$work/sdcard.img" of="$work/uboot-redund.env" bs=65536 skip=32 count=1 status=none
 cmp "$work/uboot.env" "$work/uboot-redund.env"
 
-make -C "$work/uboot-src" O="$work/uboot-sandbox" CROSS_COMPILE= sandbox_defconfig
+cc=gcc
+if command -v ccache >/dev/null; then
+  export CCACHE_DIR=${CCACHE_DIR:-$repo/build/cache/image-tests/$target/ccache}
+  export CCACHE_BASEDIR=$work CCACHE_COMPILERCHECK=content CCACHE_TEMPDIR=$work/tmp/ccache
+  mkdir -p "$CCACHE_DIR" "$CCACHE_TEMPDIR"
+  cc="ccache $cc"
+fi
+# Debug paths must be stable too: the sandbox workspace changes on every run.
+build=(make -C "$work/uboot-src" O="$work/uboot-sandbox" CROSS_COMPILE= CC="$cc"
+  KCFLAGS="-fdebug-prefix-map=$work=.")
+"${build[@]}" sandbox_defconfig
 "$work/uboot-src/scripts/config" --file "$work/uboot-sandbox/.config" \
   -d SANDBOX_SDL -d TOOLS_MKEFICAPSULE -d UNIT_TEST -d EFI_CAPSULE_AUTHENTICATE \
   -d EFI_CAPSULE_ON_DISK -d CMD_UPL -d UPL
-make -C "$work/uboot-src" O="$work/uboot-sandbox" CROSS_COMPILE= olddefconfig
-make -C "$work/uboot-src" O="$work/uboot-sandbox" CROSS_COMPILE= -j"$(nproc)" CONFIG_PYLIBFDT= u-boot tools
+"${build[@]}" olddefconfig
+if [[ $cc == 'ccache gcc' ]]; then
+  # Hash contents, not disposable paths, so a new workspace can reuse objects.
+  CCACHE_NAMESPACE=$({
+    sha256sum "$payload/inputs/sources.lock.json" "$repo/image/test.sh" \
+      "$work/uboot-sandbox/.config" | cut -d' ' -f1
+    printf '%s\n' "$target" "$(uname -m)"
+  } | sha256sum | cut -d' ' -f1)
+  export CCACHE_NAMESPACE
+fi
+"${build[@]}" -j"$(nproc)" CONFIG_PYLIBFDT= u-boot tools
 [[ -x $work/uboot-sandbox/u-boot ]]
 
 # Inspect modules from the cloned root, without using the host's kernel release.

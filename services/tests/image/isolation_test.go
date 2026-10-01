@@ -36,11 +36,14 @@ func TestImageIsolation(t *testing.T) {
 		name, target  string
 		fail, corrupt bool
 		code          int
+		customCache   bool
 	}{
-		{"test failure", "zero-armv6", true, false, 23},
-		{"success", "zero2-arm64", false, false, 0},
-		{"changed original", "zero-armv6", false, true, 1},
-		{"changed original on failure", "zero2-arm64", true, true, 1},
+		{"test failure", "zero-armv6", true, false, 23, false},
+		{"success", "zero2-arm64", false, false, 0, false},
+		{"custom cache failure", "zero2-arm64", true, false, 23, true},
+		{"custom cache success", "zero-armv6", false, false, 0, true},
+		{"changed original", "zero-armv6", false, true, 1, false},
+		{"changed original on failure", "zero2-arm64", true, true, 1, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -77,6 +80,8 @@ mkdir -p "$1" "$2"
 printf '%s\n' "$2"
 `)
 			write(t, filepath.Join(checkout, "build/iot/keep"), "another build")
+			write(t, filepath.Join(payload, "inputs/sources.lock.json"), "locked sources")
+			write(t, filepath.Join(payload, "inputs/go-modcache/keep"), "archived module")
 			for name, script := range map[string]string{
 				filepath.Join(payload, "src/uboot/scripts/config"):                        "exit 0",
 				filepath.Join(fixture, "usr/bin/nab-hardware"):                            "echo shipped-core",
@@ -103,6 +108,11 @@ printf '%s\n' "$2"
 				t.Fatal(err)
 			}
 			before := sha256.Sum256([]byte(read(t, original)))
+			cache := filepath.Join(checkout, "build/cache/image-tests", scenario.target)
+			if scenario.customCache {
+				cache = filepath.Join(tmp, "external cache")
+			}
+			goCache, ccCache := filepath.Join(cache, "go"), filepath.Join(cache, "ccache")
 			fake := newFakes(t, tmp, map[string]string{
 				"cp":        fmt.Sprintf("exec %q \"$@\"", cp),
 				"sha256sum": fmt.Sprintf("exec %q \"$@\"", checksum),
@@ -175,20 +185,55 @@ esac`,
 shift 4
 exec "$@"`,
 				"make": `set -eu
+work=$(dirname "$(cat "$STATE/copy")")
+cc=
 for arg do
-  case "$arg" in O=*) out=${arg#O=} ;; esac
+  case "$arg" in
+    O=*) out=${arg#O=} ;;
+    CC=*) cc=${arg#CC=} ;;
+    KCFLAGS=*) [ "$arg" = "KCFLAGS=-fdebug-prefix-map=$work=." ] ;;
+  esac
 done
-[ "$out" = "$(dirname "$(cat "$STATE/copy")")/uboot-sandbox" ]
+[ "$1 $2" = "-C $work/uboot-src" ]
+[ "$out" = "$work/uboot-sandbox" ]
+[ "$cc" = 'ccache gcc' ]
+[ "$CCACHE_DIR" = "$EXPECT_CCACHE" ]
+[ "$CCACHE_BASEDIR" = "$work" ]
+[ "$CCACHE_COMPILERCHECK" = content ]
+[ "$CCACHE_TEMPDIR" = "$work/tmp/ccache" ]
+[ "$TMPDIR" = "$work/tmp" ]
+[ "$GOMODCACHE" = "$work/go-modcache" ]
+[ "$(cat "$work/uboot-src/scripts/config")" = "$(cat "$TEST_PAYLOAD/src/uboot/scripts/config")" ]
 mkdir -p "$out"
-touch "$out/u-boot"
-chmod 755 "$out/u-boot"`,
+case "$*" in
+  *sandbox_defconfig)
+    [ ! -e "$out/u-boot" ]
+    printf 'sandbox config\n' > "$out/.config"
+    printf disposable > "$work/uboot-src/build-output" ;;
+  *olddefconfig) [ -f "$out/.config" ] ;;
+  *'u-boot tools')
+    [ "${#CCACHE_NAMESPACE}" = 64 ]
+    if [ -f "$STATE/namespace" ]; then
+      [ "$CCACHE_NAMESPACE" = "$(cat "$STATE/namespace")" ]
+    fi
+    printf '%s' "$CCACHE_NAMESPACE" > "$STATE/namespace"
+    printf x >> "$CCACHE_DIR/compiled"
+    touch "$out/u-boot"
+    chmod 755 "$out/u-boot" ;;
+  *) exit 1 ;;
+esac`,
+				"ccache": "exit 0",
 				"go": `set -eu
 work=$(dirname "$(cat "$STATE/copy")")
 case "$PATH" in "$work/test-bus":*) ;; *) exit 1 ;; esac
 [ "$DBUS_DAEMON" = "$work/test-bus/dbus-daemon" ]
-[ "$GOCACHE" = "$work/go-cache" ]
+[ "$GOCACHE" = "$EXPECT_GOCACHE" ]
 [ "$GOMODCACHE" = "$work/go-modcache" ]
 [ "$TMPDIR" = "$work/tmp" ]
+[ "$GOPROXY $GOTOOLCHAIN $GOENV $GOWORK $GOFLAGS" = 'off local off off -mod=readonly -trimpath' ]
+[ "$(cat "$GOMODCACHE/keep")" = 'archived module' ]
+printf disposable > "$GOMODCACHE/keep"
+printf x >> "$GOCACHE/compiled"
 case "$*" in
   *'./tests/integration ./tests/image')
     [ "$NABOS_TEST_ASSETS" = "$work/root/usr/share/nabos" ]
@@ -204,53 +249,80 @@ case "$*" in
   *) exit 1 ;;
 esac`,
 			})
-			r := execute(t, "", fake.env("GO=go", "NABOS_BUILD_NAMESPACE=", "ORIGINAL="+original, "STATE="+tmp,
-				"BOOT_FIXTURE="+boot, "ROOT_FIXTURE="+fixture, "KERNEL="+kernel, "TEST_PAYLOAD="+payload,
-				fmt.Sprintf("FAIL_TEST=%t", scenario.fail), fmt.Sprintf("CORRUPT=%t", scenario.corrupt)),
-				"bash", filepath.Join(checkout, "image/test.sh"), scenario.target, original, payload, expected)
-			calls := strings.Join(fake.calls(t), "\n")
-			if r.code != scenario.code {
-				t.Fatalf("exit %d, want %d\n%s%s\n%s", r.code, scenario.code, r.stdout, r.stderr, calls)
+			cacheEnv := []string{"GOCACHE=", "CCACHE_DIR=", "CCACHE_NAMESPACE="}
+			if scenario.customCache {
+				cacheEnv = []string{"GOCACHE=" + goCache, "CCACHE_DIR=" + ccCache, "CCACHE_NAMESPACE=old namespace"}
 			}
-			copy := strings.TrimSpace(read(t, filepath.Join(tmp, "copy")))
-			work := filepath.Dir(copy)
-			if filepath.Dir(work) != filepath.Join(checkout, "build/iot") {
-				t.Fatalf("copy outside owned workspace: %s", copy)
-			}
-			for _, call := range []string{
-				"unshare --mount --propagation private", "cp --reflink=auto --sparse=always -- " + original + " " + copy,
-				"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -v ./tests/integration",
-				"chroot " + work + "/root /usr/sbin/sshd -G", "chroot " + work + "/root getent passwd nabos",
-				"chroot " + work + "/root /usr/sbin/visudo --check",
-				"chroot " + work + "/root /usr/bin/python3 -B -",
-				"mount --rbind /dev " + work + "/root/dev", "mount --make-rslave " + work + "/root/dev",
-				"umount --recursive " + work + "/boot", "umount --recursive " + work + "/root", "losetup --detach /dev/loop-nabos-test",
-			} {
-				if !strings.Contains(calls, call) {
-					t.Errorf("missing %q in\n%s", call, calls)
+			var previousWork string
+			for attempt := 1; attempt <= 2; attempt++ {
+				write(t, fake.log, "")
+				r := execute(t, "", fake.env(append(cacheEnv, "GO=go", "NABOS_BUILD_NAMESPACE=", "ORIGINAL="+original, "STATE="+tmp,
+					"BOOT_FIXTURE="+boot, "ROOT_FIXTURE="+fixture, "KERNEL="+kernel, "TEST_PAYLOAD="+payload,
+					"EXPECT_GOCACHE="+goCache, "EXPECT_CCACHE="+ccCache,
+					fmt.Sprintf("FAIL_TEST=%t", scenario.fail), fmt.Sprintf("CORRUPT=%t", scenario.corrupt))...),
+					"bash", filepath.Join(checkout, "image/test.sh"), scenario.target, original, payload, expected)
+				calls := strings.Join(fake.calls(t), "\n")
+				if r.code != scenario.code {
+					t.Fatalf("exit %d, want %d\n%s%s\n%s", r.code, scenario.code, r.stdout, r.stderr, calls)
 				}
-			}
-			if strings.Count(calls, "sha256sum -- "+original+"\n") != 1 || !strings.HasSuffix(calls, "sha256sum -- "+original) {
-				t.Errorf("original not hashed before and after verification:\n%s", calls)
-			}
-			if _, err := os.Stat(work); !os.IsNotExist(err) {
-				t.Errorf("copy/sandbox workspace not removed: %s (%v)", work, err)
-			}
-			if read(t, filepath.Join(checkout, "build/iot/keep")) != "another build" {
-				t.Error("unrelated build changed")
-			}
-			after := sha256.Sum256([]byte(read(t, original)))
-			if (before != after) != scenario.corrupt {
-				t.Error("writing the copy changed the original")
-			}
-			if scenario.corrupt != strings.Contains(r.stderr, "Original SD image changed") {
-				t.Errorf("checksum guard did not report modification correctly: %s", r.stderr)
-			}
-			if scenario.target == "zero2-arm64" && !strings.Contains(read(t, filepath.Join(tmp, "lva-check")), "from linux_voice_assistant import util") {
-				t.Error("ARM64 did not run the copied-root LVA check")
-			}
-			if !strings.Contains(read(t, filepath.Join(tmp, "readonly-check")), "['dnsmasq', '--test'") {
-				t.Error("image did not check the hotspot DNS configuration with a read-only root")
+				copy := strings.TrimSpace(read(t, filepath.Join(tmp, "copy")))
+				work := filepath.Dir(copy)
+				if work == previousWork {
+					t.Fatal("test workspace reused")
+				}
+				previousWork = work
+				if filepath.Dir(work) != filepath.Join(checkout, "build/iot") {
+					t.Fatalf("copy outside owned workspace: %s", copy)
+				}
+				for _, call := range []string{
+					"unshare --mount --propagation private", "cp --reflink=auto --sparse=always -- " + original + " " + copy,
+					"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -v ./tests/integration",
+					"chroot " + work + "/root /usr/sbin/sshd -G", "chroot " + work + "/root getent passwd nabos",
+					"chroot " + work + "/root /usr/sbin/visudo --check",
+					"chroot " + work + "/root /usr/bin/python3 -B -",
+					"mount --rbind /dev " + work + "/root/dev", "mount --make-rslave " + work + "/root/dev",
+					"umount --recursive " + work + "/boot", "umount --recursive " + work + "/root", "losetup --detach /dev/loop-nabos-test",
+				} {
+					if !strings.Contains(calls, call) {
+						t.Errorf("missing %q in\n%s", call, calls)
+					}
+				}
+				if strings.Count(calls, "sha256sum -- "+original+"\n") != 1 || !strings.HasSuffix(calls, "sha256sum -- "+original) {
+					t.Errorf("original not hashed before and after verification:\n%s", calls)
+				}
+				if _, err := os.Stat(work); !os.IsNotExist(err) {
+					t.Errorf("copy/sandbox workspace not removed: %s (%v)", work, err)
+				}
+				if read(t, filepath.Join(checkout, "build/iot/keep")) != "another build" {
+					t.Error("unrelated build changed")
+				}
+				for _, dir := range []string{goCache, ccCache} {
+					if read(t, filepath.Join(dir, "compiled")) != strings.Repeat("x", attempt) {
+						t.Errorf("compilation cache not preserved across runs: %s", dir)
+					}
+				}
+				if read(t, filepath.Join(payload, "inputs/go-modcache/keep")) != "archived module" {
+					t.Error("archived module cache changed")
+				}
+				if _, err := os.Stat(filepath.Join(payload, "src/uboot/build-output")); !os.IsNotExist(err) {
+					t.Error("U-Boot build wrote into archived sources")
+				}
+				if strings.Count(calls, "make -C "+work+"/uboot-src ") != 3 {
+					t.Errorf("sandbox configuration/compilation skipped:\n%s", calls)
+				}
+				after := sha256.Sum256([]byte(read(t, original)))
+				if (before != after) != scenario.corrupt {
+					t.Error("writing the copy changed the original")
+				}
+				if scenario.corrupt != strings.Contains(r.stderr, "Original SD image changed") {
+					t.Errorf("checksum guard did not report modification correctly: %s", r.stderr)
+				}
+				if scenario.target == "zero2-arm64" && !strings.Contains(read(t, filepath.Join(tmp, "lva-check")), "from linux_voice_assistant import util") {
+					t.Error("ARM64 did not run the copied-root LVA check")
+				}
+				if !strings.Contains(read(t, filepath.Join(tmp, "readonly-check")), "['dnsmasq', '--test'") {
+					t.Error("image did not check the hotspot DNS configuration with a read-only root")
+				}
 			}
 		})
 	}

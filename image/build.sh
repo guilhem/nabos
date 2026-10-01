@@ -101,28 +101,40 @@ for component in go rust device-core uboot; do
   fi
   cp -a "$component_out/inputs/." "$payload/inputs/"
 done
-"$nab_image" fetch "$lock" "$target" "$payload/inputs"
+base_cached=false
+base_cache_enabled=false
+fetch_args=()
+if [[ -z $replay && ${NABOS_BASE_CACHE:-1} == 1 ]]; then
+  base_cache_enabled=true
+  if bash "$repo/image/base-cache.sh" restore "$target" "$work"; then
+    base_cached=true
+    fetch_args=(--sources-only)
+  fi
+fi
+"$nab_image" fetch "$lock" "$target" "$payload/inputs" "${fetch_args[@]}"
 cp "$lock" "$payload/inputs/sources.lock.json"
 cp "$repo/core/Cargo.lock" "$payload/inputs/nab-hardware/"
 cp "$repo/services/go.sum" "$payload/inputs/"
 cp "$repo/image/lva-requirements.lock" "$payload/inputs/"
 "$nab_image" unpack "$payload/inputs/sources.lock.json" "$payload/inputs" "$payload/src"
 cp -a "$repo/image" "$payload/image"
-xz --decompress --stdout "$payload/inputs/raspios.img.xz" > "$work/base.img"
-printf '%s  %s\n' "$image_hash" "$work/base.img" | sha256sum --check
-rm "$payload/inputs/raspios.img.xz"
-# First sector of MBR partition 2: little-endian 32 bits at 446 + 16 + 8.
-root_start=$(od -An -tu4 --endian=little -j470 -N4 "$work/base.img")
-root_start=${root_start//[[:space:]]/}
-[[ $root_start =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid base image partition table' >&2; exit 1; }
-truncate -s "$((root_start * 512 + 6 * 1024 * 1024 * 1024))" "$work/base.img"
-printf 'start=%s,size=%s\n' "$root_start" "$((6 * 1024 * 1024 * 1024 / 512))" | sfdisk --no-reread -N2 "$work/base.img"
-loop=$(sudo losetup --find --show --partscan "$work/base.img")
-sudo udevadm settle
-sudo e2fsck -pf "${loop}p2" || [[ $? == 1 ]]
-sudo resize2fs "${loop}p2"
-sudo losetup --detach "$loop"
-loop=
+if ! $base_cached; then
+  xz --decompress --stdout "$payload/inputs/raspios.img.xz" > "$work/base.img"
+  printf '%s  %s\n' "$image_hash" "$work/base.img" | sha256sum --check
+  rm "$payload/inputs/raspios.img.xz"
+  # First sector of MBR partition 2: little-endian 32 bits at 446 + 16 + 8.
+  root_start=$(od -An -tu4 --endian=little -j470 -N4 "$work/base.img")
+  root_start=${root_start//[[:space:]]/}
+  [[ $root_start =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid base image partition table' >&2; exit 1; }
+  truncate -s "$((root_start * 512 + 6 * 1024 * 1024 * 1024))" "$work/base.img"
+  printf 'start=%s,size=%s\n' "$root_start" "$((6 * 1024 * 1024 * 1024 / 512))" | sfdisk --no-reread -N2 "$work/base.img"
+  loop=$(sudo losetup --find --show --partscan "$work/base.img")
+  sudo udevadm settle
+  sudo e2fsck -pf "${loop}p2" || [[ $? == 1 ]]
+  sudo resize2fs "${loop}p2"
+  sudo losetup --detach "$loop"
+  loop=
+fi
 mount_image() {
   loop=$(sudo losetup --find --show --partscan "$1")
   sudo udevadm settle
@@ -154,21 +166,29 @@ fi
 in_target() { sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /bin/bash /nabos-build/image/prepare.sh "$1" "$target"; }
 # Compile target-dependent components on a disposable copy of the pristine base.
 # Added development packages and compiler caches remain in that copy.
-echo "$(date -u +%FT%TZ) Building components in disposable image"
-cp --reflink=auto --sparse=always "$work/base.img" "$work/builder.img"
-mount_image "$work/builder.img"
-in_target build-packages
-in_target drivers
-in_target wheels
-unmount_image
-rm "$work/builder.img"
-sudo rm -rf "$payload/src/led-build"
+if ! $base_cached; then
+  echo "$(date -u +%FT%TZ) Building components in disposable image"
+  cp --reflink=auto --sparse=always "$work/base.img" "$work/builder.img"
+  mount_image "$work/builder.img"
+  in_target build-packages
+  in_target drivers
+  in_target wheels
+  unmount_image
+  rm "$work/builder.img"
+  sudo rm -rf "$payload/src/led-build"
 
-echo "$(date -u +%FT%TZ) Assembling runtime image from archived packages and components"
+  echo "$(date -u +%FT%TZ) Assembling runtime image from archived packages and components"
+  mount_image "$work/base.img"
+  in_target packages
+  sudo cp -a "$payload/runtime/." "$root/"
+  sudo rm -rf "$payload/runtime"
+  sudo fstrim "$root"
+  unmount_image
+  if $base_cache_enabled; then
+    bash "$repo/image/base-cache.sh" save "$target" "$work"
+  fi
+fi
 mount_image "$work/base.img"
-in_target packages
-sudo cp -a "$payload/runtime/." "$root/"
-sudo rm -rf "$payload/runtime"
 sudo install -m755 "$work/components/rust/nab-hardware" "$root/usr/bin/nab-hardware"
 sudo install -m755 "$work/components/device-core/device-core" "$root/usr/bin/device-core"
 sudo install -Dm644 "$payload/src/device_core/LICENSE" "$root/usr/share/doc/device-core/copyright"
@@ -271,11 +291,11 @@ rauc info --keyring="$signing_cert" --output-format=json "$out/nabos-$target.rau
      .images[0].rootfs.filename == "rootfs.ext4" and .images[0].rootfs.checksum == $rootfs and
      .images[1].bootloader.filename == "boot.vfat" and .images[1].bootloader.checksum == $boot'
 echo "$(date -u +%FT%TZ) Compressing SD image"
-xz -T0 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
+xz -T0 -6 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
 cp "$repo/image/sources.lock.json" "$out/sources-$target.lock.json"
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > "$out/host-packages-$target.tsv"
 echo "$(date -u +%FT%TZ) Archiving build inputs"
-sudo tar -C "$payload/inputs" -I 'xz -T0' -cf "$out/build-inputs-$target.tar.xz" .
+sudo tar -C "$payload/inputs" -I 'xz -T0 -6' -cf "$out/build-inputs-$target.tar.xz" .
 echo "$(date -u +%FT%TZ) Finished compression"
 sudo chown "$(id -u):$(id -g)" "$out/build-inputs-$target.tar.xz"
 large=$(find "$out" -maxdepth 1 -type f -size +2147483647c -printf '%f\n')
