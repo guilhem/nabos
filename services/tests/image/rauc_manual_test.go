@@ -117,3 +117,41 @@ func TestManualBundleTrustIsTemporary(t *testing.T) {
 		})
 	}
 }
+
+func TestManualBundleCopiesRemovedOnlyAtBoot(t *testing.T) {
+	imageTools(t, "systemd-tmpfiles")
+	root := t.TempDir()
+	var rules string
+	for _, line := range strings.Split(read(t, filepath.Join(rootfsDir, "usr/lib/tmpfiles.d/nabos.conf")), "\n") {
+		if strings.Contains(line, "/data/nabos-rauc-manual/") {
+			rules += line + "\n"
+		}
+	}
+	conf := filepath.Join(root, "manual.conf")
+	write(t, conf, rules)
+	files := []string{"data/nabos-rauc-manual/input.raucb", "data/nabos-rauc-manual/bundle.raucb"}
+	preserved := []string{"data/nabos-rauc-manual/unrelated.raucb", "data/device-core/updates/manual.raucb", "data/device-core/updates/state.json", "etc/rauc/ca.cert.pem"}
+	for _, path := range append(files, preserved...) {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(root, path), "must survive ordinary cleanup")
+	}
+	run(t, "", "systemd-tmpfiles", "--root="+root, "--remove", conf)
+	for _, path := range files {
+		if read(t, filepath.Join(root, path)) == "" {
+			t.Fatal("active manual bundle copy removed", path)
+		}
+	}
+	run(t, "", "systemd-tmpfiles", "--root="+root, "--remove", "--boot", conf)
+	for _, path := range files {
+		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatal("previous-boot manual bundle copy retained", path, err)
+		}
+	}
+	for _, path := range preserved {
+		if read(t, filepath.Join(root, path)) != "must survive ordinary cleanup" {
+			t.Fatal("recovery input or production trust altered", path)
+		}
+	}
+}
