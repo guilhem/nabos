@@ -93,6 +93,21 @@ func (a *App) uploadUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) receiveUpdate(w http.ResponseWriter, r *http.Request) error {
+	dir, err := filepath.Abs(a.env.DataDir)
+	if err != nil {
+		return errors.New("impossible de vérifier le stockage de la mise à jour")
+	}
+	// boot-init marks the shared data mount when it falls back to its 64 MiB tmpfs.
+	for ; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, ".volatile")); err == nil {
+			return errors.New("l’import est indisponible en mode de secours : le stockage de données est volatile")
+		} else if !os.IsNotExist(err) {
+			return errors.New("impossible de vérifier le stockage de la mise à jour")
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
 	if r.ContentLength > maxUpdateRequest {
 		return errors.New("le fichier de mise à jour dépasse la limite de 2 Gio")
 	}

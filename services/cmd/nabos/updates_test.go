@@ -215,6 +215,37 @@ func TestManualUpdateStreamsBeyondTmpCapacity(t *testing.T) {
 	}
 }
 
+func TestManualUpdateRefusesVolatileStorageBeforeReadingBody(t *testing.T) {
+	a := testApp(t)
+	f := appFixture(t, a)
+	data := t.TempDir()
+	a.env.DataDir = filepath.Join(data, "nested", "nabos")
+	if err := os.WriteFile(filepath.Join(data, ".volatile"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := manualUpdateRequest(t, updatePart{"bundle", "update.rauc", strings.NewReader("bundle")})
+	var received bytes.Buffer
+	r.Body = io.NopCloser(io.TeeReader(r.Body, &received))
+	r.AddCookie(serviceSession(t, a))
+	w := httptest.NewRecorder()
+	a.routes().ServeHTTP(w, r)
+	location, _ := url.Parse(w.Header().Get("Location"))
+	if w.Code != http.StatusSeeOther || !strings.Contains(location.Query().Get("err"), "mode de secours") {
+		t.Fatal(w.Code, w.Header())
+	}
+	if received.Len() != 0 {
+		t.Fatal("upload body read on volatile storage", received.Len())
+	}
+	if _, err := os.Stat(a.env.DataDir); !os.IsNotExist(err) {
+		t.Fatal("application staging created on volatile storage", err)
+	}
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	if f.BundleCalls != 0 {
+		t.Fatal("volatile upload reached D-Bus", f.BundleCalls)
+	}
+}
+
 func TestManualUpdateRejectsInvalidInputsAndCleansUp(t *testing.T) {
 	a := testApp(t)
 	f := appFixture(t, a)
