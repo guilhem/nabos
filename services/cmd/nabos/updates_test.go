@@ -97,6 +97,98 @@ func assertNoUpdateStaging(t *testing.T, a *App) {
 	}
 }
 
+type pausedUpdateBody struct {
+	io.ReadCloser
+	started, release chan struct{}
+}
+
+func (b *pausedUpdateBody) Read(p []byte) (int, error) {
+	if b.started != nil {
+		close(b.started)
+		b.started = nil
+		<-b.release
+	}
+	return b.ReadCloser.Read(p)
+}
+
+func TestManualUpdateRefusesConcurrentUploadBeforeReadingBody(t *testing.T) {
+	a := testApp(t)
+	f := appFixture(t, a)
+	cookie, h := serviceSession(t, a), a.routes()
+	request := func(content string) *http.Request {
+		r := manualUpdateRequest(t, updatePart{"bundle", "update.rauc", strings.NewReader(content)})
+		r.AddCookie(cookie)
+		return r
+	}
+	first := request("first bundle")
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	first.Body = &pausedUpdateBody{first.Body, started, release}
+	firstResponse := httptest.NewRecorder()
+	go func() {
+		h.ServeHTTP(firstResponse, first)
+		close(done)
+	}()
+	defer func() {
+		if release != nil {
+			close(release)
+		}
+		<-done
+	}()
+	select {
+	case <-started:
+	case <-done:
+		t.Fatal("first upload ended before reading its body", firstResponse.Header())
+	}
+
+	second := request("second bundle")
+	var received bytes.Buffer
+	second.Body = io.NopCloser(io.TeeReader(second.Body, &received))
+	secondResponse := httptest.NewRecorder()
+	h.ServeHTTP(secondResponse, second)
+	location, _ := url.Parse(secondResponse.Header().Get("Location"))
+	if secondResponse.Code != http.StatusSeeOther || !strings.Contains(location.Query().Get("err"), "import") {
+		t.Error("concurrent upload was not refused", secondResponse.Code, secondResponse.Header())
+	}
+	if received.Len() != 0 {
+		t.Error("concurrent upload body was read", received.Len())
+	}
+	f.Mu.Lock()
+	calls := f.BundleCalls
+	f.Mu.Unlock()
+	if calls != 0 {
+		t.Error("concurrent upload reached D-Bus", calls)
+	}
+	assertNoUpdateStaging(t, a)
+
+	close(release)
+	release = nil
+	<-done
+	if firstResponse.Code != http.StatusSeeOther || !strings.Contains(firstResponse.Header().Get("Location"), "ok=") {
+		t.Fatal("first upload failed", firstResponse.Code, firstResponse.Header())
+	}
+	assertNoUpdateStaging(t, a)
+
+	// Admission reopens after success and also after an ordinary empty-file failure.
+	wantCalls := 1
+	for _, content := range []string{"next bundle", "", "bundle after failure"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, request(content))
+		if w.Code != http.StatusSeeOther || strings.Contains(w.Header().Get("Location"), "err=") != (content == "") {
+			t.Fatal("upload reservation was not released", w.Code, w.Header())
+		}
+		if content != "" {
+			wantCalls++
+		}
+		f.Mu.Lock()
+		calls = f.BundleCalls
+		f.Mu.Unlock()
+		if calls != wantCalls {
+			t.Error("unexpected backend calls", calls, wantCalls)
+		}
+		assertNoUpdateStaging(t, a)
+	}
+}
+
 func TestManualUpdateAuthenticationAndCSRF(t *testing.T) {
 	a := testApp(t)
 	f := appFixture(t, a)

@@ -108,6 +108,11 @@ func (a *App) receiveUpdate(w http.ResponseWriter, r *http.Request) error {
 			break
 		}
 	}
+	// Reserve staging before RAUC knows about this upload.
+	if !a.updateUploadMu.TryLock() {
+		return errors.New("un import de mise à jour est déjà en cours ; réessayez après sa fin")
+	}
+	defer a.updateUploadMu.Unlock()
 	if r.ContentLength > maxUpdateRequest {
 		return errors.New("le fichier de mise à jour dépasse la limite de 2 Gio")
 	}
