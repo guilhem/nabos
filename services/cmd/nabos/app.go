@@ -85,6 +85,12 @@ func NewApp(env Env) (*App, error) {
 	if store.Recovered != "" {
 		slog.Error("settings file was corrupt, defaults restored", "saved_as", store.Recovered)
 	}
+	// A manual sleep/wakeup lasts only until restart; boot follows the schedule.
+	if store.Get().Clock.Override != nil {
+		if _, err := store.Update(func(s *config.Settings) error { s.Clock.Override = nil; return nil }); err != nil {
+			return nil, fmt.Errorf("reset clock override: %w", err)
+		}
+	}
 	identity, err := os.ReadFile("/etc/machine-id")
 	if err != nil || len(strings.TrimSpace(string(identity))) != 32 {
 		return nil, errors.New("device machine-id is missing or invalid")
@@ -508,7 +514,7 @@ func (a *App) clockTick(now time.Time) {
 			defer func() { <-a.mediaGate }()
 			// The schedule may have changed while an interactive book finished.
 			current := a.store.Get().Clock
-			should := clock.ShouldSleep(current, time.Now().In(a.location()))
+			should := clock.ShouldSleep(current, a.clockNow().In(a.location()))
 			if current.Override != nil {
 				should = *current.Override
 			}
