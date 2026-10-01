@@ -2,20 +2,49 @@
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}}</title>
 <style>
-body{font-family:system-ui,sans-serif;margin:0;background:#f6f3fa;color:#222}
-header{background:#7a2a8c;color:#fff;padding:.6em 1em;display:flex;flex-wrap:wrap;gap:.8em;align-items:center}
-header a{color:#fff;text-decoration:none}header b{margin-right:auto}
-header nav{display:flex;flex-wrap:wrap;gap:.8em}
-main{max-width:44em;margin:auto;padding:1em}
-section{background:#fff;border-radius:.6em;padding:1em;margin-bottom:1em;box-shadow:0 1px 3px #0002}
-h1{font-size:1.4em}h2{margin-top:0;font-size:1.1em}label{display:block;margin:.5em 0}
-input,select,textarea,button{font-size:1em;padding:.4em;max-width:100%}textarea{width:100%;box-sizing:border-box}button{background:#7a2a8c;color:#fff;border:0;border-radius:.4em;padding:.5em .9em;margin:.2em 0}
-.actions form{display:inline}.ok{background:#dff5e1;padding:.6em;border-radius:.4em}.err{background:#fde2e2;padding:.6em;border-radius:.4em}
-table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pre{overflow:auto;font-size:.8em}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;background:#f6f3fa;color:#222;line-height:1.5}
+a{color:#702580}a:hover{text-decoration-thickness:2px}
+header{background:#7a2a8c;color:#fff;padding:.75rem 1rem;display:flex;flex-wrap:wrap;gap:.75rem;align-items:center}
+header b{margin-right:auto}header nav{display:flex;flex-wrap:wrap;gap:.25rem}
+header a{color:#fff;text-decoration:none;padding:.5rem .75rem;border-radius:.4rem}
+header a:hover{background:#ffffff20}header a[aria-current="page"]{background:#fff;color:#702580;font-weight:700;text-decoration:underline;text-underline-offset:.25rem}
+header button{background:transparent;border:1px solid #ffffff80}
+main{max-width:48rem;margin:auto;padding:1.5rem 1rem}
+section{background:#fff;border:1px solid #e6dfeb;border-radius:.6rem;padding:1.25rem;margin-bottom:1rem;box-shadow:0 1px 3px #0001;min-width:0}
+h1{font-size:1.5rem;margin:0 0 1.25rem}h2{margin:0 0 1rem;font-size:1.15rem}h3{font-size:1rem}
+p{margin:.75rem 0}section>p:last-child{margin-bottom:0}
+label{display:grid;gap:.35rem;margin:.85rem 0;font-weight:500}
+label:has(input[type="checkbox"]){display:flex;align-items:baseline;gap:.5rem}
+input,select,textarea,button{font:inherit;max-width:100%;padding:.55rem .65rem;border-radius:.4rem}
+input:not([type="checkbox"]):not([type="hidden"]),select,textarea{width:100%;min-width:0;border:1px solid #bfb3c5;background:#fff;color:inherit}
+input[type="checkbox"],input[type="range"]{accent-color:#7a2a8c}input[type="checkbox"]{flex-shrink:0}
+button{background:#7a2a8c;color:#fff;border:1px solid transparent;padding:.55rem .9rem;cursor:pointer}
+button:hover:not(:disabled){background:#632272}button:disabled{opacity:.55;cursor:not-allowed}
+:focus-visible{outline:3px solid #ad70bb;outline-offset:3px}
+fieldset{min-width:0;border:1px solid #e6dfeb;border-radius:.4rem;padding:.75rem 1rem;margin:1rem 0}
+legend{font-weight:650;padding:0 .4rem}
+.form-actions{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1rem;padding-top:1rem;border-top:1px solid #e6dfeb}
+.actions{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center}
+.actions>h2,.actions>h3,.actions>p,.actions>details{flex-basis:100%}
+.actions .form-actions,header .form-actions{margin:0;padding:0;border:0}
+.ok,.err{padding:.75rem 1rem;border-radius:.4rem;overflow-wrap:anywhere}.ok{background:#dff5e1}.err{background:#fde2e2}
+table{border-collapse:collapse;width:100%}td,th{padding:.4rem .6rem .4rem 0;vertical-align:top;text-align:left}th{font-weight:600}
+.schedule{table-layout:fixed}.schedule th:first-child{width:5.5rem}.schedule input{padding:.4rem .2rem}
+pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article{border-top:1px solid #e6dfeb;margin-top:1rem;padding-top:.5rem}
+@media(max-width:40rem){header nav{order:1;width:100%}header a{flex-grow:1;text-align:center}main{padding:1rem .75rem}section{padding:1rem}.schedule th:first-child{width:4.5rem}.schedule td,.schedule th{padding-right:.25rem}}
+@media(max-width:30rem){.schedule,.schedule tbody{display:block}.schedule thead{display:none}.schedule tr{display:grid;gap:.4rem;padding:.75rem 0;border-top:1px solid #e6dfeb}.schedule th:first-child{width:auto}.schedule td,.schedule th{padding:0}.schedule td::before{content:"Réveil";display:block;font-size:.9rem;margin-bottom:.25rem}.schedule td:last-child::before{content:"Coucher"}}
 </style></head><body>
-<header><b>🐰 NabOS</b>{{if .Auth}}<nav aria-label="Navigation principale"><a href="/">Accueil</a><a href="/settings">Réglages</a><a href="/wifi">Wi-Fi</a><a href="/services">Services</a><a href="/tags">Étiquettes</a><a href="/sounds">Sons</a><a href="/updates">Mises à jour</a></nav>
-<form method="post" action="/logout"><button>Déconnexion</button></form>{{end}}</header>
-<main><h1>{{.Title}}</h1>{{if .Flash}}<p class="ok">{{.Flash}}</p>{{end}}{{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+<header><b>🐰 NabOS</b>{{if .Auth}}<nav aria-label="Navigation principale">
+<a href="/"{{if eq .Page "home"}} aria-current="page"{{end}}>Accueil</a>
+<a href="/settings"{{if eq .Page "settings"}} aria-current="page"{{end}}>Réglages</a>
+<a href="/wifi"{{if eq .Page "wifi"}} aria-current="page"{{end}}>Wi-Fi</a>
+<a href="/services"{{if eq .Page "services"}} aria-current="page"{{end}}>Services</a>
+<a href="/tags"{{if eq .Page "tags"}} aria-current="page"{{end}}>Étiquettes</a>
+<a href="/sounds"{{if eq .Page "sounds"}} aria-current="page"{{end}}>Sons</a>
+<a href="/updates"{{if eq .Page "updates"}} aria-current="page"{{end}}>Mises à jour</a></nav>
+<form method="post" action="/logout"><div class="form-actions"><button>Déconnexion</button></div></form>{{end}}</header>
+<main><h1>{{.Title}}</h1>{{if .Flash}}<p class="ok" role="status">{{.Flash}}</p>{{end}}{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{end}}
 
 {{define "bottom"}}</main></body></html>{{end}}
@@ -25,16 +54,16 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <p>Le Wi-Fi est connecté. Choisissez maintenant le mot de passe d'administration du lapin.</p>
 <p><b>Cette page étant ouverte, appuyez à nouveau sur le bouton de la tête du lapin</b>, puis validez dans les 5 minutes. L'appui utilisé pour connecter le Wi-Fi ne permet pas de créer le mot de passe.</p>
 <form method="post" action="/setup">
-<label>Mot de passe (8 à 128 caractères)<br><input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
-<label>Confirmation<br><input type="password" name="confirm" minlength="8" maxlength="128" required autocomplete="new-password"></label>
-<button>Enregistrer</button></form>
+<label>Mot de passe (8 à 128 caractères)<input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
+<label>Confirmation<input type="password" name="confirm" minlength="8" maxlength="128" required autocomplete="new-password"></label>
+<div class="form-actions"><button>Enregistrer</button></div></form>
 <p>Mot de passe oublié plus tard ? Cliquez deux fois sur le bouton, puis maintenez-le appuyé pendant 10 secondes pour l'effacer ; revenez ensuite sur cette page.</p></section>
 {{template "bottom" .}}{{end}}
 
 {{define "login"}}{{template "top" .}}
 <section><h2>Connexion</h2><form method="post" action="/login">
-<label>Mot de passe<br><input type="password" name="password" maxlength="128" required autofocus autocomplete="current-password"></label>
-<button>Entrer</button></form></section>
+<label>Mot de passe<input type="password" name="password" maxlength="128" required autofocus autocomplete="current-password"></label>
+<div class="form-actions"><button>Entrer</button></div></form></section>
 {{template "bottom" .}}{{end}}
 
 {{define "home"}}{{template "top" .}}
@@ -49,19 +78,19 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <tr><td>Assistant vocal</td><td>{{if .Data.Voice}}activé{{else}}désactivé{{end}}</td></tr>
 <tr><td>Version</td><td>{{.Data.Version}}</td></tr></table></section>
 <section class="actions"><h2>Actions</h2>
-<form method="post" action="/action"><input type="hidden" name="name" value="time"><button>Donner l'heure</button></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="weather_today"><button>Météo du jour</button></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="weather_tomorrow"><button>Météo de demain</button></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="sleep"><button>Dormir</button></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="wakeup"><button>Se réveiller</button></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="cancel"><button>Interrompre</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="time"><div class="form-actions"><button>Donner l'heure</button></div></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="weather_today"><div class="form-actions"><button>Météo du jour</button></div></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="weather_tomorrow"><div class="form-actions"><button>Météo de demain</button></div></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="sleep"><div class="form-actions"><button>Dormir</button></div></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="wakeup"><div class="form-actions"><button>Se réveiller</button></div></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="cancel"><div class="form-actions"><button>Interrompre</button></div></form>
 </section>
 <section class="actions"><h2>Diagnostic</h2>
-<form method="post" action="/action"><input type="hidden" name="name" value="test_ears"><button>Tester les oreilles</button></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="test_leds"><button>Tester les LED</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="test_ears"><div class="form-actions"><button>Tester les oreilles</button></div></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="test_leds"><div class="form-actions"><button>Tester les LED</button></div></form>
 <details><summary>Matériel</summary><pre>{{json .Data.Rabbit.Hardware}}</pre></details>
-<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><button>Redémarrer</button></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="poweroff"><button>Éteindre</button></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><div class="form-actions"><button>Redémarrer</button></div></form>
+<form method="post" action="/action"><input type="hidden" name="name" value="poweroff"><div class="form-actions"><button>Éteindre</button></div></form>
 </section>
 {{template "bottom" .}}{{end}}
 
@@ -69,27 +98,29 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <section><h2>Wi-Fi</h2><p><a href="/wifi">Configurer le réseau et les profils Wi-Fi</a></p></section>
 <section><h2>Heure</h2><p>{{template "clock" .Data.Clock}}</p>
 {{if ne .Data.Clock "ntp"}}<form method="post" action="/clock"><label>Date et heure <input type="datetime-local" name="now" value="{{.Data.Now}}" required></label>
-<button>Régler l'heure</button></form><p>Le lapin n'a pas d'horloge sauvegardée par pile : sans Internet, l'heure réglée à la main vaut jusqu'au prochain redémarrage.</p>{{end}}</section>
-{{if .System}}<form method="post" action="/settings/system"><input type="hidden" name="revision" value="{{.Revision}}">
-<section><h2>Général</h2>
+<div class="form-actions"><button>Régler l'heure</button></div></form><p>Le lapin n'a pas d'horloge sauvegardée par pile : sans Internet, l'heure réglée à la main vaut jusqu'au prochain redémarrage.</p>{{end}}</section>
+{{if .System}}<section><h2>Réglages système</h2>
+<form method="post" action="/settings/system"><input type="hidden" name="revision" value="{{.Revision}}">
 <label>Langue <select name="locale">{{range .Data.Locales}}<option{{if eq . $.System.Locale}} selected{{end}}>{{.}}</option>{{end}}</select></label>
 <label>Fuseau horaire <input name="timezone" value="{{.System.Timezone}}" required></label>
 <label>Volume <input type="range" name="volume" min="0" max="100" step="5" value="{{.System.Volume}}"></label>
 <p>Ce réglage réduit le niveau choisi avec la molette.</p>
 <p>Recherche et installation des nouvelles versions : <a href="/updates">Mises à jour</a>.</p>
 {{if .Data.Voice}}<label><input type="checkbox" name="voice"{{if .Data.VoiceOn}} checked{{end}}> Assistant vocal (Linux Voice Assistant, via Home Assistant)</label>{{end}}
-</section><button>Enregistrer les réglages système</button></form>{{else}}<p role="alert">{{.SystemError}}</p>{{end}}
+<div class="form-actions"><button>Enregistrer les réglages système</button></div></form></section>{{else}}<p class="err" role="alert">{{.SystemError}}</p>{{end}}
+<section><h2>Réglages du lapin</h2>
+<p>L’horloge, la météo et Home Assistant s’enregistrent ensemble avec le bouton en bas de cette carte.</p>
 <form method="post" action="/settings/application">
-<section><h2>Horloge et sommeil</h2>
+<fieldset><legend>Horloge et sommeil</legend>
 <label><input type="checkbox" name="chime"{{if .S.Clock.Chime}} checked{{end}}> Annoncer les heures</label>
 <label><input type="checkbox" name="sleep_sounds"{{if .S.Clock.SleepSounds}} checked{{end}}> Sons au coucher et au réveil</label>
 <label>Réveil <input type="time" name="wakeup" value="{{hm .S.Clock.Wakeup}}" required></label>
 <label>Coucher <input type="time" name="sleep" value="{{hm .S.Clock.Sleep}}" required></label>
 <label><input type="checkbox" name="per_day"{{if .S.Clock.PerDay}} checked{{end}}> Horaires différents chaque jour</label>
-<table>{{range $i, $d := days}}{{$day := index $.S.Clock.Days $i}}<tr><td>{{$d}}</td>
-<td><input type="time" name="wakeup_{{$i}}" aria-label="Réveil {{$d}}" value="{{hm $day.Wakeup}}" required></td><td><input type="time" name="sleep_{{$i}}" aria-label="Coucher {{$d}}" value="{{hm $day.Sleep}}" required></td></tr>{{end}}</table>
-</section>
-<section><h2>Météo</h2>
+<table class="schedule"><thead><tr><th scope="col">Jour</th><th scope="col">Réveil</th><th scope="col">Coucher</th></tr></thead><tbody>{{range $i, $d := days}}{{$day := index $.S.Clock.Days $i}}<tr><th scope="row">{{$d}}</th>
+<td><input type="time" name="wakeup_{{$i}}" aria-label="Réveil {{$d}}" value="{{hm $day.Wakeup}}" required></td><td><input type="time" name="sleep_{{$i}}" aria-label="Coucher {{$d}}" value="{{hm $day.Sleep}}" required></td></tr>{{end}}</tbody></table>
+</fieldset>
+<fieldset><legend>Météo</legend>
 <label>Lieu <input name="location" value="{{.S.Weather.Location}}" placeholder="Paris"></label>
 <label>Unité <select name="unit"><option value="celsius"{{if eq .S.Weather.Unit "celsius"}} selected{{end}}>°C</option><option value="fahrenheit"{{if eq .S.Weather.Unit "fahrenheit"}} selected{{end}}>°F</option></select></label>
 <label>Animation <select name="animation">
@@ -102,16 +133,16 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <option value="1"{{if eq .S.Weather.Frequency 1}} selected{{end}}>environ toutes les heures</option>
 <option value="2"{{if eq .S.Weather.Frequency 2}} selected{{end}}>toutes les 2 à 3 heures</option>
 <option value="3"{{if eq .S.Weather.Frequency 3}} selected{{end}}>au réveil et au coucher</option></select></label>
-</section>
-<section><h2>Home Assistant</h2>
+</fieldset>
+<fieldset><legend>Home Assistant</legend>
 <label><input type="checkbox" name="ha_enabled"{{if .S.HomeAssistant.Enabled}} checked{{end}}> Publier le lapin (découverte MQTT)</label>
 <label>Broker MQTT <input name="ha_host" value="{{.S.HomeAssistant.Host}}" placeholder="homeassistant.local"></label>
 <label>Port <input type="number" name="ha_port" min="1" max="65535" value="{{.S.HomeAssistant.Port}}"></label>
 <label>Utilisateur <input name="ha_username" value="{{.S.HomeAssistant.Username}}" autocomplete="off"></label>
 <label>Mot de passe <input type="password" name="ha_password" placeholder="inchangé" autocomplete="off"></label>
 <label>Préfixe de découverte <input name="ha_prefix" value="{{.S.HomeAssistant.Prefix}}"></label>
-</section>
-<button>Enregistrer</button></form>
+</fieldset>
+<div class="form-actions"><button>Enregistrer les réglages du lapin</button></div></form></section>
 <section><h2>Accès SSH</h2>
 <p>Connexion avec <code>ssh nabos@nabaztag.local</code>, par clé uniquement. Le compte <code>nabos</code> dispose de <code>sudo</code> sans mot de passe pour administrer le système.</p>
 {{if .Data.SSHError}}<p class="err">Impossible de lire les clés SSH : {{.Data.SSHError}}</p>{{else}}
@@ -120,11 +151,11 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label for="ssh-keys">Clés publiques SSH — une par ligne</label>
 <textarea id="ssh-keys" name="authorized_keys" rows="5" maxlength="65536" spellcheck="false" aria-describedby="ssh-help">{{.Data.SSHKeys}}</textarea>
 <p id="ssh-help">Collez le contenu de votre fichier <code>.pub</code>, jamais votre clé privée. Videz le champ pour désactiver les nouvelles connexions SSH. Les sessions déjà ouvertes restent actives.</p>
-<button>Enregistrer les clés SSH</button></form>{{end}}</section>
+<div class="form-actions"><button>Enregistrer les clés SSH</button></div></form>{{end}}</section>
 <section><h2>Mot de passe</h2><form method="post" action="/password">
 <label>Actuel <input type="password" name="old" required maxlength="128" autocomplete="current-password"></label>
 <label>Nouveau <input type="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>
-<button>Changer</button></form></section>
+<div class="form-actions"><button>Changer le mot de passe</button></div></form></section>
 {{template "bottom" .}}{{end}}
 
 {{define "updates"}}{{template "top" .}}
@@ -144,9 +175,9 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{if .Data.LastError}}<p class="err" role="alert">{{.Data.LastError}}</p>{{end}}
 {{if .Data.Waiting}}<p>{{.Data.Waiting}}</p>{{end}}
 {{if .Data.Configured}}
-<form method="post" action="/updates/check"><button{{if or .Data.Busy .Data.Status.Checking}} disabled{{end}}>Vérifier maintenant</button></form>
+<form method="post" action="/updates/check"><div class="form-actions"><button{{if or .Data.Busy .Data.Status.Checking}} disabled{{end}}>Vérifier maintenant</button></div></form>
 {{else}}<p>Le catalogue GitHub des mises à jour n’est pas configuré sur cette image. Vous pouvez importer un fichier manuellement.</p>{{end}}
-{{if eq .Data.Status.State "reboot"}}<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><input type="hidden" name="back" value="/updates"><button>Redémarrer sur la nouvelle version</button></form>{{end}}
+{{if eq .Data.Status.State "reboot"}}<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><input type="hidden" name="back" value="/updates"><div class="form-actions"><button>Redémarrer sur la nouvelle version</button></div></form>{{end}}
 <p>La nouvelle version s'installe sur la partition inactive. Si elle ne démarre pas correctement, le lapin revient tout seul à la version précédente.</p></section>
 <section><h2>Importer une mise à jour</h2>
 <p>Choisissez un fichier .rauc ou .raucb (2 Gio maximum). L’installation est manuelle, sans recherche sur GitHub ni redémarrage automatique.</p>
@@ -156,7 +187,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label><input type="checkbox" name="ignore_certificate" value="true" aria-describedby="certificate-warning"> Ignorer la validation du certificat</label>
 <p id="certificate-warning">Cette option ignore la chaîne de confiance, les dates de validité et l’usage du certificat. L’authenticité du fichier n’est pas garantie. La signature et la compatibilité restent vérifiées.</p>
 {{if .Data.Status.RetryRequired}}<input type="hidden" name="retry" value="true">{{end}}
-<button>{{if .Data.Status.RetryRequired}}Réessayer l’installation manuellement{{else}}Importer et installer{{end}}</button>
+<div class="form-actions"><button>{{if .Data.Status.RetryRequired}}Réessayer l’installation manuellement{{else}}Importer et installer{{end}}</button></div>
 </fieldset></form>
 {{if .Data.Busy}}<p>Import indisponible pendant la mise à jour ou dans l’attente du redémarrage.</p>{{end}}</section>
 {{if .Data.Configured}}
@@ -171,7 +202,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label>Début du créneau <input type="time" name="start" value="{{hm .System.Updates.Start}}" required></label>
 <label>Fin du créneau <input type="time" name="end" value="{{hm .System.Updates.End}}" required></label>
 <p>Heure du lapin : {{.System.Timezone}}. En mode automatique, installation et redémarrage attendent ce créneau et la fin des lectures ou interactions.</p>
-<button>Enregistrer les préférences</button></form></section>
+<div class="form-actions"><button>Enregistrer les préférences</button></div></form></section>
 {{end}}<section><h2>Nouvelles versions</h2>
 {{range .Data.Releases}}
 <article><h3>{{.Tag}} — {{if .Prerelease}}Test{{else}}Stable{{end}}</h3>
@@ -180,8 +211,8 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{if .Blocked}}<p class="err">Exclue de l’automatique : {{.Blocked}}</p>{{end}}
 {{if .Ready}}
 <form method="post" action="/updates/install"><input type="hidden" name="tag" value="{{.Tag}}">
-{{if or .Blocked $.Data.Status.RetryRequired}}<input type="hidden" name="retry" value="true"><button{{if $.Data.Busy}} disabled{{end}}>Réessayer {{.Tag}} manuellement</button>
-{{else}}<button{{if $.Data.Busy}} disabled{{end}}>Installer {{.Tag}}</button>{{end}}
+{{if or .Blocked $.Data.Status.RetryRequired}}<input type="hidden" name="retry" value="true"><div class="form-actions"><button{{if $.Data.Busy}} disabled{{end}}>Réessayer {{.Tag}} manuellement</button></div>
+{{else}}<div class="form-actions"><button{{if $.Data.Busy}} disabled{{end}}>Installer {{.Tag}}</button></div>{{end}}
 </form>
 {{else}}<p>En préparation ou indisponible pour ce lapin : {{.Problem}}</p>{{end}}</article>
 {{else}}<p>Aucune version plus récente connue dans ce canal. Vous pouvez lancer une recherche.</p>{{end}}
@@ -189,65 +220,67 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{template "bottom" .}}{{end}}
 
 {{define "services"}}{{template "top" .}}
+<section><h2>Réglages des services</h2>
+<p>Ces services s’enregistrent ensemble avec le bouton en bas de cette carte.</p>
 <form method="post" action="/services/settings">
-<section><h2>Tai-chi</h2>
+<fieldset><legend>Tai-chi</legend>
 <label>Fréquence (0 = uniquement à la demande, 1 à 255) <input type="number" name="taichi_frequency" min="0" max="255" value="{{.S.Services.TaichiFrequency}}" required></label>
 {{with index .Data.Errors "taichi"}}<p class="err" role="alert">{{.}}</p>{{end}}
-</section>
-<section><h2>Surprises</h2><label>Fréquence <select name="surprise_frequency">
+</fieldset>
+<fieldset><legend>Surprises</legend><label>Fréquence <select name="surprise_frequency">
 <option value="0"{{if eq .S.Services.SurpriseFrequency 0}} selected{{end}}>Uniquement à la demande</option>
 <option value="30"{{if eq .S.Services.SurpriseFrequency 30}} selected{{end}}>Rares</option>
 <option value="50"{{if eq .S.Services.SurpriseFrequency 50}} selected{{end}}>Occasionnelles</option>
 <option value="125"{{if eq .S.Services.SurpriseFrequency 125}} selected{{end}}>Fréquentes</option>
 <option value="250"{{if eq .S.Services.SurpriseFrequency 250}} selected{{end}}>Très fréquentes</option></select></label>
-{{with index .Data.Errors "surprise"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
-<section><h2>Boule magique</h2><label><input type="checkbox" name="eightball"{{if .S.Services.Eightball}} checked{{end}}> Activer la boule magique</label>
+{{with index .Data.Errors "surprise"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
+<fieldset><legend>Boule magique</legend><label><input type="checkbox" name="eightball"{{if .S.Services.Eightball}} checked{{end}}> Activer la boule magique</label>
 <p>Sur le lapin, cliquez puis maintenez le bouton pour poser une question.</p>
-{{with index .Data.Errors "eightball"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
-<section><h2>Livres</h2><p>Oreille gauche : chapitre précédent ; oreille droite : suivant. Un clic interrompt la lecture.</p><label><input type="checkbox" name="books"{{if .S.Services.Books}} checked{{end}}> Activer les livres</label>
-{{with index .Data.Errors "book"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
-<section><h2>Radio</h2><p>Utilisez l’adresse directe d’un flux MP3, sans liste de lecture M3U/HLS. Un clic sur la tête ou « Interrompre » arrête la radio.</p><label><input type="checkbox" name="radio"{{if .S.Services.Radio}} checked{{end}}> Activer la radio</label>
-{{with index .Data.Errors "radio"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
-<section><h2>Webhooks</h2><label><input type="checkbox" name="webhooks"{{if .S.Services.Webhooks}} checked{{end}}> Activer les webhooks</label>
-{{with index .Data.Errors "webhook"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
-<section><h2>IFTTT</h2><label><input type="checkbox" name="ifttt"{{if .S.Services.IFTTT}} checked{{end}}> Activer IFTTT</label>
+{{with index .Data.Errors "eightball"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
+<fieldset><legend>Livres</legend><p>Oreille gauche : chapitre précédent ; oreille droite : suivant. Un clic interrompt la lecture.</p><label><input type="checkbox" name="books"{{if .S.Services.Books}} checked{{end}}> Activer les livres</label>
+{{with index .Data.Errors "book"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
+<fieldset><legend>Radio</legend><p>Utilisez l’adresse directe d’un flux MP3, sans liste de lecture M3U/HLS. Un clic sur la tête ou « Interrompre » arrête la radio.</p><label><input type="checkbox" name="radio"{{if .S.Services.Radio}} checked{{end}}> Activer la radio</label>
+{{with index .Data.Errors "radio"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
+<fieldset><legend>Webhooks</legend><label><input type="checkbox" name="webhooks"{{if .S.Services.Webhooks}} checked{{end}}> Activer les webhooks</label>
+{{with index .Data.Errors "webhook"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
+<fieldset><legend>IFTTT</legend><label><input type="checkbox" name="ifttt"{{if .S.Services.IFTTT}} checked{{end}}> Activer IFTTT</label>
 <label>Clé <input type="password" name="ifttt_key" maxlength="512" placeholder="{{if .S.Services.IFTTTKey}}inchangée{{else}}non configurée{{end}}" autocomplete="off"></label>
 <label><input type="checkbox" name="clear_ifttt_key"> Effacer la clé</label>
-{{with index .Data.Errors "ifttt"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
-<section><h2>Qualité de l'air</h2><label><input type="checkbox" name="air_enabled"{{if .S.Services.AirQuality.Enabled}} checked{{end}}> Activer la qualité de l’air</label>
+{{with index .Data.Errors "ifttt"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
+<fieldset><legend>Qualité de l'air</legend><label><input type="checkbox" name="air_enabled"{{if .S.Services.AirQuality.Enabled}} checked{{end}}> Activer la qualité de l’air</label>
 <p>Utilise le lieu des réglages météo, ou la localisation par adresse IP. Obtenez votre jeton sur <a href="https://aqicn.org/data-platform/token/">WAQI</a>.</p>
 <label>Jeton WAQI <input type="password" name="air_token" maxlength="512" placeholder="{{if .S.Services.AirQuality.Token}}inchangé{{else}}non configuré{{end}}" autocomplete="off"></label>
 <label><input type="checkbox" name="clear_air_token"> Effacer le jeton</label>
 <label>Indice <select name="air_index"><option value="aqi"{{if eq .S.Services.AirQuality.Index "aqi"}} selected{{end}}>AQI</option><option value="pm25"{{if eq .S.Services.AirQuality.Index "pm25"}} selected{{end}}>PM2,5</option></select></label>
 <label>Animation <select name="air_visual"><option value="always"{{if eq .S.Services.AirQuality.Visual "always"}} selected{{end}}>Toujours</option><option value="alert"{{if eq .S.Services.AirQuality.Visual "alert"}} selected{{end}}>Seulement en cas d'alerte</option><option value="nothing"{{if eq .S.Services.AirQuality.Visual "nothing"}} selected{{end}}>Aucune</option></select></label>
-{{with index .Data.Errors "airquality"}}<p class="err" role="alert">{{.}}</p>{{end}}</section>
-<button>Enregistrer les services</button></form>
-<section><h2>Essayer un service</h2><div class="actions">
-<form method="post" action="/services/action"><input type="hidden" name="name" value="taichi"><button>Faire du tai-chi</button></form>
-<form method="post" action="/services/action"><input type="hidden" name="name" value="surprise"><button>Jouer une surprise</button></form>
-<form method="post" action="/services/action"><input type="hidden" name="name" value="eightball"><button{{if not .S.Services.Eightball}} disabled{{end}}>Boule magique</button></form>
-<form method="post" action="/services/action"><input type="hidden" name="name" value="airquality"><button{{if not .S.Services.AirQuality.Enabled}} disabled{{end}}>Qualité de l'air</button></form></div>
+{{with index .Data.Errors "airquality"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
+<div class="form-actions"><button>Enregistrer les services</button></div></form></section>
+<section><h2>Essayer un service</h2><p>Les essais utilisent les réglages déjà enregistrés.</p><div class="actions">
+<form method="post" action="/services/action"><input type="hidden" name="name" value="taichi"><div class="form-actions"><button>Faire du tai-chi</button></div></form>
+<form method="post" action="/services/action"><input type="hidden" name="name" value="surprise"><div class="form-actions"><button>Jouer une surprise</button></div></form>
+<form method="post" action="/services/action"><input type="hidden" name="name" value="eightball"><div class="form-actions"><button{{if not .S.Services.Eightball}} disabled{{end}}>Boule magique</button></div></form>
+<form method="post" action="/services/action"><input type="hidden" name="name" value="airquality"><div class="form-actions"><button{{if not .S.Services.AirQuality.Enabled}} disabled{{end}}>Qualité de l'air</button></div></form></div>
 <h3>Surprise personnalisée</h3><form method="post" action="/services/action"><input type="hidden" name="name" value="surprise">
 <label>Langue <select name="language">{{range .Data.Languages}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
-<label>Type <select name="surprise_kind"><option value="">Au hasard</option>{{range .Data.SurpriseKinds}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><button>Jouer</button></form>
+<label>Type <select name="surprise_kind"><option value="">Au hasard</option>{{range .Data.SurpriseKinds}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><div class="form-actions"><button>Jouer</button></div></form>
 <h3>Catalogue de livres</h3>{{range .Data.Books}}<form method="post" action="/services/action"><input type="hidden" name="name" value="book"><input type="hidden" name="isbn" value="{{.ISBN}}">
 <label>{{.Title}} ({{.ISBN}}) — voix <select name="voice">{{range .Voices}}<option value="{{.ID}}">{{.Description}}</option>{{end}}</select></label>
-<button{{if or (not $.S.Services.Books) (not .Voices)}} disabled{{end}}>Lire</button></form>{{else}}<p>Aucun livre installé.</p>{{end}}
+<div class="form-actions"><button{{if or (not $.S.Services.Books) (not .Voices)}} disabled{{end}}>Lire</button></div></form>{{else}}<p>Aucun livre installé.</p>{{end}}
 {{if .S.Tags}}<h3>Actions associées aux étiquettes</h3>{{range $uid, $association := .S.Tags}}
 <form method="post" action="/services/action"><input type="hidden" name="name" value="{{$association.App}}"><input type="hidden" name="uid" value="{{$uid}}">
-<button{{if or (and (eq $association.App "radio") (not $.S.Services.Radio)) (and (eq $association.App "ifttt") (not $.S.Services.IFTTT)) (and (eq $association.App "webhook") (not $.S.Services.Webhooks))}} disabled{{end}}>Lancer {{$association.App}} — {{$uid}}</button></form>{{end}}{{end}}
+<div class="form-actions"><button{{if or (and (eq $association.App "radio") (not $.S.Services.Radio)) (and (eq $association.App "ifttt") (not $.S.Services.IFTTT)) (and (eq $association.App "webhook") (not $.S.Services.Webhooks))}} disabled{{end}}>Lancer {{$association.App}} — {{$uid}}</button></div></form>{{end}}{{end}}
 </section>
 <section><h2>Mastodon</h2>
 {{if .S.Mastodon.Username}}<p>Connecté : {{.S.Mastodon.Username}} sur {{.S.Mastodon.Instance}}.</p>{{else}}<p>Non connecté.</p>{{end}}
 {{if .S.Mastodon.SpouseHandle}}<p>Partenaire : {{.S.Mastodon.SpouseHandle}} — {{if eq .S.Mastodon.PairingState "married"}}associé{{else if eq .S.Mastodon.PairingState "waiting_approval"}}en attente de votre réponse{{else if eq .S.Mastodon.PairingState "proposed"}}invitation envoyée{{else}}non associé{{end}}.</p>{{end}}
 {{with index .Data.Errors "mastodon"}}<p class="err" role="alert">{{.}}</p>{{end}}
 {{if .S.Mastodon.Username}}
-<form method="post" action="/services/mastodon/action"><label>Compte du partenaire <input name="spouse" value="{{.S.Mastodon.SpouseHandle}}" placeholder="nom@instance.example"></label><button name="action" value="propose"{{if .S.Mastodon.PairingState}} disabled{{end}}>Proposer</button></form>
-<div class="actions"><form method="post" action="/services/mastodon/action"><button name="action" value="accept"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Accepter</button></form>
-<form method="post" action="/services/mastodon/action"><button name="action" value="reject"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Refuser</button></form>
-<form method="post" action="/services/mastodon/action"><button name="action" value="divorce"{{if and (ne .S.Mastodon.PairingState "married") (ne .S.Mastodon.PairingState "proposed")}} disabled{{end}}>Séparer / annuler la proposition</button></form>
-<form method="post" action="/services/mastodon/action"><button name="action" value="disconnect">Déconnecter</button></form></div>
-{{else}}<form method="post" action="/services/mastodon/connect"><label>Instance Mastodon <input name="instance" placeholder="mastodon.social" required></label><button>Connecter</button></form>{{end}}</section>
+<form method="post" action="/services/mastodon/action"><label>Compte du partenaire <input name="spouse" value="{{.S.Mastodon.SpouseHandle}}" placeholder="nom@instance.example"></label><div class="form-actions"><button name="action" value="propose"{{if .S.Mastodon.PairingState}} disabled{{end}}>Proposer</button></div></form>
+<div class="actions"><form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="accept"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Accepter</button></div></form>
+<form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="reject"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Refuser</button></div></form>
+<form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="divorce"{{if and (ne .S.Mastodon.PairingState "married") (ne .S.Mastodon.PairingState "proposed")}} disabled{{end}}>Séparer / annuler la proposition</button></div></form>
+<form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="disconnect">Déconnecter</button></div></form></div>
+{{else}}<form method="post" action="/services/mastodon/connect"><label>Instance Mastodon <input name="instance" placeholder="mastodon.social" required></label><div class="form-actions"><button>Connecter</button></div></form>{{end}}</section>
 {{template "bottom" .}}{{end}}
 
 {{define "tags"}}{{template "top" .}}
@@ -264,24 +297,24 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label>Voix du livre <input name="voice" list="book-voices" placeholder="nom de la voix"></label><datalist id="book-voices">{{range .Data.Books}}{{range .Voices}}<option value="{{.ID}}">{{.Description}}</option>{{end}}{{end}}</datalist>
 <label>Valeur (événement IFTTT ou adresse de radio/webhook) <input name="value" maxlength="2048" autocomplete="off"></label>
 <label>Image (0-255) <input type="number" name="picture" min="0" max="255" value="0"></label>
-<button>Écrire (laisser l'étiquette posée)</button>
-<button name="mode" value="associate">Associer sans réécrire</button>
+<div class="form-actions"><button>Écrire (laisser l'étiquette posée)</button>
+<button name="mode" value="associate">Associer sans réécrire</button></div>
 <p>Pour une ancienne étiquette radio, IFTTT ou webhook, choisissez l'action déjà inscrite et sa nouvelle valeur, puis « Associer sans réécrire ». Cela fonctionne aussi avec une étiquette verrouillée.</p></form></section>
 <section><h2>Associations enregistrées</h2>{{range $uid, $action := .S.Tags}}<div class="actions"><p>{{$uid}} — {{$action.App}} : {{$action.Value}}</p>
-<form method="post" action="/tags/remove"><input type="hidden" name="uid" value="{{$uid}}"><button aria-label="Supprimer l'association {{$uid}}">Supprimer</button></form></div>{{else}}<p>Aucune association locale.</p>{{end}}</section>
+<form method="post" action="/tags/remove"><input type="hidden" name="uid" value="{{$uid}}"><div class="form-actions"><button aria-label="Supprimer l'association {{$uid}}">Supprimer</button></div></form></div>{{else}}<p>Aucune association locale.</p>{{end}}</section>
 {{template "bottom" .}}{{end}}
 
 {{define "sounds"}}{{template "top" .}}
 <section><h2>Mes sons</h2>{{range .Data.Sounds}}
 <div class="actions">{{.}}
-<form method="post" action="/action"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds"><input type="hidden" name="resource" value="user/{{.}}"><button aria-label="Lire {{.}}">▶</button></form>
-<form method="post" action="/sounds/delete"><input type="hidden" name="name" value="{{.}}"><button>Supprimer</button></form></div>
+<form method="post" action="/action"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds"><input type="hidden" name="resource" value="user/{{.}}"><div class="form-actions"><button aria-label="Lire {{.}}">▶</button></div></form>
+<form method="post" action="/sounds/delete"><input type="hidden" name="name" value="{{.}}"><div class="form-actions"><button>Supprimer</button></div></form></div>
 {{else}}<p>Aucun son ajouté.</p>{{end}}</section>
 <section><h2>Ajouter un son</h2><form method="post" action="/sounds/upload" enctype="multipart/form-data">
-<label>Fichier audio <input type="file" name="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required></label><button>Envoyer</button></form>
+<label>Fichier audio <input type="file" name="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required></label><div class="form-actions"><button>Envoyer</button></div></form>
 <p>MP3 ou WAV, 10 Mo maximum.</p></section>
 <section><h2>Jouer un son du lapin</h2><form method="post" action="/action"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds">
-<label>Ressource audio <input name="resource" value="system/abort.wav" required></label><button aria-label="Lire la ressource audio">▶</button></form></section>
+<label>Ressource audio <input name="resource" value="system/abort.wav" required></label><div class="form-actions"><button aria-label="Lire la ressource audio">▶</button></div></form></section>
 {{template "bottom" .}}{{end}}
 
 {{define "clock"}}{{if eq . "ntp"}}synchronisée par Internet{{else if eq . "manual"}}réglée à la main{{else if eq . "restored"}}approximative (dernière heure connue, sans Internet) : sommeil et réveil actifs, heure non annoncée{{else}}inconnue : programmation suspendue{{end}}{{end}}
@@ -295,14 +328,15 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 {{if eq $s.Status.Mode "hotspot"}}<p>Le hotspot utilise la même radio que votre réseau Wi-Fi. Il disparaîtra pendant la tentative ; cette coupure est normale et la connexion continue.</p>
 {{if .Data.Setup}}
 {{if .Data.Reserved}}<p><b>Appuyez maintenant sur le bouton de la tête du lapin</b> pour autoriser une tentative pendant cinq minutes. La réservation du formulaire ne prolonge pas cette autorisation.</p>
-{{else}}<form method="post" action="/wifi/reserve"><p>Préparez ce formulaire, puis appuyez sur le bouton de la tête du lapin.</p><button>Préparer la connexion</button></form>{{end}}
+{{else}}<form method="post" action="/wifi/reserve"><p>Préparez ce formulaire, puis appuyez sur le bouton de la tête du lapin.</p><div class="form-actions"><button>Préparer la connexion</button></div></form>{{end}}
 <p id="wifi-authorization" role="status">{{if .Data.Authorized}}Confirmation physique reçue.{{else}}Confirmation physique attendue.{{end}}</p>
 <p>Ce hotspot est ouvert et l’interface utilise HTTP : la confirmation physique autorise la configuration, sans chiffrer les échanges.</p>
 {{end}}
-<form method="post" action="/wifi/release"><button>Libérer le hotspot</button></form>{{end}}
+<form method="post" action="/wifi/release"><div class="form-actions"><button>Libérer le hotspot</button></div></form>{{end}}
+{{if eq $s.Status.Phase "connecting"}}<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{$s.Status.AttemptID}}"><div class="form-actions"><button>Annuler la tentative</button></div></form>{{end}}
 <p>Après la connexion, rejoignez le même réseau que le lapin et ouvrez <a href="http://nabaztag.local/">nabaztag.local</a> ou son adresse dans votre routeur. En cas d’échec, rejoignez à nouveau le hotspot du lapin puis <a href="http://10.41.0.1/wifi">10.41.0.1</a>.</p></section>
 <section><h2>Réseau à rejoindre</h2>
-<form method="post" action="/wifi/scan"><button>Rechercher les réseaux</button></form>
+<form method="post" action="/wifi/scan"><div class="form-actions"><button>Rechercher les réseaux</button></div></form>
 <p>Si le scan est indisponible pendant le hotspot, les derniers résultats restent utilisables. Vous pouvez aussi saisir le nom d’un réseau masqué.</p>
 <form method="post" action="/wifi/connect" id="wifi-form">
 <label>Réseaux détectés <select name="ssid_bytes" id="wifi-network"><option value="">Saisir le nom manuellement</option>{{range $s.Networks}}<option value="{{ssid64 .SSID}}" data-security="{{.Security}}"{{if or (eq .Security "unsupported") (eq (len .SSID) 0)}} disabled{{end}}>{{.SSID}} — {{.Strength}} % ({{.Security}})</option>{{end}}</select></label>
@@ -310,11 +344,11 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <label>Sécurité <select name="security" id="wifi-security"><option value="wpa-psk">WPA / WPA2 personnel</option><option value="sae">WPA3 personnel</option><option value="open">Réseau ouvert</option></select></label>
 <label>Mot de passe Wi-Fi <input type="password" name="password" id="wifi-password" maxlength="64" autocomplete="new-password"></label>
 <p>Une seule tentative à la fois. Les anciens profils fonctionnels sont conservés ; le retour à la connexion précédente ou au hotspot est automatique après un échec.</p>
-<button data-wifi-connect{{if and .Data.Setup (not .Data.Authorized)}} disabled{{end}}>Connecter (la page peut se déconnecter)</button></form></section>
+<div class="form-actions"><button data-wifi-connect{{if and .Data.Setup (not .Data.Authorized)}} disabled{{end}}>Connecter (la page peut se déconnecter)</button></div></form></section>
 <section><h2>Profils enregistrés</h2>{{range $s.Profiles}}
-<div class="actions"><p>{{.SSID}}</p><form method="post" action="/wifi/connect"><input type="hidden" name="uuid" value="{{.UUID}}"><button data-wifi-connect{{if and $.Data.Setup (not $.Data.Authorized)}} disabled{{end}}>Utiliser ce profil</button></form>
-{{if not $.Data.Setup}}<form method="post" action="/wifi/forget"><input type="hidden" name="uuid" value="{{.UUID}}"><button>Oublier</button></form>{{end}}</div>{{else}}<p>Aucun réseau enregistré.</p>{{end}}</section>
-{{if eq $s.Status.Phase "connecting"}}<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{$s.Status.AttemptID}}"><button>Annuler la tentative</button></form>{{end}}
+<div class="actions"><p>{{.SSID}}</p><form method="post" action="/wifi/connect"><input type="hidden" name="uuid" value="{{.UUID}}"><div class="form-actions"><button data-wifi-connect{{if and $.Data.Setup (not $.Data.Authorized)}} disabled{{end}}>Utiliser ce profil</button></div></form>
+{{if not $.Data.Setup}}<form method="post" action="/wifi/forget"><input type="hidden" name="uuid" value="{{.UUID}}"><div class="form-actions"><button>Oublier</button></div></form>{{end}}</div>{{else}}<p>Aucun réseau enregistré.</p>{{end}}</section>
+
 </div><script src="/wifi.js" defer></script>{{end}}
 {{template "bottom" .}}{{end}}
 
@@ -323,7 +357,7 @@ table{border-collapse:collapse}td{padding:.2em .6em .2em 0;vertical-align:top}pr
 <p>Rejoignez le même réseau que le lapin, puis ouvrez <a href="http://nabaztag.local/">nabaztag.local</a> ou son adresse indiquée par votre routeur. Le réseau local suffit ; Internet n’est pas nécessaire.</p>
 {{if .Data.Setup}}<p>Après reconnexion, ouvrez la <a href="/setup">page de création du mot de passe d’administration</a>, puis appuyez à nouveau sur le bouton du lapin avant de valider.</p>{{end}}
 <p>En cas d’échec, le lapin revient à son ancienne connexion ou au hotspot. Rejoignez ce hotspot et ouvrez <a href="http://10.41.0.1/wifi">10.41.0.1</a> pour réessayer.</p>
-<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{.Data.Attempt}}"><button>Annuler si le lapin est encore accessible</button></form>
+<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{.Data.Attempt}}"><div class="form-actions"><button>Annuler si le lapin est encore accessible</button></div></form>
 <p><a href="/wifi">Revenir au Wi-Fi</a></p></section><script src="/wifi.js" defer></script>
 {{template "bottom" .}}{{end}}
 
