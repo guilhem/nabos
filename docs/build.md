@@ -132,6 +132,8 @@ Polkit accorde les mutations NetworkManager, l’alimentation, l’heure et les 
 
 Le contrôle de santé exige les trois unités actives, `Manager.Ready` par D-Bus au chemin `/io/github/guilhem/DeviceCore1`, `NabHardware1.Ready` au chemin `/io/github/guilhem/NabHardware1`, `/healthz` de nabos et les périphériques audio réels. Il ne dépend jamais du HTTP de device-core, désactivé par défaut.
 
+À la sortie réussie de `nabos-health.service`, systemd déclenche `nabos-board-led-off.service` via `OnSuccess`, sans délai fixe. Cette unité éteint uniquement la LED ACT du Raspberry Pi si elle existe et si `/run/nabos-boot-health` contient `good A` ou `good B`, écrit après confirmation RAUC. Cette action cosmétique est indépendante du contrôle de santé : son échec ne remet pas en cause la confirmation du slot. Les LED du lapin restent pilotées par `nab-hardware`.
+
 ## Validation locale
 
 Les outils propres au dépôt sont regroupés dans `services/cmd/nab-image`.
