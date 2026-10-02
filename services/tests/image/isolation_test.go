@@ -37,13 +37,16 @@ func TestImageIsolation(t *testing.T) {
 		fail, corrupt bool
 		code          int
 		customCache   bool
+		prebuilt      bool
 	}{
-		{"test failure", "zero-armv6", true, false, 23, false},
-		{"success", "zero2-arm64", false, false, 0, false},
-		{"custom cache failure", "zero2-arm64", true, false, 23, true},
-		{"custom cache success", "zero-armv6", false, false, 0, true},
-		{"changed original", "zero-armv6", false, true, 1, false},
-		{"changed original on failure", "zero2-arm64", true, true, 1, true},
+		{"test failure", "zero-armv6", true, false, 23, false, false},
+		{"success", "zero2-arm64", false, false, 0, false, false},
+		{"custom cache failure", "zero2-arm64", true, false, 23, true, false},
+		{"custom cache success", "zero-armv6", false, false, 0, true, false},
+		{"changed original", "zero-armv6", false, true, 1, false, false},
+		{"changed original on failure", "zero2-arm64", true, true, 1, true, false},
+		{"prebuilt sandbox success", "zero-armv6", false, false, 0, false, true},
+		{"prebuilt sandbox test failure", "zero2-arm64", true, false, 23, true, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -73,6 +76,25 @@ func TestImageIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			copyFile(t, filepath.Join(imageDir, "test.sh"), filepath.Join(checkout, "image/test.sh"))
+			copyFile(t, filepath.Join(imageDir, "uboot-sandbox.sh"), filepath.Join(checkout, "image/uboot-sandbox.sh"))
+			copyFile(t, filepath.Join(imageDir, "sources.lock.json"), filepath.Join(checkout, "image/sources.lock.json"))
+			sandbox := ""
+			if scenario.prebuilt {
+				sandbox = filepath.Join(tmp, "prebuilt sandbox")
+				var manifest strings.Builder
+				for _, binary := range []string{"u-boot", "scripts/dtc/dtc", "tools/mkimage", "tools/mkenvimage"} {
+					path := filepath.Join(sandbox, binary)
+					if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					content := []byte("#!/bin/sh\nexit 0\n")
+					if err := os.WriteFile(path, content, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					fmt.Fprintf(&manifest, "%x  %s\n", sha256.Sum256(content), binary)
+				}
+				write(t, filepath.Join(sandbox, "SHA256SUMS"), manifest.String())
+			}
 			write(t, filepath.Join(checkout, "image/test-bus.sh"), `set -eu
 [ "$1" = "$TEST_PAYLOAD/inputs/test-bus" ]
 [ "$2" = "$(dirname "$(cat "$STATE/copy")")/test-bus" ]
@@ -218,8 +240,11 @@ case "$*" in
     fi
     printf '%s' "$CCACHE_NAMESPACE" > "$STATE/namespace"
     printf x >> "$CCACHE_DIR/compiled"
-    touch "$out/u-boot"
-    chmod 755 "$out/u-boot" ;;
+    mkdir -p "$out/scripts/dtc" "$out/tools"
+    for binary in u-boot scripts/dtc/dtc tools/mkimage tools/mkenvimage; do
+      touch "$out/$binary"
+      chmod 755 "$out/$binary"
+    done ;;
   *) exit 1 ;;
 esac`,
 				"ccache": "exit 0",
@@ -244,6 +269,12 @@ case "$*" in
     [ "$NABOS_VENDOR_DTBS" = "$work/root/boot/dtb" ]
     [ "$NABOS_IMAGE_OVERLAYS" = "$work/root/boot/overlays" ]
     [ "$NABOS_IMAGE_ENV" = "$work/uboot.env" ]
+    [ "$NABOS_UBOOT_SANDBOX" = "$work/uboot-sandbox" ]
+    if [ -n "$PREBUILT" ]; then
+      for binary in u-boot scripts/dtc/dtc tools/mkimage tools/mkenvimage SHA256SUMS; do
+        cmp "$work/uboot-sandbox/$binary" "$PREBUILT/$binary"
+      done
+    fi
     if [ "$CORRUPT" = true ]; then printf corrupted >> "$ORIGINAL"; fi
     if [ "$FAIL_TEST" = true ]; then exit 23; fi ;;
   *) exit 1 ;;
@@ -259,6 +290,7 @@ esac`,
 				r := execute(t, "", fake.env(append(cacheEnv, "GO=go", "NABOS_BUILD_NAMESPACE=", "ORIGINAL="+original, "STATE="+tmp,
 					"BOOT_FIXTURE="+boot, "ROOT_FIXTURE="+fixture, "KERNEL="+kernel, "TEST_PAYLOAD="+payload,
 					"EXPECT_GOCACHE="+goCache, "EXPECT_CCACHE="+ccCache,
+					"NABOS_UBOOT_SANDBOX="+sandbox, "PREBUILT="+sandbox,
 					fmt.Sprintf("FAIL_TEST=%t", scenario.fail), fmt.Sprintf("CORRUPT=%t", scenario.corrupt))...),
 					"bash", filepath.Join(checkout, "image/test.sh"), scenario.target, original, payload, expected)
 				calls := strings.Join(fake.calls(t), "\n")
@@ -296,7 +328,11 @@ esac`,
 				if read(t, filepath.Join(checkout, "build/iot/keep")) != "another build" {
 					t.Error("unrelated build changed")
 				}
-				for _, dir := range []string{goCache, ccCache} {
+				caches := []string{goCache}
+				if !scenario.prebuilt {
+					caches = append(caches, ccCache)
+				}
+				for _, dir := range caches {
 					if read(t, filepath.Join(dir, "compiled")) != strings.Repeat("x", attempt) {
 						t.Errorf("compilation cache not preserved across runs: %s", dir)
 					}
@@ -307,7 +343,14 @@ esac`,
 				if _, err := os.Stat(filepath.Join(payload, "src/uboot/build-output")); !os.IsNotExist(err) {
 					t.Error("U-Boot build wrote into archived sources")
 				}
-				if strings.Count(calls, "make -C "+work+"/uboot-src ") != 3 {
+				builds := 3
+				if scenario.prebuilt {
+					builds = 0
+					if !strings.Contains(r.stdout, "Using the prebuilt U-Boot test sandbox") {
+						t.Error("prebuilt sandbox not used")
+					}
+				}
+				if strings.Count(calls, "make -C "+work+"/uboot-src ") != builds {
 					t.Errorf("sandbox configuration/compilation skipped:\n%s", calls)
 				}
 				after := sha256.Sum256([]byte(read(t, original)))
