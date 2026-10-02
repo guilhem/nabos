@@ -1,0 +1,12 @@
+[Unit]
+Description=Turn off the Raspberry Pi ACT LED after a healthy boot
+ConditionPathExists=/sys/class/leds/ACT/brightness
+ConditionPathExists=/run/nabos-boot-health
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/grep -qx "good [AB]" /run/nabos-boot-health
+ExecStart=/bin/sh -c 'echo 0 > /sys/class/leds/ACT/brightness'
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
