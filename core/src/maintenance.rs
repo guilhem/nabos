@@ -166,6 +166,13 @@ pub async fn authorize(bus: &Connection, sender: &str) -> fdo::Result<()> {
     if owner.as_str() != sender {
         return Err(fdo::Error::AccessDenied("unauthorized-daemon".into()));
     }
+    crate::bus::authorize_unit(bus, sender, "device-core.service").await?;
+    let current = bounded(dbus.get_name_owner(SERVICE.try_into().unwrap()))
+        .await
+        .map_err(|_| fdo::Error::AccessDenied("daemon-unavailable".into()))?;
+    if current.as_str() != sender {
+        return Err(fdo::Error::AccessDenied("stale-daemon".into()));
+    }
     Ok(())
 }
 
@@ -226,6 +233,7 @@ pub fn start(device: Device, hardware: Arc<Hardware>) {
                 let owner = bounded(dbus.get_name_owner(SERVICE.try_into().unwrap()))
                     .await?
                     .to_string();
+                authorize(&bus, &owner).await.map_err(|e| e.to_string())?;
                 let manager = zbus::proxy::Builder::<Proxy>::new(&bus)
                     .destination(owner.clone())
                     .map_err(|e| e.to_string())?
@@ -242,6 +250,7 @@ pub fn start(device: Device, hardware: Arc<Hardware>) {
                 if capabilities.iter().any(|c| c == "maintenance-agents") && registered != owner {
                     let path: zbus::zvariant::ObjectPath<'_> = PATH.try_into().unwrap();
                     bounded(manager.call::<_, _, ()>("RegisterAgent", &(path,))).await?;
+                    authorize(&bus, &owner).await.map_err(|e| e.to_string())?;
                     registered = owner.clone();
                 }
                 let ready: bool = bounded(manager.get_property("Ready")).await?;

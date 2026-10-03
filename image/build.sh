@@ -120,6 +120,9 @@ cp "$repo/services/go.sum" "$payload/inputs/"
 cp "$repo/image/lva-requirements.lock" "$payload/inputs/"
 "$nab_image" unpack "$payload/inputs/sources.lock.json" "$payload/inputs" "$payload/src"
 cp -a "$repo/image" "$payload/image"
+nm_fetch_args=()
+if [[ -n $replay ]]; then nm_fetch_args=(--offline); fi
+bash "$repo/image/network-manager.sh" fetch "$payload/inputs/network-manager" "${nm_fetch_args[@]}"
 if ! $base_cached; then
   xz --decompress --stdout "$payload/inputs/raspios.img.xz" > "$work/base.img"
   printf '%s  %s\n' "$image_hash" "$work/base.img" | sha256sum --check
@@ -173,6 +176,7 @@ if ! $base_cached; then
   cp --reflink=auto --sparse=always "$work/base.img" "$work/builder.img"
   mount_image "$work/builder.img"
   in_target build-packages
+  sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /bin/bash /nabos-build/image/network-manager.sh build
   in_target drivers
   in_target wheels
   unmount_image

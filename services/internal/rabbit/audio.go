@@ -32,11 +32,12 @@ func (a *audio) connect() error {
 		conn.Close()
 		return err
 	}
-	var owner string
-	if err = conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, device.Destination).Store(&owner); err != nil {
+	owner, err := client.TrustedOwner(ctx)
+	if err != nil {
 		conn.Close()
-		return err
+		return device.ErrUnavailable
 	}
+	client = client.ForOwner(owner)
 	a.client = client
 	a.loss = nil
 	go func() {

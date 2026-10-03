@@ -19,6 +19,10 @@ jobs:
           sudo apt-get install -y mosquitto mosquitto-clients shellcheck device-tree-compiler \
             genimage=17-2 rauc=1.11.3-2 dosfstools mtools u-boot-tools libubootenv-tool \
             squashfs-tools openssl jq dbus fdisk
+      - name: Private D-Bus with ProcessFD credentials
+        run: |
+          bash image/test-bus.sh build/test-bus-cache build/test-bus
+          printf '%s/build/test-bus\n' "$PWD" >> "$GITHUB_PATH"
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
         with:
           toolchain: '1.98.1'

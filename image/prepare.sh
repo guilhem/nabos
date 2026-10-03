@@ -18,6 +18,15 @@ runtime=(ca-certificates curl dbus dbus-user-session polkitd systemd-timesyncd o
 development=(build-essential cmake pkg-config libasound2-dev libssl-dev
   bison flex bc python3-dev python3-setuptools python3-pyelftools
   "linux-headers-$flavour")
+# Build the locked vendor NM source with its existing packaging and features.
+# These packages stay in the disposable builder and archived replay inputs.
+development+=(debhelper dh-sequence-gir meson pkgconf gettext libglib2.0-dev
+  ppp-dev libselinux1-dev libaudit-dev libgnutls28-dev uuid-dev systemd-dev
+  libsystemd-dev libudev-dev gir1.2-gio-2.0-dev gir1.2-girepository-2.0
+  gobject-introspection python3-gi libpsl-dev libcurl4-gnutls-dev gtk-doc-tools
+  libglib2.0-doc libmm-glib-dev libndp-dev libreadline-dev libnewt-dev
+  libteam-dev libjansson-dev libbluetooth-dev libdbus-1-dev libpolkit-gobject-1-dev
+  mobile-broadband-provider-info valac libyaml-dev libnetplan-dev)
 inputs=/nabos-build/inputs
 src=/nabos-build/src
 stage=/nabos-build/runtime
@@ -38,6 +47,10 @@ build-packages|packages)
     runtime+=(python3-venv libmpv2 libgomp1)
   fi
   packages=("${runtime[@]}" "linux-image-$flavour")
+  if [[ $phase == packages ]]; then
+    nm_version=$(python3 -c 'import json; print(json.load(open("/nabos-build/image/network-manager.lock.json"))["version"])')
+    packages+=("network-manager=$nm_version" "libnm0=$nm_version" "network-manager-l10n=$nm_version" "gir1.2-nm-1.0=$nm_version")
+  fi
   if [[ $phase == build-packages ]]; then
     packages+=("${development[@]}")
   else

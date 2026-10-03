@@ -230,8 +230,18 @@ func earsCommand(left, right int) rabbit.Command {
 }
 
 func (a *App) systemSettings(ctx context.Context) (device.Settings, error) {
-	_, settings, err := a.device.ReadConfig(ctx)
-	return settings, err
+	owner, err := a.device.TrustedOwner(ctx)
+	if err != nil {
+		return device.Settings{}, err
+	}
+	_, settings, err := a.device.ForOwner(owner).ReadConfig(ctx)
+	if err == nil {
+		err = a.device.Authenticate(ctx, owner)
+	}
+	if err != nil {
+		return device.Settings{}, err
+	}
+	return settings, nil
 }
 func (a *App) location() *time.Location {
 	settings, err := a.systemSettings(a.ctx)
@@ -269,15 +279,18 @@ func (a *App) SetClock(t time.Time) error {
 }
 
 func (a *App) publishSettings(ctx context.Context) {
-	a.mu.Lock()
-	n := a.network
-	a.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	settings, err := a.systemSettings(ctx)
-	if err != nil {
-		return
+	if err == nil {
+		a.applySettings(settings)
 	}
+}
+
+func (a *App) applySettings(settings device.Settings) {
+	a.mu.Lock()
+	n := a.network
+	a.mu.Unlock()
 	a.rabbit.SetSettings(settings.Locale, n)
 }
 

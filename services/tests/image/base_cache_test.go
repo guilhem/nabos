@@ -16,7 +16,7 @@ func TestPreparedBaseCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []string{"image/base-cache.sh", "image/build.sh", "image/prepare.sh", "image/sources.lock.json", "image/lva-requirements.lock",
-		"image/build-config/99nabos-build", "image/build-config/policy-rc.d", "services/go.mod"}
+		"image/network-manager.sh", "image/network-manager.lock.json", "image/build-config/99nabos-build", "image/build-config/policy-rc.d", "services/go.mod"}
 	patches, err := filepath.Glob(filepath.Join(imageDir, "patches", "*.patch"))
 	if err != nil || len(patches) == 0 {
 		t.Fatalf("patch fixtures: %v, %v", patches, err)
@@ -54,10 +54,12 @@ func TestPreparedBaseCache(t *testing.T) {
 			identity := key(t, target)
 			prepared := t.TempDir()
 			payload := map[string]string{
-				"kernel-release":           "6.12-test-" + target + "\n",
-				"builder-packages.tsv":     "test-package\t1.0\t" + target + "\n",
-				"inputs/debs/manifest.tsv": "test-package\t1.0\t" + target + "\ttest.deb\n",
-				"inputs/debs/test.deb":     "deb fixture for " + target,
+				"kernel-release":                              "6.12-test-" + target + "\n",
+				"builder-packages.tsv":                        "test-package\t1.0\t" + target + "\n",
+				"inputs/debs/manifest.tsv":                    "test-package\t1.0\t" + target + "\ttest.deb\n",
+				"inputs/debs/test.deb":                        "deb fixture for " + target,
+				"inputs/network-manager/source-identity.json": "locked NM source " + target,
+				"inputs/network-manager/vendor-source.tar.xz": "NM source " + target,
 			}
 			if target == "zero2-arm64" {
 				payload["inputs/wheels/test.whl"] = "wheel fixture for " + target
@@ -150,7 +152,7 @@ func TestPreparedBaseCache(t *testing.T) {
 					t.Fatalf("cache miss used the archive: exit %d\n%s%s", r.code, r.stdout, r.stderr)
 				}
 			}
-			for _, change := range []string{"epoch", "image/prepare.sh", "image/build-config/policy-rc.d", "services/cmd/nab-image/main.go", "services/go.mod"} {
+			for _, change := range []string{"epoch", "image/prepare.sh", "image/build-config/policy-rc.d", "services/cmd/nab-image/main.go", "services/go.mod", "image/network-manager.sh", "image/network-manager.lock.json", "image/patches/network-manager-polkit-subject.patch"} {
 				t.Run(change, func(t *testing.T) {
 					if change == "epoch" {
 						t.Setenv("NABOS_BASE_CACHE_EPOCH", "2026-10-01")

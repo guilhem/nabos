@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/guilhem/nabos/services/internal/device"
+	"github.com/guilhem/nabos/services/internal/devicetest"
 	"os/exec"
 	"strings"
 	"sync"
@@ -97,6 +98,7 @@ func TestClientOnIsolatedBus(t *testing.T) {
 	if _, err = bus.RequestName(Destination, dbus.NameFlagDoNotQueue); err != nil {
 		t.Fatal(err)
 	}
+	devicetest.InstallIdentity(t, bus, nil)
 	if signature := dbus.SignatureOf(Status{}).String(); signature != "(ssbsaystss)" {
 		t.Fatal(signature)
 	}

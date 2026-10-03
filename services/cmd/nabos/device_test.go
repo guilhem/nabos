@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/device"
+	"github.com/guilhem/nabos/services/internal/devicetest"
 	"github.com/guilhem/nabos/services/internal/rabbit"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	a := testApp(t)
 	f := appFixture(t, a)
+	devicetest.RequireProcessFD(t, f.Conn)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := a.device.Call(ctx, "Manager", "RegisterAgent", device.Path("Agent")); err != nil {
@@ -51,6 +53,22 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	if err := f.Agent(ctx, "Acquire", "updates-1").Store(&renewed); err != nil || renewed != token {
 		t.Fatal("Acquire not idempotent", err)
 	}
+	identity := deviceIdentities[a]
+	identity.mu.Lock()
+	identity.unit = "other.service"
+	identity.mu.Unlock()
+	for _, call := range []struct{ method, argument string }{{"Acquire", "updates-1"}, {"Abort", "updates-1"}, {"Release", token}} {
+		if f.Agent(ctx, call.method, call.argument).Err == nil {
+			t.Fatal("untrusted current owner admitted", call.method)
+		}
+	}
+	if len(a.mediaGate) != 1 {
+		t.Fatal("untrusted owner reopened maintenance")
+	}
+	identity.mu.Lock()
+	identity.unit = "device-core.service"
+	identity.mu.Unlock()
+
 	native.mu.Lock()
 	frozen := native.leds
 	native.mu.Unlock()
@@ -89,6 +107,16 @@ func TestMaintenanceAgentKeepsGateAndAuthenticatesDaemon(t *testing.T) {
 	f.Mu.Lock()
 	f.Maintenance = false
 	f.Mu.Unlock()
+	identity.mu.Lock()
+	identity.id = "other.service"
+	identity.mu.Unlock()
+	a.agent.recover(ctx)
+	if len(a.mediaGate) != 1 || a.rabbit.Ready() {
+		t.Fatal("untrusted daemon resumed recovery")
+	}
+	identity.mu.Lock()
+	identity.id = "device-core.service"
+	identity.mu.Unlock()
 	a.agent.recover(ctx)
 	if len(a.mediaGate) != 0 {
 		t.Fatal("safe daemon retained media gate")
@@ -179,6 +207,7 @@ func TestDeviceLoopRegistersOnlyWhenRequired(t *testing.T) {
 func TestVoiceSignalsRelayOnlyFromDaemon(t *testing.T) {
 	a := testApp(t)
 	f := appFixture(t, a)
+	devicetest.RequireProcessFD(t, f.Conn)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
@@ -204,6 +233,24 @@ func TestVoiceSignalsRelayOnlyFromDaemon(t *testing.T) {
 	if indicator != "listening" {
 		t.Fatal("untrusted voice signal changed LEDs", indicator)
 	}
+	identity := deviceIdentities[a]
+	identity.mu.Lock()
+	identity.unit = "other.service"
+	identity.mu.Unlock()
+	if err := f.Conn.Emit(device.Path("Voice"), device.Interface("Voice")+".Event", "tts_speaking", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	a.mu.Lock()
+	indicator = a.indicator
+	a.mu.Unlock()
+	if indicator != "listening" {
+		t.Fatal("voice from untrusted current owner changed LEDs", indicator)
+	}
+	identity.mu.Lock()
+	identity.unit = "device-core.service"
+	identity.mu.Unlock()
+
 	if err := f.Conn.Emit(device.Path("Voice"), device.Interface("Voice")+".Event", "status", `{"status":"disabled"}`); err != nil {
 		t.Fatal(err)
 	}

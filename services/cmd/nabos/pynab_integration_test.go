@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -97,10 +96,6 @@ func (f *nativeFixture) Get(iface, name string) (dbus.Variant, *dbus.Error) {
 		return dbus.MakeVariant("nab-hardware.service"), nil
 	}
 	return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", nil)
-}
-func (f *nativeFixture) GetUnitByPIDFD(fd dbus.UnixFD) (dbus.ObjectPath, string, []byte, *dbus.Error) {
-	syscall.Close(int(fd))
-	return "/org/freedesktop/systemd1/unit/nab_2dhardware_2eservice", "nab-hardware.service", []byte{1}, nil
 }
 func (f *nativeFixture) Start(kind, source string) (string, *dbus.Error) {
 	f.mu.Lock()
@@ -224,7 +219,7 @@ func startNativeDispatch(t *testing.T, a *App, dispatch func(appEvent)) *nativeF
 	t.Helper()
 	f := &nativeFixture{conn: appFixture(t, a).Conn, status: hardware.Status{Model: "test", LeftEar: "ok", RightEar: "ok", Leds: true, Button: true, RFID: "st25tb"}, observed: make(chan appEvent, 128)}
 	devicetest.RequireProcessFD(t, f.conn)
-	for _, name := range []string{hardware.Destination, "org.freedesktop.systemd1"} {
+	for _, name := range []string{hardware.Destination} {
 		if _, err := f.conn.RequestName(name, dbus.NameFlagDoNotQueue); err != nil {
 			t.Fatal(err)
 		}
@@ -234,8 +229,6 @@ func startNativeDispatch(t *testing.T, a *App, dispatch func(appEvent)) *nativeF
 		iface string
 	}{
 		{hardware.Path, hardware.Destination}, {hardware.Path, "org.freedesktop.DBus.Properties"},
-		{"/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager"},
-		{"/org/freedesktop/systemd1/unit/nab_2dhardware_2eservice", "org.freedesktop.DBus.Properties"},
 		{device.Path("Audio"), device.Interface("Audio")},
 	} {
 		if err := f.conn.Export(f, v.path, v.iface); err != nil {

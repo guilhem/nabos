@@ -31,6 +31,10 @@ fn sender(header: &Header<'_>) -> fdo::Result<String> {
 
 /// No PID lookup or simulation bypass: the bus pins the actual caller process.
 pub async fn authorize(bus: &Connection, sender: &str) -> fdo::Result<()> {
+    authorize_unit(bus, sender, "nabos.service").await
+}
+
+pub async fn authorize_unit(bus: &Connection, sender: &str, expected: &str) -> fdo::Result<()> {
     let dbus = fdo::DBusProxy::new(bus).await?;
     let name = sender.try_into().map_err(|_| denied("invalid-sender"))?;
     let credentials = bounded(dbus.get_connection_credentials(name))
@@ -46,12 +50,25 @@ pub async fn authorize(bus: &Connection, sender: &str) -> fdo::Result<()> {
         "org.freedesktop.systemd1.Manager",
     )
     .await?;
-    let (_, unit, _): (zbus::zvariant::OwnedObjectPath, String, Vec<u8>) =
+    let (path, unit, _): (zbus::zvariant::OwnedObjectPath, String, Vec<u8>) =
         bounded(manager.call("GetUnitByPIDFD", &(fd,)))
             .await
             .map_err(denied_owned)?;
-    if unit != "nabos.service" {
-        return Err(denied("caller-is-not-nabos.service"));
+    if unit != expected {
+        return Err(denied("untrusted-service-unit"));
+    }
+    let properties = zbus::proxy::Builder::<Proxy>::new(bus)
+        .destination("org.freedesktop.systemd1")?
+        .path(path)?
+        .interface("org.freedesktop.systemd1.Unit")?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await?;
+    let id: String = bounded(properties.get_property("Id"))
+        .await
+        .map_err(denied_owned)?;
+    if id != expected {
+        return Err(denied("unit-identity-mismatch"));
     }
     if !bounded(dbus.name_has_owner(sender.try_into().map_err(|_| denied("invalid-sender"))?))
         .await
@@ -773,7 +790,9 @@ pub async fn run(
     )
     .await
     .map_err(|e| e.to_string())?;
-    bus.request_name(SERVICE).await.map_err(|e| e.to_string())?;
+    bus.request_name_with_flags(SERVICE, zbus::fdo::RequestNameFlags::DoNotQueue.into())
+        .await
+        .map_err(|e| e.to_string())?;
     maintenance::start(device, hardware.clone());
     let emitter = SignalEmitter::new(&bus, PATH).map_err(|e| e.to_string())?;
     let mut tick = tokio::time::interval(Duration::from_secs(1));

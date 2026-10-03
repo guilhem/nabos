@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -32,8 +33,7 @@ type maintenanceAgent struct {
 func (m *maintenanceAgent) daemon(sender dbus.Sender) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
 	defer cancel()
-	var owner string
-	return m.app.device.Conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, device.Destination).Store(&owner) == nil && string(sender) == owner
+	return m.app.device.Authenticate(ctx, string(sender)) == nil
 }
 func (m *maintenanceAgent) Acquire(sender dbus.Sender, operation string) (string, *dbus.Error) {
 	if operation == "" || !m.daemon(sender) {
@@ -99,7 +99,7 @@ func (m *maintenanceAgent) Release(sender dbus.Sender, token string) *dbus.Error
 	if !m.held || token == "" || token != m.token || m.owner != string(sender) {
 		return dbus.NewError("org.freedesktop.DBus.Error.AccessDenied", nil)
 	}
-	status, err := m.app.device.UpdateStatus(context.Background())
+	status, err := m.app.device.ForOwner(string(sender)).UpdateStatus(context.Background())
 	if err != nil || !maintenanceSafe(status.State) || !m.daemon(sender) {
 		return dbus.MakeFailedError(errors.New("updater recovery pending"))
 	}
@@ -116,17 +116,36 @@ func (m *maintenanceAgent) releaseReservation() {
 	kick(m.app.haKick)
 }
 
-func (m *maintenanceAgent) resume() *dbus.Error {
+func (m *maintenanceAgent) resume(owner string) *dbus.Error {
+	// Keep the engine paused while authentication itself waits or fails.
+	if !m.daemon(dbus.Sender(owner)) {
+		return dbus.NewError("org.freedesktop.DBus.Error.AccessDenied", nil)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
 	defer cancel()
 	if err := m.app.rabbit.SetMaintenance(ctx, false); err != nil {
-		return dbus.MakeFailedError(err)
+		return dbus.MakeFailedError(errors.Join(err, m.reclose()))
+	}
+	if !m.daemon(dbus.Sender(owner)) {
+		if err := m.reclose(); err != nil {
+			return dbus.MakeFailedError(fmt.Errorf("maintenance reclosure pending: %w", err))
+		}
+		return dbus.NewError("org.freedesktop.DBus.Error.AccessDenied", nil)
 	}
 	<-m.app.mediaGate
 	m.held, m.recovering, m.token, m.operation, m.owner = false, false, "", "", ""
 	kick(m.app.clockKick)
 	go m.app.restoreRabbit()
 	return nil
+}
+
+// Authentication or an ambiguous engine reply may consume its whole deadline.
+// Reclosure gets a fresh budget; the reservation stays held until recovery.
+func (m *maintenanceAgent) reclose() error {
+	m.recovering = true
+	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
+	defer cancel()
+	return m.app.rabbit.SetMaintenance(ctx, true)
 }
 
 // Abort is the daemon's rollback for an Acquire whose reply was lost. It is
@@ -143,7 +162,7 @@ func (m *maintenanceAgent) Abort(sender dbus.Sender, operation string) *dbus.Err
 	if m.owner != string(sender) || m.operation != operation {
 		return dbus.NewError("org.freedesktop.DBus.Error.AccessDenied", nil)
 	}
-	status, err := m.app.device.UpdateStatus(context.Background())
+	status, err := m.app.device.ForOwner(string(sender)).UpdateStatus(context.Background())
 	if err != nil || !maintenanceSafe(status.State) || !m.daemon(sender) {
 		return dbus.MakeFailedError(errors.New("updater recovery pending"))
 	}
@@ -189,24 +208,25 @@ func (m *maintenanceAgent) recover(ctx context.Context) {
 			return
 		}
 	}
-	var owner string
-	if m.app.device.Conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, device.Destination).Store(&owner) != nil {
+	owner, err := m.app.device.TrustedOwner(ctx)
+	if err != nil {
 		return
 	}
+	daemon := m.app.device.ForOwner(owner)
 	var ready, maintenance bool
-	if m.app.device.Property(ctx, "Manager", "Ready", &ready) != nil || !ready || m.app.device.Property(ctx, "Manager", "Maintenance", &maintenance) != nil || maintenance {
+	if daemon.Property(ctx, "Manager", "Ready", &ready) != nil || !ready || daemon.Property(ctx, "Manager", "Maintenance", &maintenance) != nil || maintenance {
 		return
 	}
-	status, err := m.app.device.UpdateStatus(ctx)
+	status, err := daemon.UpdateStatus(ctx)
 	safe := err == nil && maintenanceSafe(status.State)
 	if err != nil {
 		var capabilities []string
-		if m.app.device.Property(ctx, "Manager", "Capabilities", &capabilities) == nil {
+		if daemon.Property(ctx, "Manager", "Capabilities", &capabilities) == nil {
 			safe = !slices.Contains(capabilities, "updates")
 		}
 	}
 	if safe && m.daemon(dbus.Sender(owner)) {
-		_ = m.resume()
+		_ = m.resume(owner)
 	}
 }
 
@@ -227,41 +247,49 @@ func (a *App) deviceLoop(ctx context.Context) {
 	lastSettings := device.Settings{}
 	lastState := rabbit.State{}
 	refresh := func() {
-		var owner string
 		callCtx, cancel := context.WithTimeout(ctx, device.Timeout)
 		defer cancel()
-		if a.device.Conn.BusObject().CallWithContext(callCtx, "org.freedesktop.DBus.GetNameOwner", 0, device.Destination).Store(&owner) != nil {
+		owner, err := a.device.TrustedOwner(callCtx)
+		if err != nil {
 			a.agent.holdRecovery()
 			registered, observed = "", ""
 			a.setIndicator("")
 			return
 		}
+		daemon := a.device.ForOwner(owner)
 		if owner != observed {
 			a.agent.holdRecovery()
 			observed = owner
 			a.setIndicator("")
-			if state, err := a.device.VoiceState(ctx); err == nil {
+			if state, err := daemon.VoiceState(ctx); err == nil && a.agent.daemon(dbus.Sender(owner)) {
 				a.voiceEvent("status", map[string]any{"status": state})
 			}
 		}
 		if owner != registered {
 			var capabilities []string
-			if a.device.Property(ctx, "Manager", "Capabilities", &capabilities) == nil {
+			if daemon.Property(ctx, "Manager", "Capabilities", &capabilities) == nil {
 				if slices.Contains(capabilities, "maintenance-agents") {
-					if _, err := a.device.Call(ctx, "Manager", "RegisterAgent", device.Path("Agent")); err == nil {
-						registered = owner
+					if _, err := daemon.Call(ctx, "Manager", "RegisterAgent", device.Path("Agent")); err == nil {
+						if a.agent.daemon(dbus.Sender(owner)) {
+							registered = owner
+						}
 					}
 				} else {
-					registered = owner
+					if a.agent.daemon(dbus.Sender(owner)) {
+						registered = owner
+					}
 				}
 			}
 		}
 		a.agent.recover(ctx)
-		settings, err := a.systemSettings(ctx)
+		_, settings, err := daemon.ReadConfig(callCtx)
+		if err == nil {
+			err = a.device.Authenticate(callCtx, owner)
+		}
 		if err == nil {
 			changed := settings != lastSettings
 			if changed {
-				a.publishSettings(ctx)
+				a.applySettings(settings)
 				kick(a.clockKick)
 			}
 			state, _ := a.rabbit.State()
