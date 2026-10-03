@@ -21,6 +21,7 @@ import (
 type deviceIdentity struct {
 	mu          sync.Mutex
 	requester   string
+	conn        *dbus.Conn
 	unit, id    string
 	afterLookup func()
 }
@@ -49,7 +50,19 @@ func (i *deviceIdentity) GetUnitByPIDFD(sender dbus.Sender, fd dbus.UnixFD) (dbu
 	unit, hook := i.unit, i.afterLookup
 	i.mu.Unlock()
 	if string(sender) != i.requester {
-		return "/org/freedesktop/systemd1/unit/hardware", "nab-hardware.service", []byte{1}, nil
+		// Both daemons are fixtures in this process. Use the requester's
+		// installed owner subscription to distinguish hardware from audio.
+		ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
+		defer cancel()
+		var rules map[string][]string
+		if err := i.conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.Debug.Stats.GetAllMatchRules", 0).Store(&rules); err != nil {
+			return "", "", nil, dbus.MakeFailedError(err)
+		}
+		for _, rule := range rules[string(sender)] {
+			if strings.Contains(rule, "io.github.guilhem.NabHardware1") {
+				return "/org/freedesktop/systemd1/unit/hardware", "nab-hardware.service", []byte{1}, nil
+			}
+		}
 	}
 	if hook != nil {
 		hook()
@@ -61,7 +74,7 @@ var deviceIdentities = map[*App]*deviceIdentity{}
 
 func installDeviceIdentity(t *testing.T, a *App, conn *dbus.Conn) {
 	t.Helper()
-	i := &deviceIdentity{requester: a.device.Conn.Names()[0], unit: "device-core.service", id: "device-core.service"}
+	i := &deviceIdentity{requester: a.device.Conn.Names()[0], conn: conn, unit: "device-core.service", id: "device-core.service"}
 	if reply, err := conn.RequestName("org.freedesktop.systemd1", dbus.NameFlagDoNotQueue); err != nil || reply != dbus.RequestNameReplyPrimaryOwner && reply != dbus.RequestNameReplyAlreadyOwner {
 		t.Fatal(reply, err)
 	}

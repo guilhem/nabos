@@ -3,8 +3,10 @@ package device_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,5 +237,210 @@ func TestCatalogueChecksAllowSlowRepliesAndHonorCallerCancellation(t *testing.T)
 	}
 	if time.Since(started) > time.Second {
 		t.Fatal("cancelled check waited for catalogue")
+	}
+}
+
+// Exercise the shared invocation boundary through both its bounded Call entry
+// and WaitAudio, which intentionally has no playback-duration deadline.
+func TestInvocationsAuthenticateAndFenceOwners(t *testing.T) {
+	for _, operation := range []string{"Call", "WaitAudio"} {
+		for _, pinned := range []bool{false, true} {
+			for _, mode := range []string{"trusted", "wrong unit", "lookup denied", "systemd absent", "owner changes during authentication", "owner changes during call", "unit changes during call", "pinned unit revoked", "pinned public name"} {
+				if !pinned && (mode == "pinned unit revoked" || mode == "pinned public name") {
+					continue
+				}
+				t.Run(fmt.Sprintf("%s/pinned=%t/%s", operation, pinned, mode), func(t *testing.T) {
+					fixture := devicetest.New(t)
+					client, err := device.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer client.Close()
+					owner := fixture.Conn.Names()[0]
+					if pinned {
+						client = client.ForOwner(owner)
+					}
+					if mode == "pinned public name" {
+						client = client.ForOwner(device.Destination)
+					}
+					replacement, err := dbus.ConnectSystemBus()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer replacement.Close()
+					changeOwner := func() error {
+						if _, err := fixture.Conn.ReleaseName(device.Destination); err != nil {
+							return err
+						}
+						reply, err := replacement.RequestName(device.Destination, dbus.NameFlagDoNotQueue)
+						if err != nil {
+							return err
+						}
+						if reply != dbus.RequestNameReplyPrimaryOwner {
+							return fmt.Errorf("replacement ownership: %v", reply)
+						}
+						return nil
+					}
+					var unit atomic.Value
+					unit.Store("device-core.service")
+					devicetest.InstallIdentity(t, fixture.Conn, func(dbus.Sender) (string, error) {
+						if mode == "lookup denied" {
+							return "", errors.New("secret identity error")
+						}
+						if mode == "owner changes during authentication" {
+							if err := changeOwner(); err != nil {
+								return "", err
+							}
+						}
+						return unit.Load().(string), nil
+					})
+					if mode == "wrong unit" {
+						unit.Store("nabos.service")
+					}
+					if mode == "systemd absent" {
+						if _, err := fixture.Conn.ReleaseName("org.freedesktop.systemd1"); err != nil {
+							t.Fatal(err)
+						}
+					}
+					var calls, replacements atomic.Int32
+					handle := func(message dbus.Message) *dbus.Error {
+						calls.Add(1)
+						if got := message.Headers[dbus.FieldDestination].Value(); got != owner {
+							t.Errorf("operation destination = %v, want authenticated unique owner %s", got, owner)
+						}
+						if mode == "owner changes during call" {
+							if err := changeOwner(); err != nil {
+								return dbus.MakeFailedError(err)
+							}
+						}
+						if mode == "unit changes during call" {
+							unit.Store("nabos.service")
+						}
+						return nil
+					}
+					if err := fixture.Conn.ExportMethodTable(map[string]interface{}{
+						"Start": func(message dbus.Message, kind, source string) (string, *dbus.Error) {
+							if kind != "file" || source != "/private/source.wav" {
+								t.Error("Start arguments changed", kind, source)
+							}
+							return "started", handle(message)
+						},
+						"Wait": func(message dbus.Message, id string) (string, *dbus.Error) {
+							if id != "private-audio-id" {
+								t.Error("Wait argument changed", id)
+							}
+							return "completed", handle(message)
+						},
+					}, device.Path("Audio"), device.Interface("Audio")); err != nil {
+						t.Fatal(err)
+					}
+					if err := replacement.ExportMethodTable(map[string]interface{}{
+						"Start": func(message dbus.Message, kind, source string) (string, *dbus.Error) {
+							replacements.Add(1)
+							if message.Headers[dbus.FieldDestination].Value() != replacement.Names()[0] {
+								t.Error("replacement reached through public name")
+							}
+							return "replacement-start", nil
+						},
+						"Wait": func(message dbus.Message, id string) (string, *dbus.Error) {
+							replacements.Add(1)
+							if message.Headers[dbus.FieldDestination].Value() != replacement.Names()[0] {
+								t.Error("replacement reached through public name")
+							}
+							return "replacement-completion", nil
+						},
+					}, device.Path("Audio"), device.Interface("Audio")); err != nil {
+						t.Fatal(err)
+					}
+					invoke := func() (string, error) {
+						ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+						defer cancel()
+						if operation == "WaitAudio" {
+							return client.WaitAudio(ctx, "private-audio-id")
+						}
+						call, err := client.Call(ctx, "Audio", "Start", "file", "/private/source.wav")
+						if err != nil {
+							if call != nil {
+								t.Error("rejected invocation exposed its reply")
+							}
+							return "", err
+						}
+						var result string
+						if err := call.Store(&result); err != nil {
+							return "", err
+						}
+						return result, nil
+					}
+					if mode == "pinned unit revoked" {
+						if _, err := invoke(); err != nil {
+							t.Fatal("initial pinned invocation", err)
+						}
+						unit.Store("nabos.service")
+					}
+					result, err := invoke()
+					wantCalls := int32(0)
+					if mode == "trusted" {
+						if err != nil || result == "" {
+							t.Fatal("trusted invocation rejected", result, err)
+						}
+						wantCalls = 1
+					} else {
+						if !errors.Is(err, device.ErrUnavailable) || result != "" {
+							t.Fatal("authentication or ownership failure exposed a result", result, err)
+						}
+						if mode == "owner changes during call" || mode == "unit changes during call" || mode == "pinned unit revoked" {
+							wantCalls = 1
+						}
+					}
+					if calls.Load() != wantCalls || replacements.Load() != 0 {
+						t.Fatal("unauthenticated IPC or replacement fallback", calls.Load(), replacements.Load())
+					}
+					if mode == "owner changes during call" {
+						// The old connection remains alive and still exports the methods.
+						// A pinned client must reject it before IPC after the name changes.
+						result, err = invoke()
+						if pinned {
+							if !errors.Is(err, device.ErrUnavailable) || result != "" || replacements.Load() != 0 {
+								t.Fatal("stale pinned client used a live old owner or its replacement", result, err)
+							}
+						} else if err != nil || result == "" || replacements.Load() != 1 {
+							t.Fatal("unbound client did not authenticate the replacement", result, err)
+						}
+						if calls.Load() != 1 {
+							t.Fatal("stale old owner received another invocation", calls.Load())
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestWaitAudioAllowsLongPlaybackAndHonorsCallerCancellation(t *testing.T) {
+	fixture := devicetest.New(t)
+	client, err := device.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := fixture.Conn.ExportMethodTable(map[string]interface{}{
+		"Wait": func(id string) (string, *dbus.Error) {
+			time.Sleep(device.Timeout + 100*time.Millisecond)
+			return "completed", nil
+		},
+	}, device.Path("Audio"), device.Interface("Audio")); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := client.WaitAudio(context.Background(), "long-playback"); err != nil || outcome != "completed" {
+		t.Fatal("playback was bounded by the ordinary call timeout", outcome, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if outcome, err := client.WaitAudio(ctx, "cancelled-playback"); !errors.Is(err, device.ErrUnavailable) || outcome != "" {
+		t.Fatal("caller cancellation exposed an audio result", outcome, err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("cancelled audio wait waited for playback")
 	}
 }

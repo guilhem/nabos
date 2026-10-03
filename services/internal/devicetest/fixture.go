@@ -109,6 +109,7 @@ func New(t *testing.T) *Fixture {
 	if reply, err := conn.RequestName(device.Destination, dbus.NameFlagDoNotQueue); err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		t.Fatalf("bus ownership: %v %v", reply, err)
 	}
+	InstallIdentity(t, conn, nil)
 	return Attach(t, conn)
 }
 func Attach(t *testing.T, conn *dbus.Conn) *Fixture {

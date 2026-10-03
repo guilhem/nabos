@@ -41,15 +41,9 @@ func (c *Client) Authenticate(ctx context.Context, owner string) error {
 	return busidentity.Authenticate(ctx, c.Conn, Destination, owner, "device-core.service")
 }
 
-// ForOwner pins a sequence of reads to the unique owner already authenticated.
-// Reauthenticate before accepting its result after any intervening awaits.
+// ForOwner pins a sequence of calls to a unique owner. Each call authenticates
+// that owner again and fences its response; it never falls back to a new owner.
 func (c *Client) ForOwner(owner string) *Client { return &Client{Conn: c.Conn, owner: owner} }
-func (c *Client) destination() string {
-	if c.owner != "" {
-		return c.owner
-	}
-	return Destination
-}
 
 func Open() (*Client, error) {
 	var conn *dbus.Conn
@@ -84,12 +78,31 @@ func (c *Client) Call(ctx context.Context, domain, method string, args ...any) (
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	call := c.Conn.Object(c.destination(), Path(domain)).CallWithContext(ctx, method, 0, args...)
+	return c.invoke(ctx, domain, method, args...)
+}
+
+// invoke is shared with the unbounded audio wait. Authentication roundtrips have
+// their own deadlines; every operation targets only the verified unique owner.
+func (c *Client) invoke(ctx context.Context, domain, method string, args ...any) (*dbus.Call, error) {
+	owner := c.owner
+	var err error
+	if owner == "" {
+		owner, err = c.TrustedOwner(ctx)
+	} else {
+		err = c.Authenticate(ctx, owner)
+	}
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	call := c.Conn.Object(owner, Path(domain)).CallWithContext(ctx, method, 0, args...)
 	if call.Err != nil {
 		var e dbus.Error
 		if errors.As(call.Err, &e) && (strings.HasPrefix(e.Name, Destination+".") || e.Name == "org.freedesktop.DBus.Error.Failed" || e.Name == "org.freedesktop.DBus.Error.InvalidArgs" || e.Name == "org.freedesktop.DBus.Error.AccessDenied" || e.Name == "org.freedesktop.DBus.Error.NotSupported") {
 			return nil, ErrRefused
 		}
+		return nil, ErrUnavailable
+	}
+	if c.Authenticate(ctx, owner) != nil {
 		return nil, ErrUnavailable
 	}
 	return call, nil
@@ -222,7 +235,10 @@ func (c *Client) SetVolume(ctx context.Context, percent uint32) error {
 	return err
 }
 func (c *Client) WaitAudio(ctx context.Context, id string) (string, error) {
-	call := c.Conn.Object(c.destination(), Path("Audio")).CallWithContext(ctx, Interface("Audio")+".Wait", 0, id)
+	call, err := c.invoke(ctx, "Audio", Interface("Audio")+".Wait", id)
+	if err != nil {
+		return "", err
+	}
 	var outcome string
 	if call.Store(&outcome) != nil {
 		return "", ErrUnavailable

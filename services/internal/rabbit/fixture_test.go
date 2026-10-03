@@ -5,12 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -67,7 +64,7 @@ func newBus(t *testing.T) *busFixture {
 	t.Cleanup(func() { conn.Close() })
 	devicetest.RequireProcessFD(t, conn)
 	f := &busFixture{conn: conn, status: hardware.Status{Model: "test", Simulated: true, LeftEar: "ok", RightEar: "ok", Leds: true, Button: true, RFID: "st25tb", Left: 0, Right: 0}}
-	for _, name := range []string{hardware.Destination, device.Destination, "org.freedesktop.systemd1"} {
+	for _, name := range []string{hardware.Destination, device.Destination} {
 		reply, err := conn.RequestName(name, dbus.NameFlagDoNotQueue)
 		if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 			t.Fatal(name, reply, err)
@@ -77,11 +74,29 @@ func newBus(t *testing.T) *busFixture {
 		value any
 		path  dbus.ObjectPath
 		iface string
-	}{{f, hardware.Path, hardware.Destination}, {f, device.Path("Audio"), device.Interface("Audio")}, {fixtureProperties{f}, hardware.Path, "org.freedesktop.DBus.Properties"}, {fixtureSystemd{t}, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager"}, {fixtureUnit{}, "/org/freedesktop/systemd1/unit/hardware", "org.freedesktop.DBus.Properties"}} {
+	}{{f, hardware.Path, hardware.Destination}, {f, device.Path("Audio"), device.Interface("Audio")}, {fixtureProperties{f}, hardware.Path, "org.freedesktop.DBus.Properties"}} {
 		if err = conn.Export(entry.value, entry.path, entry.iface); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Both service fixtures run in this process, so their PIDFDs are identical.
+	// Attribute each requester by the actual daemon subscription on its bus
+	// connection. Hardware installs its match before authenticating; audio uses
+	// a separate connection with the DeviceCore owner subscription.
+	devicetest.InstallIdentity(t, conn, func(sender dbus.Sender) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
+		defer cancel()
+		var rules map[string][]string
+		if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.Debug.Stats.GetAllMatchRules", 0).Store(&rules); err != nil {
+			return "", err
+		}
+		for _, rule := range rules[string(sender)] {
+			if strings.Contains(rule, hardware.Destination) {
+				return "nab-hardware.service", nil
+			}
+		}
+		return "device-core.service", nil
+	})
 	return f
 }
 
@@ -102,28 +117,6 @@ func (p fixtureProperties) Get(iface, name string) (dbus.Variant, *dbus.Error) {
 	return dbus.Variant{}, dbus.MakeFailedError(errors.New("unknown property"))
 }
 
-type fixtureSystemd struct{ t *testing.T }
-
-func (s fixtureSystemd) GetUnitByPIDFD(fd dbus.UnixFD) (dbus.ObjectPath, string, []byte, *dbus.Error) {
-	defer syscall.Close(int(fd))
-	info, err := os.ReadFile(fmt.Sprintf("/proc/self/fdinfo/%d", fd))
-	if err != nil {
-		return "", "", nil, dbus.MakeFailedError(err)
-	}
-	if !strings.Contains(string(info), "Pid:\t"+strconv.Itoa(os.Getpid())+"\n") {
-		return "", "", nil, dbus.MakeFailedError(errors.New("wrong process fd"))
-	}
-	return "/org/freedesktop/systemd1/unit/hardware", "nab-hardware.service", make([]byte, 16), nil
-}
-
-type fixtureUnit struct{}
-
-func (fixtureUnit) Get(iface, name string) (dbus.Variant, *dbus.Error) {
-	if iface == "org.freedesktop.systemd1.Unit" && name == "Id" {
-		return dbus.MakeVariant("nab-hardware.service"), nil
-	}
-	return dbus.Variant{}, dbus.MakeFailedError(errors.New("unknown property"))
-}
 func (f *busFixture) Claim(sender dbus.Sender) *dbus.Error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
