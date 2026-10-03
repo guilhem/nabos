@@ -7,10 +7,10 @@ import (
 	"log"
 	"os"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/guilhem/nabos/services/internal/busidentity"
 )
 
 const Destination = "io.github.guilhem.NabHardware1"
@@ -18,7 +18,7 @@ const Path = dbus.ObjectPath("/io/github/guilhem/NabHardware1")
 const Timeout = 5 * time.Second
 
 var ErrUnavailable = errors.New("hardware unavailable")
-var ErrStale = errors.New("hardware owner changed")
+var ErrStale = busidentity.ErrStale
 
 type Status struct {
 	Model     string
@@ -182,43 +182,7 @@ func ownerOf(ctx context.Context, conn *dbus.Conn) (string, error) {
 	return owner, err
 }
 func authenticate(ctx context.Context, conn *dbus.Conn, owner string) error {
-	var credentials map[string]dbus.Variant
-	if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetConnectionCredentials", 0, owner).Store(&credentials); err != nil {
-		return err
-	}
-	v, ok := credentials["ProcessFD"]
-	if !ok {
-		return errors.New("hardware owner has no ProcessFD")
-	}
-	var fd dbus.UnixFD
-	if err := v.Store(&fd); err != nil {
-		return err
-	}
-	defer syscall.Close(int(fd))
-	var unit dbus.ObjectPath
-	var name string
-	var invocation []byte
-	if err := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").CallWithContext(ctx, "org.freedesktop.systemd1.Manager.GetUnitByPIDFD", 0, fd).Store(&unit, &name, &invocation); err != nil {
-		return err
-	}
-	if name != "nab-hardware.service" {
-		return errors.New("untrusted hardware service")
-	}
-	var id dbus.Variant
-	if err := conn.Object("org.freedesktop.systemd1", unit).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, "org.freedesktop.systemd1.Unit", "Id").Store(&id); err != nil {
-		return err
-	}
-	if id.Value() != name {
-		return errors.New("hardware unit identity mismatch")
-	}
-	current, err := ownerOf(ctx, conn)
-	if err != nil {
-		return err
-	}
-	if current != owner {
-		return ErrStale
-	}
-	return nil
+	return busidentity.Authenticate(ctx, conn, Destination, owner, "nab-hardware.service")
 }
 func (c *Client) recover(ctx context.Context, conn *dbus.Conn) error {
 	ctx, cancel := context.WithTimeout(ctx, Timeout)

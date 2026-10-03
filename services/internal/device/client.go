@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/guilhem/nabos/services/internal/busidentity"
 )
 
 const Destination = "io.github.guilhem.DeviceCore1"
@@ -19,7 +20,36 @@ const Timeout = 5 * time.Second
 var ErrUnavailable = errors.New("service système indisponible, réessayez")
 var ErrRefused = errors.New("opération système refusée")
 
-type Client struct{ Conn *dbus.Conn }
+type Client struct {
+	Conn  *dbus.Conn
+	owner string
+}
+
+// TrustedOwner authenticates the current daemon, including an ownership fence.
+func (c *Client) TrustedOwner(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	defer cancel()
+	owner, err := busidentity.Owner(ctx, c.Conn, Destination)
+	if err == nil {
+		err = c.Authenticate(ctx, owner)
+	}
+	return owner, err
+}
+func (c *Client) Authenticate(ctx context.Context, owner string) error {
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	defer cancel()
+	return busidentity.Authenticate(ctx, c.Conn, Destination, owner, "device-core.service")
+}
+
+// ForOwner pins a sequence of reads to the unique owner already authenticated.
+// Reauthenticate before accepting its result after any intervening awaits.
+func (c *Client) ForOwner(owner string) *Client { return &Client{Conn: c.Conn, owner: owner} }
+func (c *Client) destination() string {
+	if c.owner != "" {
+		return c.owner
+	}
+	return Destination
+}
 
 func Open() (*Client, error) {
 	var conn *dbus.Conn
@@ -54,7 +84,7 @@ func (c *Client) Call(ctx context.Context, domain, method string, args ...any) (
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	call := c.Conn.Object(Destination, Path(domain)).CallWithContext(ctx, method, 0, args...)
+	call := c.Conn.Object(c.destination(), Path(domain)).CallWithContext(ctx, method, 0, args...)
 	if call.Err != nil {
 		var e dbus.Error
 		if errors.As(call.Err, &e) && (strings.HasPrefix(e.Name, Destination+".") || e.Name == "org.freedesktop.DBus.Error.Failed" || e.Name == "org.freedesktop.DBus.Error.InvalidArgs" || e.Name == "org.freedesktop.DBus.Error.AccessDenied" || e.Name == "org.freedesktop.DBus.Error.NotSupported") {
@@ -192,7 +222,7 @@ func (c *Client) SetVolume(ctx context.Context, percent uint32) error {
 	return err
 }
 func (c *Client) WaitAudio(ctx context.Context, id string) (string, error) {
-	call := c.Conn.Object(Destination, Path("Audio")).CallWithContext(ctx, Interface("Audio")+".Wait", 0, id)
+	call := c.Conn.Object(c.destination(), Path("Audio")).CallWithContext(ctx, Interface("Audio")+".Wait", 0, id)
 	var outcome string
 	if call.Store(&outcome) != nil {
 		return "", ErrUnavailable

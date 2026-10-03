@@ -29,6 +29,7 @@ func testApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
+	installDeviceIdentity(t, a, appFixture(t, a).Conn)
 	t.Cleanup(a.device.Close)
 	return a
 }
@@ -89,6 +90,7 @@ func TestRestartAppliesClockSchedule(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			installDeviceIdentity(t, restarted, f.Conn)
 			t.Cleanup(restarted.device.Close)
 			if restarted.store.Get().Clock.Override != nil {
 				t.Fatal("restart retained the previous manual override")

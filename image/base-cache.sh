@@ -9,7 +9,7 @@ identity=$(
   cd "$repo"
   { printf '%s\n' "$target" "${NABOS_BASE_CACHE_EPOCH:-$(date -u +%F)}"
     sha256sum image/base-cache.sh image/build.sh image/prepare.sh image/sources.lock.json \
-      image/lva-requirements.lock image/patches/*.patch image/build-config/* \
+      image/lva-requirements.lock image/network-manager.sh image/network-manager.lock.json image/patches/*.patch image/build-config/* \
       services/go.mod services/cmd/nab-image/*.go
   } | sha256sum | cut -d' ' -f1
 )
@@ -39,7 +39,7 @@ case $action in
     ;;
   save)
     temporary=$(mktemp -d "$(dirname "$cache")/.${target}.XXXXXX")
-    files=(base.img payload/kernel-release payload/builder-packages.tsv payload/inputs/debs)
+    files=(base.img payload/kernel-release payload/builder-packages.tsv payload/inputs/debs payload/inputs/network-manager)
     if [[ $target == zero2-arm64 ]]; then files+=(payload/inputs/wheels); fi
     # Preserve holes here: Actions' outer archive otherwise reads all 6 GiB.
     tar --create --sparse --file="$temporary/base.tar" --directory="$work" "${files[@]}"

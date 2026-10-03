@@ -62,11 +62,24 @@ impl Drop for PrivateBus {
     }
 }
 
-struct Systemd(Arc<Mutex<String>>);
+struct Systemd {
+    caller_unit: Arc<Mutex<String>>,
+    daemon_unit: Arc<Mutex<String>>,
+    daemon_pid: Arc<Mutex<u32>>,
+    release_daemon: Arc<Mutex<Option<(Connection, String)>>>,
+}
+struct Unit(Arc<Mutex<String>>);
+#[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
+impl Unit {
+    #[zbus(property)]
+    fn id(&self) -> String {
+        self.0.lock().unwrap().clone()
+    }
+}
 #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
 impl Systemd {
     #[zbus(name = "GetUnitByPIDFD")]
-    fn get_unit_by_pidfd(&self, fd: OwnedFd) -> (OwnedObjectPath, String, Vec<u8>) {
+    async fn get_unit_by_pidfd(&self, fd: OwnedFd) -> (OwnedObjectPath, String, Vec<u8>) {
         use std::os::fd::AsRawFd;
         let info =
             std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd())).unwrap();
@@ -76,16 +89,34 @@ impl Systemd {
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(
-            pid,
-            std::process::id(),
+        assert!(
+            pid == std::process::id() || pid == *self.daemon_pid.lock().unwrap(),
             "the bus must supply a real pinned caller FD"
         );
+        let release = self.release_daemon.lock().unwrap().take();
+        if let Some((bus, owner)) = release {
+            Proxy::new(&bus, owner, "/Test", "io.github.guilhem.DeviceCore1.Test")
+                .await
+                .unwrap()
+                .call::<_, _, ()>("ReleaseService", &())
+                .await
+                .unwrap();
+        }
+        let daemon = pid == *self.daemon_pid.lock().unwrap();
+        let (path, unit) = if daemon {
+            (
+                "/org/freedesktop/systemd1/unit/device_2dcore_2eservice",
+                &self.daemon_unit,
+            )
+        } else {
+            (
+                "/org/freedesktop/systemd1/unit/nabos_2eservice",
+                &self.caller_unit,
+            )
+        };
         (
-            "/org/freedesktop/systemd1/unit/nabos_2eservice"
-                .try_into()
-                .unwrap(),
-            self.0.lock().unwrap().clone(),
+            path.try_into().unwrap(),
+            unit.lock().unwrap().clone(),
             vec![0; 16],
         )
     }
@@ -118,42 +149,97 @@ struct Harness {
     bus: PrivateBus,
     unit: Arc<Mutex<String>>,
     _systemd: Connection,
+    daemon_unit: Arc<Mutex<String>>,
+    daemon_id: Arc<Mutex<String>>,
+    release_daemon: Arc<Mutex<Option<(Connection, String)>>>,
     daemon: Connection,
     hardware: Arc<Hardware>,
     connection: Connection,
     task: tokio::task::JoinHandle<Result<(), String>>,
-    presence: Arc<Mutex<Vec<u64>>>,
+    daemon_owner: String,
+    daemon_process: Child,
 }
 impl Harness {
     async fn new() -> Self {
         let bus = PrivateBus::new();
         let unit = Arc::new(Mutex::new("nabos.service".into()));
+        let daemon_unit = Arc::new(Mutex::new("device-core.service".into()));
+        let daemon_id = Arc::new(Mutex::new("device-core.service".into()));
+        let daemon_pid = Arc::new(Mutex::new(0));
+        let release_daemon = Arc::new(Mutex::new(None));
         let systemd = zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
             .name("org.freedesktop.systemd1")
             .unwrap()
-            .serve_at("/org/freedesktop/systemd1", Systemd(unit.clone()))
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        let presence = Arc::new(Mutex::new(Vec::new()));
-        let daemon = zbus::connection::Builder::address(bus.address.as_str())
-            .unwrap()
-            .name(crate::device::SERVICE)
-            .unwrap()
-            .serve_at(crate::device::ROOT, Manager)
-            .unwrap()
             .serve_at(
-                format!("{}/Network", crate::device::ROOT),
-                Network(presence.clone()),
+                "/org/freedesktop/systemd1",
+                Systemd {
+                    caller_unit: unit.clone(),
+                    daemon_unit: daemon_unit.clone(),
+                    daemon_pid: daemon_pid.clone(),
+                    release_daemon: release_daemon.clone(),
+                },
             )
             .unwrap()
             .build()
             .await
             .unwrap();
+        systemd
+            .object_server()
+            .at(
+                "/org/freedesktop/systemd1/unit/nabos_2eservice",
+                Unit(unit.clone()),
+            )
+            .await
+            .unwrap();
+        systemd
+            .object_server()
+            .at(
+                "/org/freedesktop/systemd1/unit/device_2dcore_2eservice",
+                Unit(daemon_id.clone()),
+            )
+            .await
+            .unwrap();
+        let daemon_process = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "bus::tests::private_bus_rejects_name_takeover_and_untrusted_daemon_unit",
+                "--ignored",
+            ])
+            .env("NABOS_F1_DAEMON_ADDRESS", &bus.address)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        *daemon_pid.lock().unwrap() = daemon_process.id();
+        let daemon = bus.connect().await;
+        let dbus = fdo::DBusProxy::new(&daemon).await.unwrap();
+        eventually(|| async {
+            dbus.name_has_owner(crate::device::SERVICE.try_into().unwrap())
+                .await
+                .unwrap_or(false)
+        })
+        .await;
+        let daemon_owner = dbus
+            .get_name_owner(crate::device::SERVICE.try_into().unwrap())
+            .await
+            .unwrap()
+            .to_string();
         let device = Device::on_bus(bus.address.clone());
         let connection = device.connection().await.unwrap();
+        Proxy::new(
+            &daemon,
+            daemon_owner.clone(),
+            "/Test",
+            "io.github.guilhem.DeviceCore1.Test",
+        )
+        .await
+        .unwrap()
+        .call::<_, _, ()>(
+            "SetAgentDestination",
+            &(connection.unique_name().unwrap().as_str(),),
+        )
+        .await
+        .unwrap();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let cfg = crate::Config {
             simulate: true,
@@ -179,30 +265,60 @@ impl Harness {
             bus,
             unit,
             _systemd: systemd,
+            daemon_unit,
+            daemon_id,
+            release_daemon,
             daemon,
             hardware,
             connection,
             task,
-            presence,
+            daemon_owner,
+            daemon_process,
         }
     }
     async fn api<'a>(&self, bus: &'a Connection) -> Proxy<'a> {
         Proxy::new(bus, SERVICE, PATH, SERVICE).await.unwrap()
     }
     async fn agent<'a>(&'a self, bus: &'a Connection) -> Proxy<'a> {
+        if bus.unique_name() == self.daemon.unique_name() {
+            Proxy::new(
+                bus,
+                self.daemon_owner.clone(),
+                "/Test",
+                "io.github.guilhem.DeviceCore1.Test",
+            )
+            .await
+            .unwrap()
+        } else {
+            Proxy::new(
+                bus,
+                self.connection.unique_name().unwrap().as_str(),
+                maintenance::PATH,
+                "io.github.guilhem.DeviceCore1.Agent",
+            )
+            .await
+            .unwrap()
+        }
+    }
+    async fn service_name(&self, method: &str) {
         Proxy::new(
-            bus,
-            self.connection.unique_name().unwrap().as_str(),
-            maintenance::PATH,
-            "io.github.guilhem.DeviceCore1.Agent",
+            &self.daemon,
+            self.daemon_owner.clone(),
+            "/Test",
+            "io.github.guilhem.DeviceCore1.Test",
         )
         .await
         .unwrap()
+        .call::<_, _, ()>(method, &())
+        .await
+        .unwrap();
     }
 }
 impl Drop for Harness {
     fn drop(&mut self) {
         self.task.abort();
+        let _ = self.daemon_process.kill();
+        let _ = self.daemon_process.wait();
     }
 }
 async fn eventually<F, Fut>(mut check: F)
@@ -387,13 +503,13 @@ async fn private_bus_maintenance_fences_deferred_mutations_and_authenticates_cur
     });
     tokio::time::sleep(Duration::from_millis(30)).await;
     let daemon = h.daemon.clone();
-    let destination = h.connection.unique_name().unwrap().to_string();
+    let destination = h.daemon_owner.clone();
     let acquired = tokio::spawn(async move {
         Proxy::new(
             &daemon,
             destination,
-            maintenance::PATH,
-            "io.github.guilhem.DeviceCore1.Agent",
+            "/Test",
+            "io.github.guilhem.DeviceCore1.Test",
         )
         .await
         .unwrap()
@@ -432,8 +548,8 @@ async fn private_bus_maintenance_fences_deferred_mutations_and_authenticates_cur
         .unwrap();
     let positions: (i16, i16) = api.call("ReadEars", &(false,)).await.unwrap();
     assert_eq!(positions, (2, 0));
-    let old_owner = h.daemon.unique_name().unwrap().to_string();
-    h.daemon.release_name(crate::device::SERVICE).await.unwrap();
+    let old_owner = h.daemon_owner.clone();
+    h.service_name("ReleaseService").await;
     eventually(|| async { h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
     assert!(maintenance::authorize(&h.connection, &old_owner)
         .await
@@ -442,7 +558,7 @@ async fn private_bus_maintenance_fences_deferred_mutations_and_authenticates_cur
         .call::<_, _, String>("Acquire", &("stale-daemon",))
         .await
         .is_err());
-    h.daemon.request_name(crate::device::SERVICE).await.unwrap();
+    h.service_name("RequestService").await;
     eventually(|| async { !h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
 }
 
@@ -474,7 +590,22 @@ async fn private_bus_simulation_emits_hardware_interface_and_preserves_presence(
         message.body().deserialize::<(String, u64)>().unwrap(),
         ("down".into(), 123456789)
     );
-    eventually(|| async { h.presence.lock().unwrap().as_slice() == [123456789] }).await;
+    eventually(|| async {
+        Proxy::new(
+            &h.daemon,
+            h.daemon_owner.clone(),
+            "/Test",
+            "io.github.guilhem.DeviceCore1.Test",
+        )
+        .await
+        .unwrap()
+        .get_property::<Vec<u64>>("Presence")
+        .await
+        .unwrap()
+        .as_slice()
+            == [123456789]
+    })
+    .await;
     assert!(sim
         .call::<_, _, ()>("Button", &("click", 123u64))
         .await
@@ -550,4 +681,193 @@ async fn private_bus_explicit_address_survives_redirected_system_environment() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[tokio::test]
+#[ignore = "requires a recent private D-Bus with ProcessFD"]
+async fn private_bus_rejects_name_takeover_and_untrusted_daemon_unit() {
+    daemon_fixture_process().await;
+    let h = Harness::new().await;
+    let attacker = h.bus.connect().await;
+    assert!(
+        attacker.request_name(SERVICE).await.is_err(),
+        "active hardware name must not be replaceable"
+    );
+    assert_eq!(
+        fdo::DBusProxy::new(&attacker)
+            .await
+            .unwrap()
+            .get_name_owner(SERVICE.try_into().unwrap())
+            .await
+            .unwrap(),
+        *h.connection.unique_name().unwrap()
+    );
+    let owner = h.daemon_owner.as_str();
+    assert!(maintenance::authorize(&h.connection, owner).await.is_ok());
+    *h.daemon_unit.lock().unwrap() = "other.service".into();
+    assert!(maintenance::authorize(&h.connection, owner).await.is_err());
+    assert!(h
+        .agent(&h.daemon)
+        .await
+        .call::<_, _, String>("Acquire", &("spoof",))
+        .await
+        .is_err());
+    h.hardware
+        .observe(maintenance::Observation {
+            connection: Some(h.connection.clone()),
+            owner: owner.into(),
+            safe: true,
+        })
+        .await;
+    assert!(h.hardware.state.lock().unwrap().maintenance.blocked());
+    *h.daemon_unit.lock().unwrap() = "device-core.service".into();
+    *h.daemon_id.lock().unwrap() = "wrong.service".into();
+    assert!(maintenance::authorize(&h.connection, owner).await.is_err());
+    *h.daemon_id.lock().unwrap() = "device-core.service".into();
+    *h.release_daemon.lock().unwrap() = Some((h.daemon.clone(), h.daemon_owner.clone()));
+    assert!(
+        maintenance::authorize(&h.connection, owner).await.is_err(),
+        "owner change during pidfd lookup must be fenced"
+    );
+    h.service_name("RequestService").await;
+    eventually(|| async { !h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a recent private D-Bus with ProcessFD"]
+async fn private_bus_hardware_does_not_replace_or_queue_for_existing_owner() {
+    let bus = PrivateBus::new();
+    let holder = bus.connect().await;
+    holder.request_name(SERVICE).await.unwrap(); // deliberately allows replacement
+    let device = Device::on_bus(bus.address.clone());
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let cfg = crate::Config {
+        simulate: true,
+        gpio_chip: "/unused".into(),
+        button_gpio: 17,
+        ws2811_lib: "/unused".into(),
+        led_brightness: 200,
+        led_strip: "grb".into(),
+    };
+    let hardware = Hardware::new(Arc::new(Hw::open(&cfg, tx, None)));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), run(device.clone(), hardware, rx))
+            .await
+            .unwrap()
+            .is_err()
+    );
+    let proxy = fdo::DBusProxy::new(&holder).await.unwrap();
+    assert_eq!(
+        proxy
+            .get_name_owner(SERVICE.try_into().unwrap())
+            .await
+            .unwrap(),
+        *holder.unique_name().unwrap()
+    );
+    holder.release_name(SERVICE).await.unwrap();
+    assert!(
+        !proxy
+            .name_has_owner(SERVICE.try_into().unwrap())
+            .await
+            .unwrap(),
+        "failed requester must not queue"
+    );
+    // The failed process is still connected, so this assertion detects queued requests.
+    assert!(!device.connection().await.unwrap().is_closed());
+}
+
+// A distinct process is necessary: pidfds identify processes, not connections.
+struct DaemonControl {
+    agent: Arc<Mutex<String>>,
+    presence: Arc<Mutex<Vec<u64>>>,
+}
+#[zbus::interface(name = "io.github.guilhem.DeviceCore1.Test")]
+impl DaemonControl {
+    fn set_agent_destination(&self, owner: String) {
+        *self.agent.lock().unwrap() = owner;
+    }
+    #[zbus(property)]
+    fn presence(&self) -> Vec<u64> {
+        self.presence.lock().unwrap().clone()
+    }
+    async fn release_service(&self, #[zbus(connection)] bus: &Connection) {
+        bus.release_name(crate::device::SERVICE).await.unwrap();
+    }
+    async fn request_service(&self, #[zbus(connection)] bus: &Connection) {
+        bus.request_name(crate::device::SERVICE).await.unwrap();
+    }
+    async fn acquire(
+        &self,
+        operation: String,
+        #[zbus(connection)] bus: &Connection,
+    ) -> fdo::Result<String> {
+        self.agent_proxy(bus)
+            .await?
+            .call("Acquire", &(operation,))
+            .await
+            .map_err(Into::into)
+    }
+    async fn abort(
+        &self,
+        operation: String,
+        #[zbus(connection)] bus: &Connection,
+    ) -> fdo::Result<()> {
+        self.agent_proxy(bus)
+            .await?
+            .call("Abort", &(operation,))
+            .await
+            .map_err(Into::into)
+    }
+    async fn release(
+        &self,
+        token: String,
+        #[zbus(connection)] bus: &Connection,
+    ) -> fdo::Result<()> {
+        self.agent_proxy(bus)
+            .await?
+            .call("Release", &(token,))
+            .await
+            .map_err(Into::into)
+    }
+}
+impl DaemonControl {
+    async fn agent_proxy<'a>(&self, bus: &'a Connection) -> zbus::Result<Proxy<'a>> {
+        let owner = self.agent.lock().unwrap().clone();
+        Proxy::new(
+            bus,
+            owner,
+            maintenance::PATH,
+            "io.github.guilhem.DeviceCore1.Agent",
+        )
+        .await
+    }
+}
+async fn daemon_fixture_process() {
+    let Ok(address) = std::env::var("NABOS_F1_DAEMON_ADDRESS") else {
+        return;
+    };
+    let presence = Arc::new(Mutex::new(Vec::new()));
+    let _bus = zbus::connection::Builder::address(address.as_str())
+        .unwrap()
+        .name(crate::device::SERVICE)
+        .unwrap()
+        .serve_at(crate::device::ROOT, Manager)
+        .unwrap()
+        .serve_at(
+            format!("{}/Network", crate::device::ROOT),
+            Network(presence.clone()),
+        )
+        .unwrap()
+        .serve_at(
+            "/Test",
+            DaemonControl {
+                agent: Arc::default(),
+                presence,
+            },
+        )
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    std::future::pending::<()>().await;
 }

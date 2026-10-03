@@ -193,7 +193,17 @@ assert (info.st_uid, info.st_gid) == (0, 0)
 info = Path('/var/lib/NetworkManager/NetworkManager.state').stat()
 assert (info.st_uid, info.st_gid) == (0, 0)
 network = configparser.ConfigParser(interpolation=None)
-network.read_string(subprocess.check_output(['NetworkManager', '--print-config'], text=True))
+network.read_string(subprocess.check_output(['/usr/sbin/NetworkManager', '--print-config'], text=True))
+# Assert the rebuilt vendor packages and the actual shipped daemon, on ro root.
+import hashlib
+nm_source = json.loads(Path('/usr/share/nabos/network-manager-source.json').read_text())
+for package in ('network-manager', 'libnm0', 'network-manager-l10n', 'gir1.2-nm-1.0'):
+    actual = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', package], text=True)
+    assert actual == nm_source['version'], (package, actual)
+for line in Path('/usr/share/nabos/network-manager-build.sha256').read_text().splitlines():
+    digest, filename = line.split('  ', 1)
+    assert hashlib.sha256(Path(filename).read_bytes()).hexdigest() == digest, filename
+
 assert network['main']['rc-manager'] == 'unmanaged'
 assert os.readlink('/etc/resolv.conf') == '/run/NetworkManager/resolv.conf'
 radio = configparser.ConfigParser()
