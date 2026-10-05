@@ -242,7 +242,10 @@ node.name = test-sink media.class = Audio/Sink node.driver = true audio.position
             audioenv['DBUS_SESSION_BUS_ADDRESS'] = line(start(1004,
                 ['dbus-daemon', '--session', '--nofork', '--print-address=1',
                  '--address=unix:path=' + str(audio_runtime / 'bus')], 'audio-bus', audioenv, pipe=True))
-            for program in ('pipewire', 'wireplumber', 'pipewire-pulse'):
+            # Unlike the systemd session, this fixture has no socket activation.
+            start(1004, ['pipewire'], 'pipewire', audioenv)
+            wait_for(lambda: (audio_runtime / 'pipewire-0').is_socket())
+            for program in ('wireplumber', 'pipewire-pulse'):
                 start(1004, [program], program, audioenv)
             clientenv = base | {'HOME': '/data/device-core', 'XDG_RUNTIME_DIR': str(runtime),
                                 'PIPEWIRE_REMOTE': '/run/nabos-audio/pipewire-0'}
