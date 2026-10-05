@@ -55,18 +55,6 @@
       "url": "https://codeload.github.com/pguyot/wm8960/tar.gz/b552bdcedb74d162daf2318fc77116b2f209a84e",
       "sha256": "27d724979cad644c74d1c6787c39c3de6a9c577a54fbd2a2e29e94813c03255c"
     },
-    "cr14": {
-      "repository": "pguyot/cr14",
-      "commit": "f188d5894b5f5f0922fd4b20a14d892f267a8f7c",
-      "url": "https://codeload.github.com/pguyot/cr14/tar.gz/f188d5894b5f5f0922fd4b20a14d892f267a8f7c",
-      "sha256": "8dfa460cc277c5a1294d4d7d0882b831092d5106f50a299e28d01b26e7434a0b"
-    },
-    "nfc": {
-      "repository": "pguyot/st25r391x",
-      "commit": "ac5c3229d46f813f3495213f022f4922f465950d",
-      "url": "https://codeload.github.com/pguyot/st25r391x/tar.gz/ac5c3229d46f813f3495213f022f4922f465950d",
-      "sha256": "0600a7e521fc53c59869371c0529710011602dec1dff9e64ec8ee648b2e6a832"
-    },
     "led": {
       "repository": "jgarff/rpi_ws281x",
       "commit": "22f2e35012704845d82e06d2fa2e10fbc810ecaa",

@@ -10,6 +10,9 @@ name = "nab-hardware"
 path = "src/main.rs"
 
 [dependencies]
+cr14 = { git = "https://github.com/guilhem/cr14", rev = "fb095434ecd509704e34550c0204ea35637c68bb" }
+st25r391x = { git = "https://github.com/guilhem/st25r391x", rev = "1a3a1a683a5f73c5a26b5cc3a3581357e99897f0" }
+i2cdev = "=0.6.2"
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "signal"] }
 gpiocdev = "0.7"
 libc = "0.2"

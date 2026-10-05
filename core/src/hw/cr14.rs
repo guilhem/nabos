@@ -1,272 +1,113 @@
-//! CR14 reader (/dev/rfid0, pguyot/cr14 driver) for ST25TB/SRI tags.
-//! Messages: 'p' poll once, 'P' poll repeat, 'i' idle, 'u'+uid(8, LE),
-//! 'R'/'W' + uid + count + addresses (+ data), answered by 'R'/'W' + count + data.
+//! CR14 hardware adapter; RF framing and programming holds belong to the crate.
 
-use super::Tech;
-use super::{
-    decode_st25tb, poll_readable, send, st25tb_compatible, HwEvent, TagEvent, Tx, WriteReq,
-};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::sync::mpsc::Receiver;
+use super::{decode_st25tb, rfid, st25tb_compatible, TagEvent, Tech, WriteReq};
+use ::cr14::{Cr14, State, Uid};
+use i2cdev::linux::LinuxI2CDevice;
+use std::io;
 use std::time::{Duration, Instant};
 
-pub const DEVICE: &str = "/dev/rfid0";
-const REMOVED_TIMEOUT: Duration = Duration::from_secs(1);
+const POLL_TIMEOUT: Duration = Duration::from_secs(1);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(PartialEq, Clone, Copy)]
-enum State {
-    PollingOnce,
-    PollingRepeat,
-    Reading,
-    Writing,
-}
+pub struct Reader(Cr14<LinuxI2CDevice>);
 
-struct Reader {
-    f: File,
-    tx: Tx,
-    state: State,
-    current: Option<Vec<u8>>, // uid, little endian as sent by the driver
-    deadline: Option<Instant>,
-    pending: Option<(WriteReq, Vec<u8>)>,
-}
-
-fn event(uid_le: &[u8]) -> TagEvent {
-    let mut uid = uid_le.to_vec();
-    uid.reverse();
+fn event(uid: Uid) -> TagEvent {
     TagEvent {
         tech: "st25tb",
-        uid,
+        uid: uid.0.into_iter().rev().collect(),
         support: "unknown",
         ..Default::default()
     }
 }
 
 impl Reader {
-    fn cmd(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.f.write_all(bytes)
+    pub fn open() -> io::Result<Self> {
+        let device = LinuxI2CDevice::new("/dev/i2c-1", 0x50).map_err(io::Error::other)?;
+        let mut reader = Self(Cr14::new(device));
+        reader.ready(Instant::now() + POLL_TIMEOUT)?;
+        Ok(reader)
     }
 
-    fn read_n(&mut self, n: usize) -> std::io::Result<Vec<u8>> {
-        let mut b = vec![0; n];
-        self.f.read_exact(&mut b)?;
-        Ok(b)
-    }
-
-    fn poll_once(&mut self) -> std::io::Result<()> {
-        self.state = State::PollingOnce;
-        self.cmd(b"p")
-    }
-
-    fn repeat(&mut self) -> std::io::Result<()> {
-        self.state = State::PollingRepeat;
-        self.deadline = Some(Instant::now() + REMOVED_TIMEOUT);
-        self.cmd(b"P")
-    }
-
-    fn removed(&mut self) {
-        if let Some(uid) = self.current.take() {
-            send(
-                &self.tx,
-                HwEvent::Tag(TagEvent {
-                    removed: true,
-                    ..event(&uid)
-                }),
-            );
+    fn ready(&mut self, deadline: Instant) -> io::Result<()> {
+        if self.0.state() != State::Ready {
+            self.0.reinitialize(deadline).map_err(io::Error::other)?;
         }
+        Ok(())
     }
 
-    fn start_write(&mut self, req: WriteReq) -> std::io::Result<()> {
-        if req.tech != Tech::St25tb || req.uid.len() != 8 {
-            let _ = req
-                .reply
-                .send(Err("unsupported tag technology for this reader".into()));
-            return Ok(());
-        }
-        if let Err(e) = req.admit() {
-            let _ = req.reply.send(Err(e));
-            return Ok(());
-        }
-        let mut uid_le = req.uid.clone();
-        uid_le.reverse();
-        let count = (req.payload.len() / 4) as u8;
-        let mut msg = vec![b'W'];
-        msg.extend_from_slice(&uid_le);
-        msg.push(count);
-        msg.extend(7..7 + count);
-        msg.extend_from_slice(&req.payload);
-        let expected = req.payload.clone();
-        self.state = State::Writing;
-        self.deadline = None;
-        self.pending = Some((req, expected));
-        self.cmd(&msg)
-    }
-
-    fn packet(&mut self) -> std::io::Result<()> {
-        let mut h = [0u8; 1];
-        self.f.read_exact(&mut h)?;
-        match h[0] {
-            b'u' => {
-                let uid_le = self.read_n(8)?;
-                if !matches!(self.state, State::PollingOnce | State::PollingRepeat) {
-                    return Ok(());
-                }
-                if self.current.as_deref() == Some(&uid_le[..]) {
-                    self.deadline = Some(Instant::now() + REMOVED_TIMEOUT);
-                    if self.state != State::PollingRepeat {
-                        self.repeat()?;
+    pub fn poll(&mut self, known: &[TagEvent]) -> io::Result<Vec<TagEvent>> {
+        let deadline = Instant::now() + POLL_TIMEOUT;
+        self.ready(deadline)?;
+        let mut found = Vec::new();
+        for uid in self.0.inventory(deadline).map_err(io::Error::other)? {
+            let mut ev = event(uid);
+            if !rfid::known(known, &ev) && st25tb_compatible(&uid.0) && Instant::now() < deadline {
+                match self
+                    .0
+                    .read_blocks(uid, &[7, 8, 9, 10, 11, 12, 13, 14, 15, 255], deadline)
+                {
+                    Ok(blocks) => decode_st25tb(&blocks.concat(), &mut ev),
+                    Err(e) => {
+                        warn!("CR14 tag {} payload: {e}", uid);
+                        self.ready(Instant::now() + POLL_TIMEOUT)?;
                     }
-                    return Ok(());
-                }
-                self.removed();
-                self.current = Some(uid_le.clone());
-                if st25tb_compatible(&uid_le) {
-                    let mut msg = vec![b'R'];
-                    msg.extend_from_slice(&uid_le);
-                    msg.extend_from_slice(&[10, 7, 8, 9, 10, 11, 12, 13, 14, 15, 255]);
-                    self.state = State::Reading;
-                    self.deadline = Some(Instant::now() + REMOVED_TIMEOUT);
-                    self.cmd(&msg)?;
-                } else {
-                    send(&self.tx, HwEvent::Tag(event(&uid_le)));
-                    self.repeat()?;
                 }
             }
-            b'R' => {
-                let n = self.read_n(1)?[0] as usize;
-                let data = self.read_n(n * 4)?;
-                if self.state != State::Reading || n != 10 {
-                    return Ok(());
+            found.push(ev);
+        }
+        Ok(found)
+    }
+
+    pub fn write(&mut self, req: &WriteReq) -> Result<(), String> {
+        if let Some(reason) = req.stopped() {
+            return Err(reason.into());
+        }
+        if req.tech != Tech::St25tb
+            || req.uid.len() != 8
+            || req.payload.is_empty()
+            || req.payload.len() > 36
+            || !req.payload.len().is_multiple_of(4)
+        {
+            return Err("unsupported tag or invalid block payload".into());
+        }
+        let mut bytes: [u8; 8] = req.uid.as_slice().try_into().unwrap();
+        bytes.reverse();
+        if !st25tb_compatible(&bytes) {
+            return Err("unsupported tag model".into());
+        }
+        let writes: Vec<_> = req
+            .payload
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, data)| (7 + i as u8, *data))
+            .collect();
+        self.ready(req.deadline).map_err(|e| e.to_string())?;
+        let mut denied = None;
+        let progress = self
+            .0
+            .write_blocks_with_admission(Uid(bytes), &writes, req.deadline, || match req.admit() {
+                Ok(()) => Some(Instant::now() + WRITE_TIMEOUT),
+                Err(reason) => {
+                    denied = Some(reason);
+                    None
                 }
-                if let Some(uid) = self.current.clone() {
-                    let mut ev = event(&uid);
-                    decode_st25tb(&data, &mut ev);
-                    send(&self.tx, HwEvent::Tag(ev));
+            })
+            .map_err(|e| match denied {
+                Some(reason) => {
+                    warn!("CR14 write refused after selection: {e}");
+                    reason
                 }
-                self.repeat()?;
-            }
-            b'W' => {
-                let n = self.read_n(1)?[0] as usize;
-                let data = self.read_n(n * 4)?;
-                if self.state != State::Writing {
-                    return Ok(());
-                }
-                if let Some((req, expected)) = self.pending.take() {
-                    let r = if data == expected {
-                        Ok(())
-                    } else {
-                        Err("written data mismatch".into())
-                    };
-                    req.control.finish();
-                    let _ = req.reply.send(r);
-                }
-                // Tag is still there: keep it as current, avoid a new event.
-                self.repeat()?;
-            }
-            other => warn!("unexpected CR14 packet header {other:#x}"),
+                None => e.to_string(),
+            })?;
+        if progress.readback != writes {
+            return Err("written data mismatch".into());
         }
         Ok(())
     }
 
-    fn tick(&mut self) -> std::io::Result<()> {
-        let now = Instant::now();
-        // Once W is transmitted, only its answer proves completion. A deadline
-        // cannot return the reader to polling or authorize another write.
-        if self.deadline.is_some_and(|d| now >= d) {
-            self.deadline = None;
-            self.removed();
-            self.poll_once()?;
-        }
-        Ok(())
-    }
-}
-
-pub fn run(requests: Receiver<WriteReq>, tx: Tx) -> std::io::Result<()> {
-    let f = OpenOptions::new().read(true).write(true).open(DEVICE)?;
-    let mut r = Reader {
-        f,
-        tx,
-        state: State::PollingOnce,
-        current: None,
-        deadline: None,
-        pending: None,
-    };
-    r.poll_once()?;
-    info!("CR14 reader ready");
-    loop {
-        if r.pending.is_none() {
-            if let Ok(req) = requests.try_recv() {
-                r.start_write(req)?;
-            }
-        }
-        if poll_readable(&r.f, Duration::from_millis(100)) {
-            r.packet()?;
-        }
-        r.tick()?;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::hw::{Cancel, WriteControl};
-    use std::os::fd::OwnedFd;
-    use std::os::unix::net::UnixStream;
-
-    fn request() -> (WriteReq, tokio::sync::oneshot::Receiver<Result<(), String>>) {
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        (
-            WriteReq {
-                tech: Tech::St25tb,
-                uid: vec![0; 8],
-                payload: vec![1; 8],
-                deadline: Instant::now() + Duration::from_secs(1),
-                cancel: Cancel::default(),
-                control: WriteControl::default(),
-                reply,
-            },
-            rx,
-        )
-    }
-    #[test]
-    fn canceled_expired_or_dropped_requests_never_write_and_admitted_write_finishes() {
-        let (driver, mut chip) = UnixStream::pair().unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut reader = Reader {
-            f: File::from(OwnedFd::from(driver)),
-            tx,
-            state: State::PollingOnce,
-            current: None,
-            deadline: None,
-            pending: None,
-        };
-        let (req, _rx) = request();
-        req.cancel.cancel();
-        reader.start_write(req).unwrap();
-        let (mut req, _rx) = request();
-        req.deadline = Instant::now();
-        reader.start_write(req).unwrap();
-        let (req, rx) = request();
-        drop(rx);
-        reader.start_write(req).unwrap();
-        assert!(!poll_readable(&chip, Duration::from_millis(5)));
-        let (req, mut rx) = request();
-        let control = req.control.clone();
-        reader.start_write(req).unwrap();
-        let mut command = [0u8; 20];
-        chip.read_exact(&mut command).unwrap();
-        assert_eq!(command[0], b'W');
-        control.cancel();
-        reader.pending.as_mut().unwrap().0.deadline = Instant::now();
-        reader.tick().unwrap();
-        assert!(
-            reader.pending.is_some(),
-            "timeout does not abort an admitted driver W"
-        );
-        assert!(control.uncertain());
-        chip.write_all(&[b'W', 2, 1, 1, 1, 1, 1, 1, 1, 1]).unwrap();
-        reader.packet().unwrap();
-        assert_eq!(rx.try_recv().unwrap(), Ok(()));
-        assert!(!control.uncertain());
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        self.0.shutdown().map_err(io::Error::other)
     }
 }

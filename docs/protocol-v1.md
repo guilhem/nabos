@@ -19,9 +19,19 @@ on build/test hosts serves only Home Assistant fixtures.
 
 `nab-hardware.service` is `Type=dbus`, with
 `BusName=io.github.guilhem.NabHardware1`. It alone receives `CAP_SYS_RAWIO` and
-supplementary groups `gpio video kmem`. udev grants those groups the ear/RFID,
+supplementary groups `gpio video kmem`. udev grants those groups the ear,
 GPIO, `/dev/vcio` and `/dev/mem` devices. `/dev/mem` access is root-equivalent.
-`nabos-rfid.service` probes the reader before hardware starts.
+udev assigns only `/dev/i2c-1` to the dedicated `nab-hardware` group with mode
+`0660`; other service accounts have no membership in that group. `i2c-dev` loads
+through `modules-load.d`, and the slot's Linux DTB enables bus 1. The udev
+`systemd` tag exposes `dev-i2c\x2d1.device`; hardware requires and starts after
+that device unit, once udev has applied its permissions. Bus 1 remains required
+for the audio codec even when no tag reader is present. Hardware probes
+the reader at address `0x50` and uses the external Rust `cr14` or `st25r391x`
+crate directly over I²C. Their Git revisions are pinned in `core/Cargo.toml` and
+`core/Cargo.lock` and included in Cargo vendor inputs. There are no CR14 or
+ST25R391x kernel modules, reader overlays, `/dev/rfid0` or `/dev/nfc0`, or separate
+reader probe unit.
 
 `nabos.service` receives only `CAP_NET_BIND_SERVICE` for HTTP `:80`.
 `PrivateDevices=yes` hides physical devices. Its data is `/data/nabos` and its

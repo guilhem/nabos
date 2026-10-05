@@ -51,6 +51,14 @@ Le brouillon reste un brouillon. Sa publication déclenche aussi le workflow. Un
 
 ## Sources et dépendances
 
+Les lecteurs RFID/NFC utilisent les crates Rust externes `guilhem/cr14` et
+`guilhem/st25r391x`, issues de leurs branches `codex/i2c-userspace`. Leurs commits
+Git sont fixés par `rev` dans `core/Cargo.toml` et résolus dans `core/Cargo.lock` ;
+`cargo vendor` les archive avec les entrées de `nab-hardware`. Ils n'ont aucune
+archive de source distincte dans `image/sources.lock.json`. Seuls les pilotes
+oreilles et audio sont compilés comme modules noyau ; les modules et overlays
+CR14/ST25R391x et le service de probe `nabos-rfid` sont supprimés.
+
 Les workflows réutilisables `go.yml`, `rust.yml`, `device-core.yml` et `uboot.yml` ont chacun leur matrice de plateformes `[zero-armv6, zero2-arm64]` : huit jobs indépendants, en parallèle des tests. `actions/setup-go` gère les modules et objets Go avec son cache intégré ; `actions-rust-lang/setup-rust-toolchain` installe Rust et gère le cache Cargo et sysroot ; U-Boot utilise ccache. Les caches sont séparés par cible et chaîne de compilation. Le job d'image attend leurs succès, récupère les archives de la même exécution et vérifie leur cible, leur révision et la version de nabos avant installation. Le manifeste `build-<cible>.json` distingue la révision NabOS, la révision et l’empreinte d’archive device-core et l’empreinte de son binaire. Pour device-core, l’identité de source externe, le SHA-256 de son archive, le verrou Cargo extrait de cette source, l’empreinte du binaire et son architecture ELF sont aussi vérifiés avant installation.
 
 Go et Rust sont cross-compilés sur x86-64. Les composants Rust utilisent Clang, LLD et llvm-ar ; le wrapper transmet le CPU/sysroot à Cargo et à `CC_<rust_target>` pour les sources C (notamment ring), avec `AR_<rust_target>=llvm-ar`. Rust utilise un petit sysroot dont les quatre paquets sont verrouillés par URL et SHA-256 dans `image/rust-sysroots.lock.json` : libc, fichiers de démarrage et libgcc. Les paquets ARMv6 viennent de Raspbian, jamais de Debian/Ubuntu ARMv7. U-Boot ARMv6 est cross-compilé sur x86-64 avec sa libgcc privée ; U-Boot ARM64 est construit sur un runner ARM64. Ses options A/B et watchdog ainsi que l'architecture de l'ELF sont vérifiées avant publication de l'artefact.
@@ -94,7 +102,9 @@ make package-go TARGET=zero-armv6 VERSION=dev-local
 
 Les sorties sont dans `build/<composant>/<cible>/` (`build/device-core-build/<cible>/` pour device-core) et les archives dans `build/components/`. Les cibles `package-rust`, `package-device-core` et `package-uboot` suivent la même convention. `OUT=/chemin/sortie` change le répertoire de sortie ; `INPUTS=/chemin/entrees-archivees` active le replay sans téléchargement des dépendances. La compilation Go utilise `CGO_ENABLED=0`, `GOOS=linux` et `GOARCH=arm GOARM=6` ou `GOARCH=arm64`.
 
-Chaque image archive les `.deb` ajoutés/remplacés avec SHA-256 et inventaire. Les sources des pilotes, les dépendances Cargo/Go, le sysroot Rust, les paquets du compilateur U-Boot et les wheels Python ARM64 sont aussi archivés. Les tests utilisent des bus D-Bus privés, sans toucher au bus système de l’hôte. Les entrées Rust sont séparées dans `inputs/nab-hardware/` et `inputs/device-core/` : chaque binaire possède son propre `Cargo.lock` et `cargo-vendor/`, et device-core conserve aussi son archive de source et `source-identity.json`. Les sysroots et caches de compilation sont séparés par composant et architecture ; les paquets sysroot verrouillés peuvent être partagés dans l’archive de replay. Les verrous Cargo, Go et sysroot sont vérifiés lors d’une reconstruction. Les caches de téléchargement restent une optimisation : une disparition des anciens paquets des miroirs exige de mettre à jour le verrou ou de fournir les entrées archivées. Le cache de base préparée conserve ensemble l’image de base et les archives APT ; son identité comprend l’architecture, la date et tous les scripts, patchs et verrous de préparation. Un cache APT isolé ne doit pas être restauré : son manifeste activerait le mode replay sans prouver l’identité de la base.
+Chaque image archive les `.deb` ajoutés/remplacés avec SHA-256 et inventaire. Les sources des pilotes, les dépendances Cargo/Go, le sysroot Rust, les paquets du compilateur U-Boot et les wheels Python ARM64 sont aussi archivés. Les tests utilisent des bus D-Bus privés, sans toucher au bus système de l’hôte. Les entrées Rust sont séparées dans `inputs/nab-hardware/` et `inputs/device-core/` : chaque binaire possède son propre `Cargo.lock`, `cargo-vendor/` et `cargo-vendor.toml`, et device-core conserve aussi son archive de source et `source-identity.json`. Les sysroots et caches de compilation sont séparés par composant et architecture ; les paquets sysroot verrouillés peuvent être partagés dans l’archive de replay. Les verrous Cargo, Go et sysroot sont vérifiés lors d’une reconstruction. Les caches de téléchargement restent une optimisation : une disparition des anciens paquets des miroirs exige de mettre à jour le verrou ou de fournir les entrées archivées. Le cache de base préparée conserve ensemble l’image de base et les archives APT ; son identité comprend l’architecture, la date et tous les scripts, patchs et verrous de préparation. Un cache APT isolé ne doit pas être restauré : son manifeste activerait le mode replay sans prouver l’identité de la base.
+
+Le fichier `cargo-vendor.toml` conserve la configuration complète produite par `cargo vendor`, y compris les remplacements des sources Git CR14/ST25R391x et de crates.io. Le replay recopie ce fichier et le fournit à Cargo avec `--config`, puis remplace uniquement `source.vendored-sources.directory` par le chemin du nouveau répertoire de fabrication. Les compilations utilisent `--locked --offline` ; les sources Git proviennent ainsi du vendor archivé et ne dépendent pas d’un ancien cache Git dans `CARGO_HOME`.
 
 NetworkManager provient directement des paquets Raspberry Pi OS, sans patch ni compilation propre à NabOS. Les paquets et leurs checksums sont archivés avec les autres dépendances APT. Les règles Polkit accordent seulement les opérations requises au compte système dédié `device-core` ; elles ne dépendent plus de l’unité systemd ni du type de sujet envoyé par NetworkManager.
 
@@ -129,6 +139,24 @@ Le système racine est monté en lecture seule ; identité, connexion réseau, r
 SSH utilise le service OpenSSH fourni par Raspberry Pi OS, conditionné par un fichier `/data/device-core/ssh/authorized_keys` non vide et des données persistantes disponibles. L’interface authentifiée délègue à device-core, qui valide les clés avec `ssh-keygen`, écrit ce fichier atomiquement et demande uniquement `start` ou `stop` sur `ssh.service` via Polkit. Les clés hôtes sont créées dans `/data/system/ssh/etc/ssh` au premier démarrage du service ; la configuration OpenSSH reste dans le slot pour recevoir les mises à jour. Le compte `nabos` a un shell, conserve son mot de passe verrouillé et dispose de sudo sans mot de passe. Gérer ses clés permet donc d'accorder un accès administrateur au système. Le flag voix est `/data/device-core/voice-enabled` ; les préférences et téléchargements LVA restent dans `/var/lib/nabos/lva`, dont le montage persistant existant provient de `/data/system`.
 
 `nab-hardware.service` possède seulement le matériel et publie [NabHardware1](hardware-dbus.md), avec `Type=dbus` et `CAP_SYS_RAWIO`. Les groupes `gpio video kmem` sont propres à cette unité, pas au compte commun. `nabos.service` porte les états, médias et chorégraphies en Go, sert HTTP sur 80 avec `CAP_NET_BIND_SERVICE`, et utilise `PrivateDevices=yes`, `/data/nabos` et `/run/nabos`. Le matériel n’a aucune exception d’écriture vers les données applicatives. Aucun paquet ou service Mosquitto n’est livré ; son installation sur l’hôte sert uniquement aux fixtures Home Assistant.
+
+Le profil DTB Linux du slot active `i2c1` sur GPIO 2/3, partagé avec le codec
+audio, et `/etc/modules-load.d/nabos.conf` charge `i2c-dev` au démarrage.
+Une règle udev attribue exclusivement `/dev/i2c-1` au groupe privé `nab-hardware`
+en mode `0660`, avec des affectations finales pour empêcher les règles Raspberry
+Pi OS ultérieures de rétablir le groupe général `i2c`. Les autres comptes de
+service ne reçoivent pas ce groupe. `nab-hardware` détecte et pilote directement
+le lecteur à l'adresse `0x50` ; aucun overlay n'est chargé à l'exécution.
+Le tag udev `systemd` expose `dev-i2c\x2d1.device`. `nab-hardware.service`
+requiert cette unité et démarre après son activation, une fois les permissions
+udev appliquées. Le bus 1 est nécessaire au codec audio, même sans lecteur
+répondant à `0x50` ; cette dépendance porte sur le bus, pas sur le lecteur.
+Les assertions d'image vérifient l'absence des anciens modules, overlays et
+probe, l'activation du bus dans le DTB et les règles d'accès. Le test des comptes
+utilise un fichier témoin dans un `/dev` privé pour exercer les permissions avec
+les UID réels ; il ne teste pas le contrôleur I²C. La qualification des deux
+lecteurs sur les appareils, avec racine en lecture seule et confinement systemd
+effectif, reste nécessaire.
 
 `device-core.service` utilise le compte `device-core` et `HOME=/data/device-core`, sans capability matérielle. Ses temporaires restent dans `/run/device-core` (`RuntimeDirectory` et `WorkingDirectory`). Ses seuls chemins inscriptibles sous `ProtectSystem=strict` sont `/data/device-core`, `/run/device-core` et `/run/lock/device-core`. Le verrou `/run/lock/device-core/network` est créé sans troncature par tmpfiles, sans nettoyage par âge, dans un répertoire root : le daemon ne peut ni le supprimer ni remplacer son inode. Les FD transmis gardent leur verrou partagé après un redémarrage du daemon.
 

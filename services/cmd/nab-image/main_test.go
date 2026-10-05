@@ -20,6 +20,21 @@ type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestKernelDriverSet(t *testing.T) {
+	if len(driverSet) != 2 || driverSet[0].name != "ears" || driverSet[1].name != "sound" {
+		t.Fatalf("only ears and sound require kernel builds: %v", driverSet)
+	}
+	lock, err := readLock("../../../image/sources.lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cr14", "nfc"} {
+		if _, exists := lock.Sources[name]; exists {
+			t.Errorf("obsolete kernel source pin: %s", name)
+		}
+	}
+}
+
 func TestVerifiedDownloadIsAtomic(t *testing.T) {
 	retryDelay = 0
 	body := "tampered"

@@ -13,7 +13,7 @@ export DEBIAN_FRONTEND=noninteractive
 runtime=(ca-certificates curl dbus dbus-user-session polkitd systemd-timesyncd openssl openssh-server sudo
   pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils alsa-utils
   libasound2t64 libmpg123-0t64 mpg123
-  network-manager wpasupplicant dnsmasq-base nftables avahi-daemon rauc rauc-service u-boot-tools libubootenv-tool i2c-tools raspi-utils-dt
+  network-manager wpasupplicant dnsmasq-base nftables avahi-daemon rauc rauc-service u-boot-tools libubootenv-tool
   util-linux fdisk e2fsprogs python3 device-tree-compiler)
 development=(build-essential cmake pkg-config libasound2-dev libssl-dev
   bison flex bc python3-dev python3-setuptools python3-pyelftools
@@ -87,7 +87,7 @@ build-packages|packages)
     fi
     rm -rf /etc/mosquitto
   fi
-  # Purging inherited tools must not remove any runtime dependency (e.g. dtoverlay).
+  # Purging inherited tools must not remove any runtime dependency.
   dpkg-query -W -f='${binary:Package}\t${db:Status-Status}\n' "${runtime[@]}" "linux-image-$flavour" |
     awk -F '\t' '$2 != "installed" { print "Missing runtime package: " $0; failed = 1 }
       END { exit failed }'
@@ -147,7 +147,7 @@ build-packages|packages)
 drivers)
   kernel=$(cat /nabos-build/kernel-release)
   mkdir -p "$stage/usr/lib/modules/$kernel/updates/nabos" "$stage/boot/firmware/overlays"
-  for driver in ears sound cr14 nfc; do
+  for driver in ears sound; do
     directory=$src/$driver
     [[ -d $directory ]] || exit 1
     if [[ -f /nabos-build/image/patches/$driver.patch ]]; then

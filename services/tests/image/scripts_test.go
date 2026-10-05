@@ -546,32 +546,42 @@ func TestHealth(t *testing.T) {
 	})
 }
 
-func TestRfidProbe(t *testing.T) {
-	for name, c := range map[string]struct {
-		reg7f, reg00 string
-		want         []string
-	}{
-		"ST25R391x 2022 NFC card": {"0x2a", "0x00", []string{"dtoverlay -d /boot/overlays st25r391x"}},
-		"CR14 TagTagTag":          {"0x13", "0x00", []string{"dtoverlay -d /boot/overlays cr14"}},
-		"no reader":               {"", "", nil},
-	} {
-		fake := newFakes(t, t.TempDir(), map[string]string{
-			"modprobe":  "exit 0",
-			"dtoverlay": "exit 0",
-			// i2cget -y 1 0x50 REG b; empty value = no answer.
-			"i2cget": fmt.Sprintf(`case $4 in 0x7f) v="%s";; *) v="%s";; esac; [ -n "$v" ] && echo $v`, c.reg7f, c.reg00),
-		})
-		if r := execute(t, "", fake.env(), "sh", filepath.Join(rootfsDir, "usr/lib/nabos/rfid-probe")); r.code != 0 {
-			t.Fatalf("%s: exit %d: %s", name, r.code, r.stderr)
+func TestUserspaceRFIDImageContract(t *testing.T) {
+	if got := read(t, filepath.Join(rootfsDir, "etc/modules-load.d/nabos.conf")); got != "i2c-dev\n" {
+		t.Errorf("unexpected static I2C module configuration: %q", got)
+	}
+	if !strings.Contains(read(t, filepath.Join(imageDir, "nabos-overlay.dts")), `&i2c1 { status = "okay"; };`) {
+		t.Error("the Linux slot DTB must enable I2C bus 1 independently of reader overlays")
+	}
+	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
+	if !strings.Contains(prepare, "for driver in ears sound; do") {
+		t.Error("only ears and sound should be built as kernel drivers")
+	}
+	var lock struct{ Sources map[string]json.RawMessage }
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(imageDir, "sources.lock.json"))), &lock); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cr14", "nfc", "st25r391x"} {
+		if _, exists := lock.Sources[name]; exists {
+			t.Errorf("obsolete kernel source pin remains: %s", name)
 		}
-		var overlays []string
-		for _, call := range fake.calls(t) {
-			if strings.HasPrefix(call, "dtoverlay") {
-				overlays = append(overlays, call)
+		for _, file := range []string{"prepare.sh", "../services/cmd/nab-image/drivers.go"} {
+			if strings.Contains(read(t, filepath.Join(imageDir, file)), name) {
+				t.Errorf("obsolete kernel driver remains in %s: %s", file, name)
 			}
 		}
-		if !slices.Equal(overlays, c.want) {
-			t.Errorf("%s: %q", name, overlays)
+	}
+	for _, file := range []string{
+		"patches/cr14.patch", "patches/nfc.patch",
+		"rootfs/usr/lib/nabos/rfid-probe", "rootfs/usr/lib/systemd/system/nabos-rfid.service",
+	} {
+		if _, err := os.Lstat(filepath.Join(imageDir, file)); !os.IsNotExist(err) {
+			t.Errorf("obsolete reader integration remains: %s", file)
+		}
+	}
+	for _, file := range []string{"usr/lib/nabos/image-setup", "usr/lib/systemd/system/nab-hardware.service"} {
+		if strings.Contains(read(t, filepath.Join(rootfsDir, file)), "nabos-rfid") {
+			t.Errorf("obsolete reader startup remains: %s", file)
 		}
 	}
 }
