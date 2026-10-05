@@ -453,12 +453,12 @@ export NABOS_VENDOR_DTBS="$root/boot/dtb" NABOS_IMAGE_OVERLAYS="$root/boot/overl
 export NABOS_IMAGE_BOOT="$boot" NABOS_IMAGE_ENV="$work/uboot.env" NABOS_IMAGE_TARGET="$target"
 export NABOS_IMAGE_DISK="$work/sdcard.img"
 cd "$repo/services"
-setsid "$GO" test -count=1 -timeout 20m -skip '^TestEndToEnd$' -v ./tests/integration ./tests/image &
+setsid "$GO" test -count=1 -timeout 20m -skip '^(TestDeviceCore|TestEndToEnd)$' -v ./tests/integration ./tests/image &
 tests_pid=$!
 wait "$tests_pid"
 tests_pid=
-# The full product test must use distinct Unix accounts. Build on the host,
-# then use the image's account database only inside a private namespace.
+# Daemon tests need the same account database as the shipped libc (also under
+# QEMU). Build on the host, then use image accounts in a private namespace.
 "$GO" test -c -o "$work/product-test" ./tests/integration
 chmod 0755 "$work"
 sudo --preserve-env unshare --mount --net --pid --fork --kill-child --propagation private \
@@ -476,5 +476,5 @@ mount --rbind "$1" "$exposed"
 export TMPDIR="$exposed/tmp" NABOS_TEST_ASSETS="$exposed/root/usr/share/nabos"
 export NABOS_BIN="$exposed/nabos-test" NABOS_HARDWARE_BIN="$exposed/nab-hardware-test"
 export DEVICE_CORE_BIN="$exposed/device-core-test"
-"$2" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
+"$2" -test.run '^(TestDeviceCore|TestEndToEnd)$' -test.count=1 -test.v -test.timeout=10m
 SH

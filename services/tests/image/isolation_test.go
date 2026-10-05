@@ -322,7 +322,7 @@ esac`,
 				}
 				for _, call := range []string{
 					"unshare --mount --propagation private", "cp --reflink=auto --sparse=always -- " + original + " " + copy,
-					"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -skip ^TestEndToEnd$ -v ./tests/integration",
+					"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -skip ^(TestDeviceCore|TestEndToEnd)$ -v ./tests/integration",
 					"chroot " + work + "/root /usr/sbin/sshd -G", "chroot " + work + "/root getent passwd nabos",
 					"chroot " + work + "/root /usr/sbin/visudo --check",
 					"chroot " + work + "/root /usr/bin/python3 -B -",
