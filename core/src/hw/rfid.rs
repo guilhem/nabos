@@ -44,10 +44,11 @@ impl Reader {
     }
 
     fn write(&mut self, request: &WriteReq) -> Result<(), String> {
-        match self {
+        let result = match self {
             Self::Cr14(r) => r.write(request),
             Self::Nfc(r) => r.write(request),
-        }
+        };
+        result.map_err(|error| write_error(request, error))
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
@@ -91,6 +92,15 @@ impl Reader {
             }
         }
     }
+}
+
+fn write_error(request: &WriteReq, error: String) -> String {
+    if !request.control.uncertain() {
+        if let Some(reason) = request.stopped() {
+            return reason.into();
+        }
+    }
+    error
 }
 
 fn finish_write(
@@ -158,6 +168,37 @@ impl Tags {
 mod tests {
     use super::*;
     use crate::hw::{Cancel, Tech, WriteControl};
+
+    #[test]
+    fn pending_expiry_is_timeout_but_admitted_failure_keeps_the_hardware_error() {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let mut request = WriteReq {
+            tech: Tech::St25tb,
+            uid: vec![0; 8],
+            payload: vec![1; 8],
+            deadline: Instant::now(),
+            cancel: Cancel::default(),
+            control: WriteControl::default(),
+            reply,
+        };
+        assert_eq!(
+            write_error(&request, "selection deadline".into()),
+            "timeout"
+        );
+        request.deadline = Instant::now() + Duration::from_secs(1);
+        request.admit().unwrap();
+        request.deadline = Instant::now();
+        request.cancel.cancel();
+        assert_eq!(write_error(&request, "I2C failure".into()), "I2C failure");
+
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        request.reply = reply;
+        request.control = WriteControl::default();
+        assert_eq!(
+            write_error(&request, "selection failure".into()),
+            "canceled"
+        );
+    }
 
     #[test]
     fn write_result_and_verified_physical_completion_are_independent() {

@@ -133,10 +133,16 @@ impl<D: Device> Reader<D> {
 
     pub fn poll(&mut self, known: &[TagEvent]) -> Io<Vec<TagEvent>> {
         let deadline = Instant::now() + POLL_TIMEOUT;
-        let result = self.poll_inner(known, deadline);
+        let mut found = Vec::new();
+        let result = self.poll_inner(known, deadline, &mut found);
         let cleanup = self.shutdown();
         match (result, cleanup) {
-            (result, Ok(())) => result,
+            (Ok(()), Ok(())) => Ok(found),
+            (Err(operation), Ok(())) if !found.is_empty() => {
+                warn!("NFC partial poll: {operation}");
+                Ok(found)
+            }
+            (Err(operation), Ok(())) => Err(operation),
             (Ok(_), Err(e)) => Err(e),
             (Err(operation), Err(cleanup)) => {
                 Err(io_err(format!("{operation}; shutdown: {cleanup}")))
@@ -144,8 +150,12 @@ impl<D: Device> Reader<D> {
         }
     }
 
-    fn poll_inner(&mut self, known: &[TagEvent], deadline: Instant) -> Io<Vec<TagEvent>> {
-        let mut found = Vec::new();
+    fn poll_inner(
+        &mut self,
+        known: &[TagEvent],
+        deadline: Instant,
+        found: &mut Vec<TagEvent>,
+    ) -> Io<()> {
         // Select every current identity, rather than letting general discovery
         // repeatedly choose another tag and expire a still-present one.
         for ev in known {
@@ -166,7 +176,7 @@ impl<D: Device> Reader<D> {
                 .map_err(io::Error::other)?
             {
                 let mut ev = event(&tag);
-                if !rfid::known(&found, &ev) {
+                if !rfid::known(found, &ev) {
                     if !rfid::known(known, &ev) {
                         if let Err(e) = self.read_selected(&tag, &mut ev, deadline) {
                             warn!("NFC {} tag {:?} payload: {e}", ev.tech, ev.uid);
@@ -181,7 +191,7 @@ impl<D: Device> Reader<D> {
                 break;
             }
         }
-        Ok(found)
+        Ok(())
     }
 
     fn read_selected(&mut self, tag: &Tag, ev: &mut TagEvent, deadline: Instant) -> Io<()> {
@@ -598,6 +608,7 @@ mod adapter_tests {
         expire_program: Option<Instant>,
         fail_program: bool,
         fail_payload: bool,
+        fail_discovery: bool,
         fail_shutdown: bool,
         ack: u8,
     }
@@ -625,6 +636,7 @@ mod adapter_tests {
                 expire_program: None,
                 fail_program: false,
                 fail_payload: false,
+                fail_discovery: false,
                 fail_shutdown: false,
                 ack: 0x0a,
             }
@@ -667,7 +679,9 @@ mod adapter_tests {
             match write {
                 [0xc2]
                     if c.fail_shutdown
-                        && c.frames.iter().any(|f| matches!(f.first(), Some(9 | 0xa2))) =>
+                        && c.frames
+                            .iter()
+                            .any(|f| matches!(f.first(), Some(9 | 0xa2 | 0x05))) =>
                 {
                     return Err(LinuxI2CError::Errno(libc::EIO))
                 }
@@ -685,6 +699,9 @@ mod adapter_tests {
                 [0xc4 | 0xc5] => {
                     let frame = c.tx.clone();
                     c.frames.push(frame.clone());
+                    if c.fail_discovery && frame.first() == Some(&0x05) {
+                        return Err(LinuxI2CError::Errno(libc::EIO));
+                    }
                     c.partial = 0;
                     c.rx = match frame.as_slice() {
                         [0x0c] => Vec::new(),
@@ -926,6 +943,55 @@ mod adapter_tests {
         assert!(unreadable.data.is_none());
         assert!(!reader.dev.is_poisoned());
         assert_eq!(reader.dev.field_state(), st25r391x::FieldState::Off);
+    }
+
+    #[test]
+    fn partial_poll_preserves_observations_only_after_verified_shutdown() {
+        let known = [
+            TagEvent {
+                tech: "st25tb",
+                uid: UID.into_iter().rev().collect(),
+                ..Default::default()
+            },
+            TagEvent {
+                tech: "iso14443a_t2t",
+                uid: vec![1, 2, 3, 4],
+                ..Default::default()
+            },
+        ];
+        for known in [known.as_slice(), &[]] {
+            for fail_cleanup in [false, true] {
+                let (mut reader, bus) = reader();
+                {
+                    let mut c = bus.0.lock().unwrap();
+                    c.fail_discovery = true;
+                    c.fail_shutdown = fail_cleanup;
+                }
+                let result = reader.poll(known);
+                if fail_cleanup {
+                    assert!(result.unwrap_err().to_string().contains("shutdown"));
+                } else {
+                    let found = result.unwrap();
+                    if known.is_empty() {
+                        assert_eq!(found.len(), 1);
+                        assert_eq!(found[0].tech, "iso14443a_t2t");
+                    } else {
+                        assert!(known.iter().all(|t| rfid::known(&found, t)));
+                    }
+                    assert_eq!(reader.dev.field_state(), st25r391x::FieldState::Off);
+                }
+                assert!(reader.dev.is_poisoned());
+                {
+                    let mut c = bus.0.lock().unwrap();
+                    assert_eq!(c.frames.last().unwrap().first(), Some(&0x05));
+                    c.fail_discovery = false;
+                    c.fail_shutdown = false;
+                }
+                assert!(!reader.poll(known).unwrap().is_empty());
+                assert!(!reader.dev.is_poisoned());
+                assert_eq!(reader.dev.field_state(), st25r391x::FieldState::Off);
+            }
+        }
     }
 
     #[test]
