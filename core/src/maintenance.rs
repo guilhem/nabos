@@ -166,7 +166,7 @@ pub async fn authorize(bus: &Connection, sender: &str) -> fdo::Result<()> {
     if owner.as_str() != sender {
         return Err(fdo::Error::AccessDenied("unauthorized-daemon".into()));
     }
-    crate::bus::authorize_unit(bus, sender, "device-core.service").await?;
+    crate::bus::authorize_user(bus, sender, "NABOS_DEVICE_USER", "device-core").await?;
     let current = bounded(dbus.get_name_owner(SERVICE.try_into().unwrap()))
         .await
         .map_err(|_| fdo::Error::AccessDenied("daemon-unavailable".into()))?;

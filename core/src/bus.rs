@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex as AsyncMutex, Notify, OwnedMutexGuard};
-use zbus::{fdo, message::Header, object_server::SignalEmitter, Connection, Proxy};
+use zbus::{fdo, message::Header, object_server::SignalEmitter, Connection};
 
 pub const SERVICE: &str = "io.github.guilhem.NabHardware1";
 pub const PATH: &str = "/io/github/guilhem/NabHardware1";
@@ -29,54 +29,67 @@ fn sender(header: &Header<'_>) -> fdo::Result<String> {
         .ok_or_else(|| denied("missing-sender"))
 }
 
-/// No PID lookup or simulation bypass: the bus pins the actual caller process.
+/// Authenticate only the Unix account supplied by the bus for a unique sender.
 pub async fn authorize(bus: &Connection, sender: &str) -> fdo::Result<()> {
-    authorize_unit(bus, sender, "nabos.service").await
+    authorize_user(bus, sender, "NABOS_APP_USER", "nab-app").await
 }
 
-pub async fn authorize_unit(bus: &Connection, sender: &str, expected: &str) -> fdo::Result<()> {
+pub async fn authorize_user(
+    bus: &Connection,
+    sender: &str,
+    environment: &str,
+    default_user: &str,
+) -> fdo::Result<()> {
+    let name =
+        zbus::names::UniqueName::try_from(sender).map_err(|_| denied("unique-sender-required"))?;
+    let expected = match std::env::var(environment) {
+        Ok(user) => user,
+        Err(std::env::VarError::NotPresent) => default_user.into(),
+        Err(_) => return Err(denied("invalid-service-user")),
+    };
+    let uid = user_id(&expected)?;
     let dbus = fdo::DBusProxy::new(bus).await?;
-    let name = sender.try_into().map_err(|_| denied("invalid-sender"))?;
-    let credentials = bounded(dbus.get_connection_credentials(name))
+    let actual = bounded(dbus.get_connection_unix_user(name.clone().into()))
         .await
         .map_err(denied_owned)?;
-    let fd = credentials
-        .process_fd()
-        .ok_or_else(|| denied("ProcessFD-required"))?;
-    let manager = Proxy::new(
-        bus,
-        "org.freedesktop.systemd1",
-        "/org/freedesktop/systemd1",
-        "org.freedesktop.systemd1.Manager",
-    )
-    .await?;
-    let (path, unit, _): (zbus::zvariant::OwnedObjectPath, String, Vec<u8>) =
-        bounded(manager.call("GetUnitByPIDFD", &(fd,)))
-            .await
-            .map_err(denied_owned)?;
-    if unit != expected {
-        return Err(denied("untrusted-service-unit"));
+    if actual != uid {
+        return Err(denied("untrusted-service-user"));
     }
-    let properties = zbus::proxy::Builder::<Proxy>::new(bus)
-        .destination("org.freedesktop.systemd1")?
-        .path(path)?
-        .interface("org.freedesktop.systemd1.Unit")?
-        .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
-        .await?;
-    let id: String = bounded(properties.get_property("Id"))
-        .await
-        .map_err(denied_owned)?;
-    if id != expected {
-        return Err(denied("unit-identity-mismatch"));
-    }
-    if !bounded(dbus.name_has_owner(sender.try_into().map_err(|_| denied("invalid-sender"))?))
+    if !bounded(dbus.name_has_owner(name.into()))
         .await
         .map_err(denied_owned)?
     {
         return Err(denied("caller-disconnected"));
     }
     Ok(())
+}
+
+fn user_id(name: &str) -> fdo::Result<u32> {
+    let name = std::ffi::CString::new(name).map_err(|_| denied("invalid-service-user"))?;
+    let mut buffer = vec![0u8; 1024];
+    loop {
+        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        // The reentrant lookup writes only to our entry and buffer; neither is
+        // read until success, and only the numeric UID escapes their lifetime.
+        let error = unsafe {
+            libc::getpwnam_r(
+                name.as_ptr(),
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if error == libc::ERANGE && buffer.len() < 1024 * 1024 {
+            buffer.resize(buffer.len() * 2, 0);
+            continue;
+        }
+        if error != 0 || result.is_null() {
+            return Err(denied("service-user-unavailable"));
+        }
+        return Ok(unsafe { entry.assume_init().pw_uid });
+    }
 }
 fn denied_owned(reason: String) -> fdo::Error {
     denied(&reason)

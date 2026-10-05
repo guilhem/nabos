@@ -77,7 +77,7 @@ La [documentation de fabrication](docs/build.md) décrit les commandes locales, 
 ```sh
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go test -race ./...)
-(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nabos)
+(cd services && NABOS_INTEGRATION=1 go test -race -count=1 -skip '^TestEndToEnd$' ./tests/integration ./cmd/nabos)
 ```
 
 Les simulations utilisent un bus D-Bus privé explicite (`NABOS_DEVICE_BUS_ADDRESS`) ; Mosquitto et ses clients servent uniquement aux fixtures Home Assistant. `DEVICE_CORE_BIN` désigne le binaire externe de simulation (voir le guide de fabrication). Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).

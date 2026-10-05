@@ -38,7 +38,7 @@ func (c *Client) TrustedOwner(ctx context.Context) (string, error) {
 func (c *Client) Authenticate(ctx context.Context, owner string) error {
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
-	return busidentity.Authenticate(ctx, c.Conn, Destination, owner, "device-core.service")
+	return busidentity.Authenticate(ctx, c.Conn, Destination, owner, busidentity.ExpectedUser("NABOS_DEVICE_USER", "device-core"))
 }
 
 // ForOwner pins a sequence of calls to a unique owner. Each call authenticates

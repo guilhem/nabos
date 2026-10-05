@@ -39,9 +39,9 @@
   "sources": {
     "device_core": {
       "repository": "guilhem/device-core",
-      "commit": "4d13eb5b772d3c16af18be65071692b97fc89850",
-      "url": "https://codeload.github.com/guilhem/device-core/tar.gz/4d13eb5b772d3c16af18be65071692b97fc89850",
-      "sha256": "3e4995373b09199df16c00aed0d84f3e48f6d032969d9b3450fae296add2cca6"
+      "commit": "d3f4525b6d6e93bcd267431004d8431d53dc5daa",
+      "url": "https://codeload.github.com/guilhem/device-core/tar.gz/d3f4525b6d6e93bcd267431004d8431d53dc5daa",
+      "sha256": "1f6390d87774eeb004281e894f92e204f0851605a87a95d33e34304beb74fdda"
     },
     "ears": {
       "repository": "pguyot/tagtagtag-ears",
@@ -84,28 +84,6 @@
       "commit": "43a183a2322cde4c9e2558f333124941fdeaa439",
       "url": "https://codeload.github.com/OHF-Voice/linux-voice-assistant/tar.gz/43a183a2322cde4c9e2558f333124941fdeaa439",
       "sha256": "7de42c2522dc22cbca18798b90aea5fc78ff5d0e7a5da1b6f59dbdada178c997"
-    }
-  },
-  "test_bus": {
-    "amd64": {
-      "dbus-daemon": {
-        "url": "https://deb.debian.org/debian/pool/main/d/dbus/dbus-daemon_1.16.2-2_amd64.deb",
-        "sha256": "c91558cbd019bd5ec3e9fde0084976d5f61977f4ef0a9ed1ff48fe3a129b91d4"
-      },
-      "libdbus-1-3": {
-        "url": "https://deb.debian.org/debian/pool/main/d/dbus/libdbus-1-3_1.16.2-2_amd64.deb",
-        "sha256": "bbcb711daff7e104b5f80f9b05475b6142674bfe65518a36a56e96a91068a3f5"
-      }
-    },
-    "arm64": {
-      "dbus-daemon": {
-        "url": "https://deb.debian.org/debian/pool/main/d/dbus/dbus-daemon_1.16.2-2_arm64.deb",
-        "sha256": "74650cdf706f6a782f9bb486237c210454a39ebf840e3260492e557013931739"
-      },
-      "libdbus-1-3": {
-        "url": "https://deb.debian.org/debian/pool/main/d/dbus/libdbus-1-3_1.16.2-2_arm64.deb",
-        "sha256": "ca6bb5f2047ad58d274cb7d14216035a07d8e5aae6f6a0122c4f6293c9c39515"
-      }
     }
   }
 }

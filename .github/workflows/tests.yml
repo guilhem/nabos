@@ -19,10 +19,6 @@ jobs:
           sudo apt-get install -y mosquitto mosquitto-clients shellcheck device-tree-compiler \
             genimage=17-2 rauc=1.11.3-2 dosfstools mtools u-boot-tools libubootenv-tool \
             squashfs-tools openssl jq dbus fdisk
-      - name: Private D-Bus with ProcessFD credentials
-        run: |
-          bash image/test-bus.sh build/test-bus-cache build/test-bus
-          printf '%s/build/test-bus\n' "$PWD" >> "$GITHUB_PATH"
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
         with:
           toolchain: '1.98.1'
@@ -54,8 +50,7 @@ jobs:
             { printf 'set -euo pipefail\n'; make -C .. --no-print-directory -n "$component"; } | shellcheck -s bash -
           done
   device-integration:
-    # ProcessFD credentials require a recent D-Bus; image/RAUC checks retain their existing host.
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -69,7 +64,7 @@ jobs:
       - name: Install runtime test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y dbus libglib2.0-bin openssh-client mosquitto mosquitto-clients \
+          sudo apt-get install -y dbus libglib2.0-bin openssh-client mosquitto mosquitto-clients iproute2 \
             rauc squashfs-tools openssl
           # The distro service profile only permits its system configuration paths.
           # Test brokers use private generated configurations and an isolated executable.
@@ -90,4 +85,29 @@ jobs:
           cargo build --locked --manifest-path core/Cargo.toml
           export NABOS_HARDWARE_BIN="$PWD/core/target/debug/nab-hardware"
           cargo test --locked --manifest-path core/Cargo.toml -- --ignored
-          NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./tests/integration ./cmd/nabos ./internal/rabbit ./internal/devicetest
+          NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./cmd/nabos ./internal/rabbit ./internal/devicetest
+          NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./tests/integration -run '^TestDeviceCore$'
+          mkdir -p build/tests
+          go -C services build -o "$PWD/build/tests/nabos" ./cmd/nabos
+          go -C services test -race -c -o "$PWD/build/tests/integration.test" ./tests/integration
+          cd services
+          sudo env "PATH=$PATH" "TMPDIR=/tmp" \
+            "NABOS_HARDWARE_BIN=$NABOS_HARDWARE_BIN" "NABOS_BIN=$GITHUB_WORKSPACE/build/tests/nabos" \
+            "DEVICE_CORE_BIN=$DEVICE_CORE_BIN" "NABOS_TEST_ASSETS=$GITHUB_WORKSPACE/assets" "MOSQUITTO=$MOSQUITTO" \
+            unshare --mount --net --fork --kill-child --propagation private \
+            bash -s -- "$GITHUB_WORKSPACE/build/tests/integration.test" <<'NAMESPACE'
+          set -euo pipefail
+          ip link set lo up
+          identity=$(mktemp -d)
+          trap 'umount /etc/group /etc/passwd 2>/dev/null || true; rm -rf -- "$identity"' EXIT
+          # Only this namespace sees the product accounts; host accounts stay intact.
+          awk -F: '$1 != "nab-app" && $1 != "nab-hardware" && $1 != "device-core" && ($3 < 1001 || $3 > 1003)' /etc/passwd > "$identity/passwd"
+          awk -F: '$1 != "nab-app" && $1 != "nab-hardware" && $1 != "device-core" && ($3 < 1001 || $3 > 1003)' /etc/group > "$identity/group"
+          printf '%s\n' 'nab-app:x:1001:1001::/nonexistent:/usr/sbin/nologin' 'nab-hardware:x:1002:1002::/nonexistent:/usr/sbin/nologin' 'device-core:x:1003:1003::/nonexistent:/usr/sbin/nologin' >> "$identity/passwd"
+          printf '%s\n' 'nab-app:x:1001:' 'nab-hardware:x:1002:' 'device-core:x:1003:' >> "$identity/group"
+          chmod 0644 "$identity/passwd" "$identity/group"
+          mount --bind "$identity/passwd" /etc/passwd
+          mount --bind "$identity/group" /etc/group
+          export NABOS_INTEGRATION=1 NABOS_APP_USER=nab-app NABOS_HARDWARE_USER=nab-hardware NABOS_DEVICE_USER=device-core
+          "$1" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
+          NAMESPACE

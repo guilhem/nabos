@@ -76,6 +76,13 @@ persist() {
 	done
 }
 
+# Earlier uploads were 0600 under the shared account. tmpfiles assigns their
+# new media group; give that group read access before any application starts.
+media_permissions() {
+	[ ! -d /data/nabos/media/sounds ] ||
+		find /data/nabos/media/sounds -type f -exec chmod 0640 '{}' +
+}
+
 [ -z "${NABOS_BOOT_INIT_LIB:-}" ] || return 0 # sourced by tests and image-setup
 [ "$$" = 1 ] || { echo "boot-init must run as PID 1" >&2; exit 1; }
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -106,4 +113,5 @@ else
 fi
 machine_id
 persist
+media_permissions || log "cannot set media read permissions"
 exec /sbin/init "$@"

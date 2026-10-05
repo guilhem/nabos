@@ -62,7 +62,7 @@ func newBus(t *testing.T) *busFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	devicetest.RequireProcessFD(t, conn)
+	devicetest.UseCurrentUser(t, "NABOS_DEVICE_USER", "NABOS_HARDWARE_USER")
 	f := &busFixture{conn: conn, status: hardware.Status{Model: "test", Simulated: true, LeftEar: "ok", RightEar: "ok", Leds: true, Button: true, RFID: "st25tb", Left: 0, Right: 0}}
 	for _, name := range []string{hardware.Destination, device.Destination} {
 		reply, err := conn.RequestName(name, dbus.NameFlagDoNotQueue)
@@ -79,24 +79,6 @@ func newBus(t *testing.T) *busFixture {
 			t.Fatal(err)
 		}
 	}
-	// Both service fixtures run in this process, so their PIDFDs are identical.
-	// Attribute each requester by the actual daemon subscription on its bus
-	// connection. Hardware installs its match before authenticating; audio uses
-	// a separate connection with the DeviceCore owner subscription.
-	devicetest.InstallIdentity(t, conn, func(sender dbus.Sender) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
-		defer cancel()
-		var rules map[string][]string
-		if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.Debug.Stats.GetAllMatchRules", 0).Store(&rules); err != nil {
-			return "", err
-		}
-		for _, rule := range rules[string(sender)] {
-			if strings.Contains(rule, hardware.Destination) {
-				return "nab-hardware.service", nil
-			}
-		}
-		return "device-core.service", nil
-	})
 	return f
 }
 

@@ -1,20 +1,22 @@
 [Unit]
 Description=Linux device services (D-Bus)
-Wants=user@1000.service NetworkManager.service rauc.service
-After=systemd-tmpfiles-setup.service user@1000.service NetworkManager.service rauc.service
+Wants=user@1004.service NetworkManager.service rauc.service
+After=systemd-tmpfiles-setup.service user@1004.service NetworkManager.service rauc.service
 
 [Service]
 Type=exec
-User=nabos
-Group=nabos
-Environment=HOME=/var/lib/nabos
-Environment=XDG_RUNTIME_DIR=/run/user/1000
+User=device-core
+Group=device-core
+SupplementaryGroups=nab-media nab-audio
+Environment=HOME=/data/device-core
+Environment=XDG_RUNTIME_DIR=/run/device-core
+Environment=PIPEWIRE_REMOTE=/run/nabos-audio/pipewire-0
 Environment=DEVICE_CORE_DATA_DIR=/data/device-core
 Environment=DEVICE_CORE_NETWORK_GUARD=/run/lock/device-core/network
 Environment=DEVICE_CORE_AUDIO_ROOTS=/usr/share/nabos/sounds:/data/nabos/media/sounds
-Environment=DEVICE_CORE_PRESENCE_UNIT=nab-hardware.service
+Environment=DEVICE_CORE_PRESENCE_USER=nab-hardware
 # Refuse busy application activity before pausing hardware.
-Environment=DEVICE_CORE_MAINTENANCE_UNITS=nabos.service:nab-hardware.service
+Environment=DEVICE_CORE_MAINTENANCE_USERS=nab-app:nab-hardware
 Environment=DEVICE_CORE_HOTSPOT_PREFIX=Nabaztag-
 Environment=DEVICE_CORE_HOTSPOT_UUID=4e61624f-5300-4000-8000-000000000001
 Environment=DEVICE_CORE_BOOT_HEALTH=/run/nabos-boot-health
@@ -31,7 +33,7 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 PrivateDevices=yes
 ProtectSystem=strict
-ReadWritePaths=/data/device-core /var/lib/nabos /run/device-core /run/lock/device-core
+ReadWritePaths=/data/device-core /run/device-core /run/lock/device-core
 
 [Install]
 WantedBy=multi-user.target

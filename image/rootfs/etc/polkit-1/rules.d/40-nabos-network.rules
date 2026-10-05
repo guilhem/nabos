@@ -1,14 +1,14 @@
 // Network mutations belong to device-core, including when there is no login
-// session. Deny the other nabos processes rather than falling back to defaults.
+// session. Other service accounts cannot fall back to interactive defaults.
 polkit.addRule(function (action, subject) {
-	if (subject.user !== "nabos" ||
-		action.id.indexOf("org.freedesktop.NetworkManager.") !== 0) {
+	if (action.id.indexOf("org.freedesktop.NetworkManager.") !== 0) {
 		return polkit.Result.NOT_HANDLED;
 	}
-	if (subject.system_unit === "device-core.service" && subject.no_new_privileges &&
+	if (subject.user === "device-core" &&
 		["network-control", "wifi.scan", "wifi.share.open", "settings.modify.system",
 			"checkpoint-rollback"].indexOf(action.id.substring("org.freedesktop.NetworkManager.".length)) >= 0) {
 		return polkit.Result.YES;
 	}
-	return polkit.Result.NO;
+	return ["device-core", "nab-app", "nab-hardware", "nab-audio"].indexOf(subject.user) >= 0 ?
+		polkit.Result.NO : polkit.Result.NOT_HANDLED;
 });

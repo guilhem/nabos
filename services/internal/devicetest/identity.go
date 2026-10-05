@@ -1,67 +1,71 @@
 package devicetest
 
 import (
-	"encoding/hex"
-	"errors"
-	"fmt"
 	"os"
+	"os/user"
 	"strconv"
-	"strings"
-	"syscall"
+	"sync"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
 )
 
-// InstallIdentity emulates only systemd unit attribution. The private bus must
-// supply a real ProcessFD; each received descriptor is checked and closed.
-// All fixture daemons share the test process, so unitFor may distinguish their
-// requesting connections. A nil resolver attributes device-core.service.
-// Attach deliberately does not install this: cmd/nabos owns its identity fixture.
-func InstallIdentity(t *testing.T, conn *dbus.Conn, unitFor func(dbus.Sender) (string, error)) {
+// UseCurrentUser configures real account expectations for private-bus fixtures.
+// Every connection still authenticates using credentials supplied by the bus.
+func UseCurrentUser(t *testing.T, environments ...string) string {
 	t.Helper()
-	RequireProcessFD(t, conn)
-	if reply, err := conn.RequestName("org.freedesktop.systemd1", dbus.NameFlagDoNotQueue); err != nil || reply != dbus.RequestNameReplyPrimaryOwner && reply != dbus.RequestNameReplyAlreadyOwner {
-		t.Fatalf("systemd fixture ownership: %v %v", reply, err)
-	}
-	if unitFor == nil {
-		unitFor = func(dbus.Sender) (string, error) { return "device-core.service", nil }
-	}
-	if err := conn.Export(identityManager{conn, unitFor}, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager"); err != nil {
+	account, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
 		t.Fatal(err)
 	}
+	for _, environment := range environments {
+		t.Setenv(environment, account.Username)
+	}
+	return account.Username
 }
 
-type identityManager struct {
-	conn    *dbus.Conn
-	unitFor func(dbus.Sender) (string, error)
+func WrongUser(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"root", "nobody"} {
+		account, err := user.Lookup(name)
+		if err == nil && account.Uid != strconv.Itoa(os.Getuid()) {
+			return name
+		}
+	}
+	t.Fatal("wrong-account test requires a second Unix account")
+	return ""
 }
 
-func (i identityManager) GetUnitByPIDFD(sender dbus.Sender, fd dbus.UnixFD) (dbus.ObjectPath, string, []byte, *dbus.Error) {
-	defer syscall.Close(int(fd))
-	info, err := os.ReadFile(fmt.Sprintf("/proc/self/fdinfo/%d", fd))
-	if err != nil {
-		return "", "", nil, dbus.MakeFailedError(err)
+// CredentialReplies can delay a real bus reply or change name ownership before
+// it is delivered. It never fabricates or changes the reply's Unix credentials.
+func CredentialReplies(after func()) []dbus.ConnOption {
+	var mu sync.Mutex
+	pending := map[uint32]bool{}
+	return []dbus.ConnOption{
+		dbus.WithOutgoingInterceptor(func(message *dbus.Message) {
+			if message.Type == dbus.TypeMethodCall &&
+				message.Headers[dbus.FieldDestination].Value() == "org.freedesktop.DBus" &&
+				message.Headers[dbus.FieldMember].Value() == "GetConnectionUnixUser" {
+				mu.Lock()
+				pending[message.Serial()] = true
+				mu.Unlock()
+			}
+		}),
+		dbus.WithIncomingInterceptor(func(message *dbus.Message) {
+			if message.Type != dbus.TypeMethodReply && message.Type != dbus.TypeError {
+				return
+			}
+			serial, ok := message.Headers[dbus.FieldReplySerial].Value().(uint32)
+			if !ok {
+				return
+			}
+			mu.Lock()
+			credential := pending[serial]
+			delete(pending, serial)
+			mu.Unlock()
+			if credential {
+				after()
+			}
+		}),
 	}
-	if !strings.Contains(string(info), "Pid:\t"+strconv.Itoa(os.Getpid())+"\n") {
-		return "", "", nil, dbus.MakeFailedError(errors.New("wrong process fd"))
-	}
-	unit, err := i.unitFor(sender)
-	if err != nil {
-		return "", "", nil, dbus.MakeFailedError(err)
-	}
-	path := dbus.ObjectPath("/org/freedesktop/systemd1/unit/" + hex.EncodeToString([]byte(unit)))
-	if err := i.conn.Export(identityProperties{unit}, path, "org.freedesktop.DBus.Properties"); err != nil {
-		return "", "", nil, dbus.MakeFailedError(err)
-	}
-	return path, unit, make([]byte, 16), nil
-}
-
-type identityProperties struct{ unit string }
-
-func (i identityProperties) Get(iface, name string) (dbus.Variant, *dbus.Error) {
-	if iface != "org.freedesktop.systemd1.Unit" || name != "Id" {
-		return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", nil)
-	}
-	return dbus.MakeVariant(i.unit), nil
 }

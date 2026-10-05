@@ -62,7 +62,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-for tool in sudo losetup udevadm mount mountpoint umount modinfo make setsid fdtget; do
+for tool in sudo losetup udevadm mount mountpoint umount modinfo make setsid fdtget unshare ip; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
 command -v "$GO" >/dev/null || { echo "Missing Go tool: $GO" >&2; exit 1; }
@@ -134,13 +134,13 @@ assert not Path('/etc/mosquitto').exists()
 assert not Path('/etc/dbus-1/system.d/org.nabaztag.Core.conf').exists()
 # Global groups must not give the application raw GPIO/video/memory access.
 import grp
-assert not {'gpio', 'video', 'kmem'} & {g.gr_name for g in grp.getgrall() if 'nabos' in g.gr_mem}
+assert not {'gpio', 'video', 'kmem'} & {g.gr_name for g in grp.getgrall() if 'nab-app' in g.gr_mem}
 assert Path('/etc/dbus-1/system.d/io.github.guilhem.NabHardware1.conf').is_file()
 assert not Path('/etc/comitup.conf').exists()
 assert not Path('/usr/share/comitup').exists()
 device_unit = configparser.ConfigParser(strict=False)
 device_unit.read('/usr/lib/systemd/system/device-core.service')
-assert 'Environment=DEVICE_CORE_MAINTENANCE_UNITS=nabos.service:nab-hardware.service' in Path('/usr/lib/systemd/system/device-core.service').read_text().splitlines()
+assert 'Environment=DEVICE_CORE_MAINTENANCE_USERS=nab-app:nab-hardware' in Path('/usr/lib/systemd/system/device-core.service').read_text().splitlines()
 assert device_unit['Service']['PrivateDevices'] == 'yes'
 assert device_unit['Service']['CapabilityBoundingSet'] == ''
 release_env = dict(line.split('=', 1) for line in Path('/etc/nabos/release.env').read_text().splitlines())
@@ -194,15 +194,8 @@ info = Path('/var/lib/NetworkManager/NetworkManager.state').stat()
 assert (info.st_uid, info.st_gid) == (0, 0)
 network = configparser.ConfigParser(interpolation=None)
 network.read_string(subprocess.check_output(['/usr/sbin/NetworkManager', '--print-config'], text=True))
-# Assert the rebuilt vendor packages and the actual shipped daemon, on ro root.
-import hashlib
-nm_source = json.loads(Path('/usr/share/nabos/network-manager-source.json').read_text())
-for package in ('network-manager', 'libnm0', 'network-manager-l10n', 'gir1.2-nm-1.0'):
-    actual = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', package], text=True)
-    assert actual == nm_source['version'], (package, actual)
-for line in Path('/usr/share/nabos/network-manager-build.sha256').read_text().splitlines():
-    digest, filename = line.split('  ', 1)
-    assert hashlib.sha256(Path(filename).read_bytes()).hexdigest() == digest, filename
+# The distribution supplies NetworkManager without a downstream rebuild.
+assert '+nabos' not in subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', 'network-manager'], text=True)
 
 assert network['main']['rc-manager'] == 'unmanaged'
 assert os.readlink('/etc/resolv.conf') == '/run/NetworkManager/resolv.conf'
@@ -225,7 +218,7 @@ assert not radio.getboolean('main', 'WirelessEnabled'), 'Saved radio preference 
 subprocess.run(['umount', '/var/lib/NetworkManager'], check=True)
 
 # First-boot device state and the unchanged persistent home on a real read-only
-# root. Simulation executes the shipped binary as nabos without capabilities;
+# root. Simulation executes the shipped binary as device-core without capabilities;
 # effective systemd sandboxing and hardware still require device qualification.
 try:
     Path('/.nabos-readonly-probe').write_text('must fail')
@@ -239,7 +232,7 @@ subprocess.run(['systemd-tmpfiles', '--create', '--prefix=/data/device-core',
                 '--prefix=/var/lib/nabos/lva', '--prefix=/run/lock/device-core'], check=True)
 runtime = Path('/run/device-core')
 runtime.mkdir(mode=0o700)
-os.chown(runtime, 1000, 1000)
+os.chown(runtime, 1003, 1003)
 lock = Path('/run/lock/device-core/network')
 assert lock.stat().st_mode & 0o777 == 0o600
 assert lock.parent.stat().st_uid == 0 and lock.parent.stat().st_mode & 0o777 == 0o755
@@ -249,33 +242,33 @@ guard = lock.open('r+')
 fcntl.flock(guard, fcntl.LOCK_SH)
 service = 'io.github.guilhem.DeviceCore1'
 root_path = '/io/github/guilhem/DeviceCore1'
-as_nabos = ['setpriv', '--reuid=1000', '--regid=1000', '--clear-groups',
+as_core = ['setpriv', '--reuid=1003', '--regid=1003', '--clear-groups',
             '--no-new-privs', '--bounding-set=-all']
-env = dict(os.environ, HOME='/var/lib/nabos', XDG_RUNTIME_DIR=str(runtime),
+env = dict(os.environ, HOME='/data/device-core', XDG_RUNTIME_DIR=str(runtime),
     DEVICE_CORE_DATA_DIR='/data/device-core',
     DEVICE_CORE_NETWORK_GUARD=str(lock), DEVICE_CORE_UPDATE_REPO='', DEVICE_CORE_UPDATE_ASSET='')
 env.pop('DEVICE_CORE_HTTP_ADDR', None)
 # A session bus admits its owner; exercise all peers as the service user.
-address, pid = subprocess.check_output(as_nabos + ['dbus-daemon', '--session', '--fork',
+address, pid = subprocess.check_output(as_core + ['dbus-daemon', '--session', '--fork',
     '--address=unix:path=/run/device-core/bus', '--print-address', '--print-pid'], env=env, text=True).splitlines()
 env['DEVICE_CORE_BUS_ADDRESS'] = address
 process = None
 try:
     for boot in range(2):
         with (runtime / 'simulation.log').open('w') as log:
-            process = subprocess.Popen(as_nabos + [
+            process = subprocess.Popen(as_core + [
                 '/usr/bin/device-core', '--simulate'], cwd=runtime, env=env,
                 stdout=log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + 60
             while True:
-                ready = subprocess.run(as_nabos + ['busctl', '--address=' + address, '--timeout=2',
+                ready = subprocess.run(as_core + ['busctl', '--address=' + address, '--timeout=2',
                     'get-property', service, root_path, service + '.Manager', 'Ready'],
                     env=env, capture_output=True, text=True)
                 if ready.returncode == 0 and ready.stdout.strip() == 'b true':
                     break
                 assert process.poll() is None and time.monotonic() < deadline, (runtime / 'simulation.log').read_text()
                 time.sleep(0.1)
-            call = as_nabos + ['busctl', '--address=' + address, '--timeout=5', '--json=short',
+            call = as_core + ['busctl', '--address=' + address, '--timeout=5', '--json=short',
                     'call', service, root_path + '/Config', service + '.Config']
             revision = json.loads(subprocess.check_output(call + ['Read'], text=True))['data'][0]
             if boot == 0:
@@ -291,8 +284,8 @@ try:
             process.terminate()
             process.wait(timeout=10)
             process = None
-    subprocess.run(as_nabos + ['/bin/sh', '-ec',
-        'touch "$HOME/lva/.image-write-check"; rm "$HOME/lva/.image-write-check"'], env=env, check=True)
+    subprocess.run(['setpriv', '--reuid=1004', '--regid=1004', '--clear-groups', '/bin/sh', '-ec',
+        'touch /var/lib/nabos/lva/.image-write-check; rm /var/lib/nabos/lva/.image-write-check'], check=True)
 finally:
     if process is not None:
         process.kill()
@@ -338,6 +331,18 @@ for attempt in range(2):
     assert subprocess.check_output(['blkid', '-p', '-s', 'TYPE', '-o', 'value', swap], text=True).strip() == 'swap'
 assert not Path('/var/swap').exists()
 PY
+# Exercise shipped authorization with real UIDs, without exposing host services
+# or devices. Mount changes and child processes die with this nested namespace.
+sudo unshare --mount --net --pid --fork bash -s -- "$root" "$repo/image/test-service-accounts.py" <<'SH'
+set -euo pipefail
+mount --make-rprivate /
+mount -t proc proc "$1/proc"
+mount -t tmpfs -o mode=0755,nosuid tmpfs "$1/dev"
+for entry in null:3 zero:5 random:8 urandom:9; do
+  mknod -m 666 "$1/dev/${entry%:*}" c 1 "${entry#*:}"
+done
+env QEMU_CPU=arm1176 chroot "$1" /usr/bin/python3 -B - < "$2"
+SH
 cmp "$expected_uboot" "$boot/u-boot.bin"
 [[ -x $root/usr/bin/dtoverlay ]] || { echo 'Missing runtime dtoverlay command' >&2; exit 1; }
 # Parse the shipped OpenSSH configuration (including inherited snippets) without
@@ -345,7 +350,7 @@ cmp "$expected_uboot" "$boot/u-boot.bin"
 ssh_config=$(sudo env QEMU_CPU=arm1176 chroot "$root" /usr/sbin/sshd -G)
 for setting in 'allowusers nabos' 'permitrootlogin no' 'authenticationmethods publickey' \
   'passwordauthentication no' 'kbdinteractiveauthentication no' 'usepam yes' \
-  'strictmodes yes' 'authorizedkeysfile /data/device-core/ssh/authorized_keys'; do
+  'strictmodes yes' 'authorizedkeysfile none' 'authorizedkeyscommand /usr/bin/cat /data/device-core/ssh/authorized_keys' 'authorizedkeyscommanduser device-core'; do
   grep -qxF "$setting" <<< "$ssh_config" || { echo "Unexpected SSH configuration: $setting" >&2; exit 1; }
 done
 [[ $(sudo chroot "$root" getent passwd nabos) == 'nabos:x:1000:1000:'*':/var/lib/nabos:/bin/bash' ]] ||
@@ -441,9 +446,21 @@ export NABOS_TEST_ASSETS="$root/usr/share/nabos" NABOS_UBOOT_SANDBOX="$work/uboo
 export NABOS_VENDOR_DTBS="$root/boot/dtb" NABOS_IMAGE_OVERLAYS="$root/boot/overlays"
 export NABOS_IMAGE_BOOT="$boot" NABOS_IMAGE_ENV="$work/uboot.env" NABOS_IMAGE_TARGET="$target"
 export NABOS_IMAGE_DISK="$work/sdcard.img"
-test_bus=$(bash "$repo/image/test-bus.sh" "$payload/inputs/test-bus" "$work/test-bus")
-export PATH="$test_bus:$PATH" DBUS_DAEMON="$test_bus/dbus-daemon"
 cd "$repo/services"
-setsid "$GO" test -count=1 -timeout 20m -v ./tests/integration ./tests/image &
+setsid "$GO" test -count=1 -timeout 20m -skip '^TestEndToEnd$' -v ./tests/integration ./tests/image &
 tests_pid=$!
 wait "$tests_pid"
+tests_pid=
+# The full product test must use distinct Unix accounts. Build on the host,
+# then use the image's account database only inside a private namespace.
+"$GO" test -c -o "$work/product-test" ./tests/integration
+chmod 0755 "$work"
+sudo --preserve-env unshare --mount --net --pid --fork --kill-child --propagation private \
+  bash -s -- "$root" "$work/product-test" <<'SH'
+set -euo pipefail
+ip link set lo up
+mount -t proc proc /proc
+mount --bind "$1/etc/passwd" /etc/passwd
+mount --bind "$1/etc/group" /etc/group
+exec "$2" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
+SH

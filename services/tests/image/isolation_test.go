@@ -95,12 +95,7 @@ func TestImageIsolation(t *testing.T) {
 				}
 				write(t, filepath.Join(sandbox, "SHA256SUMS"), manifest.String())
 			}
-			write(t, filepath.Join(checkout, "image/test-bus.sh"), `set -eu
-[ "$1" = "$TEST_PAYLOAD/inputs/test-bus" ]
-[ "$2" = "$(dirname "$(cat "$STATE/copy")")/test-bus" ]
-mkdir -p "$1" "$2"
-printf '%s\n' "$2"
-`)
+
 			write(t, filepath.Join(checkout, "build/iot/keep"), "another build")
 			write(t, filepath.Join(payload, "inputs/sources.lock.json"), "locked sources")
 			write(t, filepath.Join(payload, "inputs/go-modcache/keep"), "archived module")
@@ -139,10 +134,25 @@ printf '%s\n' "$2"
 				"cp":        fmt.Sprintf("exec %q \"$@\"", cp),
 				"sha256sum": fmt.Sprintf("exec %q \"$@\"", checksum),
 				"sudo":      "case $1 in --preserve-env|-n) shift ;; esac\nexec \"$@\"",
-				"unshare":   "set -eu\n[ \"$1 $2 $3\" = '--mount --propagation private' ]\nshift 3\nexec \"$@\"",
-				"setpriv":   "shift 3\nexec \"$@\"",
-				"uname":     "echo aarch64",
-				"udevadm":   "exit 0",
+				"unshare": `set -eu
+if [ "$1 $2 $3 $4" = '--mount --net --pid --fork' ]; then
+  if [ "$5" = --kill-child ]; then
+    [ "$6 $7 $8 $9" = '--propagation private bash -s' ]
+    cat > "$STATE/product-check"
+    exit 0
+  fi
+  [ "$5 $6 $7" = 'bash -s --' ]
+  [ "$8" = "$(dirname "$(cat "$STATE/copy")")/root" ]
+  case "$9" in */image/test-service-accounts.py) ;; *) exit 1 ;; esac
+  cat > "$STATE/account-check"
+  exit 0
+fi
+[ "$1 $2 $3" = '--mount --propagation private' ]
+shift 3
+exec "$@"`,
+				"setpriv": "shift 3\nexec \"$@\"",
+				"uname":   "echo aarch64",
+				"udevadm": "exit 0",
 				"losetup": `set -eu
 if [ "$1" = --detach ]; then
   [ "$2" = /dev/loop-nabos-test ]
@@ -193,7 +203,7 @@ case "$2" in
     [ "$3" = -G ]
     printf '%s\n' 'allowusers nabos' 'permitrootlogin no' 'authenticationmethods publickey' \
       'passwordauthentication no' 'kbdinteractiveauthentication no' 'usepam yes' \
-      'strictmodes yes' 'authorizedkeysfile /data/device-core/ssh/authorized_keys' ;;
+      'strictmodes yes' 'authorizedkeysfile none' 'authorizedkeyscommand /usr/bin/cat /data/device-core/ssh/authorized_keys' 'authorizedkeyscommanduser device-core' ;;
   getent)
     [ "$3 $4" = 'passwd nabos' ]
     echo 'nabos:x:1000:1000::/var/lib/nabos:/bin/bash' ;;
@@ -250,8 +260,12 @@ esac`,
 				"ccache": "exit 0",
 				"go": `set -eu
 work=$(dirname "$(cat "$STATE/copy")")
-case "$PATH" in "$work/test-bus":*) ;; *) exit 1 ;; esac
-[ "$DBUS_DAEMON" = "$work/test-bus/dbus-daemon" ]
+if [ "$1 $2 $3" = 'test -c -o' ]; then
+  [ "$4 $5" = "$work/product-test ./tests/integration" ]
+  printf '#!/bin/sh\nexit 0\n' > "$4"
+  chmod 755 "$4"
+  exit 0
+fi
 [ "$GOCACHE" = "$EXPECT_GOCACHE" ]
 [ "$GOMODCACHE" = "$work/go-modcache" ]
 [ "$TMPDIR" = "$work/tmp" ]
@@ -308,7 +322,7 @@ esac`,
 				}
 				for _, call := range []string{
 					"unshare --mount --propagation private", "cp --reflink=auto --sparse=always -- " + original + " " + copy,
-					"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -v ./tests/integration",
+					"losetup --find --show --partscan " + copy, "go test -count=1 -timeout 20m -skip ^TestEndToEnd$ -v ./tests/integration",
 					"chroot " + work + "/root /usr/sbin/sshd -G", "chroot " + work + "/root getent passwd nabos",
 					"chroot " + work + "/root /usr/sbin/visudo --check",
 					"chroot " + work + "/root /usr/bin/python3 -B -",

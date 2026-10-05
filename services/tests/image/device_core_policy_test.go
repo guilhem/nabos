@@ -21,11 +21,11 @@ const maintenanceAgentPath = dbus.ObjectPath("/io/github/guilhem/DeviceCore1/Age
 
 // Exercise the shipped policy, not the permissive session-bus policy used by
 // application fixtures. Both connections use the test UID, like the two
-// production services sharing nabos; only the daemon owns a well-known name.
+// connections testing the device-core account policy; only the daemon owns a well-known name.
 func TestDeviceCoreMaintenanceCallbackPolicy(t *testing.T) {
 	policy := read(t, filepath.Join(rootfsDir, "etc/dbus-1/system.d/io.github.guilhem.DeviceCore1.conf"))
 	for _, sameUser := range []bool{true, false} {
-		name := "shared-service-user"
+		name := "device-core-account"
 		uid := os.Getuid()
 		if !sameUser {
 			name = "other-user"
@@ -156,11 +156,11 @@ func maintenancePolicyBus(t *testing.T, production string, uid int) string {
 	daemon := envOr("DBUS_DAEMON", "dbus-daemon")
 	imageTools(t, daemon)
 	tmp := t.TempDir()
-	if !strings.Contains(production, `<policy user="nabos">`) {
-		t.Fatal("production policy missing nabos service account")
+	if !strings.Contains(production, `<policy user="device-core">`) {
+		t.Fatal("production policy missing device-core service account")
 	}
 	write(t, filepath.Join(tmp, "production.conf"), strings.ReplaceAll(production,
-		`<policy user="nabos">`, fmt.Sprintf(`<policy user="%d">`, uid)))
+		`<policy user="device-core">`, fmt.Sprintf(`<policy user="%d">`, uid)))
 	// No host configuration is included. Hello and other bus control methods
 	// are allowed explicitly; unsolicited method calls remain default-denied.
 	// An isolated Linux abstract socket avoids Unix path-length limits when

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/guilhem/nabos/services/internal/hardware"
 	"github.com/guilhem/nabos/services/internal/rabbit"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -198,5 +199,38 @@ func TestTagWriteUsesNativeBytesAndPersistsAssociation(t *testing.T) {
 	}
 	if got := a.store.Get().Tags[tag.UID]; got.App != "radio" || got.Value != form.Get("value") {
 		t.Fatal(got)
+	}
+}
+
+func TestUploadedSoundIsReadableByMediaGroup(t *testing.T) {
+	a := testApp(t)
+	// Image setup supplies the shared setgid media tree. Application secrets
+	// retain their own permissions; only a completed sound becomes group-readable.
+	serviceSession(t, a)
+	private := filepath.Join(a.env.DataDir, "application.json")
+	for _, filename := range []string{"shared.wav", "shared.wav"} {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		file, err := form.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte("RIFFxxxxWAVEaudio")); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest("POST", "/sounds/upload", &body)
+		request.Header.Set("Content-Type", form.FormDataContentType())
+		a.uploadSound(httptest.NewRecorder(), request)
+		info, err := os.Stat(filepath.Join(a.userSoundDir(), filename))
+		if err != nil || info.Mode().Perm() != 0640 {
+			t.Fatal("media permissions", info, err)
+		}
+	}
+	info, err := os.Stat(private)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("private permissions", info, err)
 	}
 }

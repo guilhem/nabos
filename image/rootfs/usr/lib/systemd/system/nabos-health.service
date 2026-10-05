@@ -1,6 +1,6 @@
 [Unit]
 Description=Confirm the booted RAUC slot once local services are healthy
-After=device-core.service nab-hardware.service nabos.service user@1000.service
+After=device-core.service nab-hardware.service nabos.service user@1004.service
 OnSuccess=nabos-board-led-off.service
 
 [Service]

@@ -1,4 +1,4 @@
-# Hardware access for nab-hardware (User=nabos); see nab-hardware.service.
+# Hardware access for nab-hardware; see nab-hardware.service.
 KERNEL=="mem", GROUP="kmem", MODE="0660"
 KERNEL=="vcio", GROUP="video", MODE="0660"
 SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"

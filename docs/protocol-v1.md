@@ -27,25 +27,30 @@ GPIO, `/dev/vcio` and `/dev/mem` devices. `/dev/mem` access is root-equivalent.
 `PrivateDevices=yes` hides physical devices. Its data is `/data/nabos` and its
 volatile working directory is `/run/nabos` (`RuntimeDirectory=nabos`).
 Hardware works in `/run/nab-hardware` and has no application data write exception.
-All three services run as `nabos` with `NoNewPrivileges=yes` and
-`ProtectSystem=strict`; device-core has an empty capability bounding set.
-The common account does not belong to `gpio`, `video` or `kmem`.
+The application runs as `nab-app`, hardware as `nab-hardware`, and system
+services as `device-core`. These locked accounts have no login shell.
+`nabos` is reserved for SSH administration. `NoNewPrivileges=yes` and
+`ProtectSystem=strict` remain enabled, and device-core has no capabilities.
 
-Bus policies filter accounts. Hardware authenticates the actual `nabos.service`
-claimant, and Go authenticates `nab-hardware.service`, using ProcessFD and
-systemd GetUnitByPIDFD, without a PID fallback. See the
-[hardware contract](hardware-dbus.md) for ownership, event types and cleanup.
-Device-core accepts physical presence only from `nab-hardware.service` and
-maintenance agents from `nabos.service:nab-hardware.service`, in that order.
-The application gate refuses busy activity before hardware is paused, including
-silences between book chapters. Both agents must quiesce before maintenance.
-After acknowledging release, Go waits for `Manager.Maintenance=false` before
-resuming application work.
+D-Bus policies reserve each service name to its dedicated account. Clients
+authenticate the bus-supplied Unix UID and pin the connection's unique name,
+including across asynchronous replies. ProcessFD and systemd unit lookups are
+not required. Device-core accepts physical presence only from `nab-hardware`
+and maintenance agents from `nab-app:nab-hardware`, in that order. Both agents
+must quiesce before maintenance. After acknowledging release, Go waits for
+`Manager.Maintenance=false` before resuming application work.
+
+PipeWire, WirePlumber and LVA use the separate `nab-audio` account and session
+`user@1004`. Device-core connects through the group-restricted native socket
+`/run/nabos-audio/pipewire-0`; it can read application media through `nab-media`
+without accessing application settings.
 
 The root remains read-only. Linux settings stay in
 `/data/device-core/settings.json`; application settings, administration,
 schedules, tags and media stay under `/data/nabos` (`application.json`).
-Application writes are atomic and mode 0600. The persistent home and LVA files
+Settings writes are atomic and mode 0600. Uploaded sounds use mode 0640 so
+device-core can read them through `nab-media`; boot also updates existing sounds.
+The operator home and LVA files
 remain under `/var/lib/nabos`, bound from `/data/system` by `boot-init`.
 There is no migration of the former MQTT protocol, API names or settings.
 
@@ -83,9 +88,12 @@ mounts and real TagTagTag playback/capture cards. It does not use device-core HT
 
 ```sh
 cargo build --locked --manifest-path core/Cargo.toml
-(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nabos)
+(cd services && NABOS_INTEGRATION=1 go test -race -count=1 -skip '^TestEndToEnd$' ./tests/integration ./cmd/nabos)
 ```
 
+The full `TestEndToEnd` scenario requires root and distinct service UIDs. CI and
+`image/test.sh` run it in private mount/network namespaces with a temporary
+account database and a private EXTERNAL bus; host accounts are unchanged.
 Simulation requires an explicit private `NABOS_DEVICE_BUS_ADDRESS` for hardware
 and Go, and `DEVICE_CORE_BUS_ADDRESS` for device-core. It must never use the host
 system bus. Hardware event injection exists only in simulation.
@@ -93,6 +101,5 @@ The integration harness accepts `NABOS_HARDWARE_BIN`, `DEVICE_CORE_BIN` and
 `NABOS_BIN` command overrides. `image/test.sh` supplies wrappers around the
 shipped binaries, using their target loader (QEMU ARM1176 for ARMv6), from a
 throwaway copy of the image. `MOSQUITTO` selects the Home Assistant fixture
-broker. `DBUS_DAEMON` selects a private test bus with ProcessFD support; the
-image verifier always selects its locked D-Bus 1.16.2 wrapper. Simulation does not qualify physical drivers or systemd confinement;
+broker. `DBUS_DAEMON` can select an alternative private test bus. Simulation does not qualify physical drivers or systemd confinement;
 use the [release checklist](release-checklist.md) on both boards.

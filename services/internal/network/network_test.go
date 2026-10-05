@@ -98,7 +98,7 @@ func TestClientOnIsolatedBus(t *testing.T) {
 	if _, err = bus.RequestName(Destination, dbus.NameFlagDoNotQueue); err != nil {
 		t.Fatal(err)
 	}
-	devicetest.InstallIdentity(t, bus, nil)
+	devicetest.UseCurrentUser(t, "NABOS_DEVICE_USER")
 	if signature := dbus.SignatureOf(Status{}).String(); signature != "(ssbsaystss)" {
 		t.Fatal(signature)
 	}

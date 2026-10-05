@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/guilhem/nabos/services/internal/busidentity"
 	"github.com/guilhem/nabos/services/internal/device"
+	"github.com/guilhem/nabos/services/internal/devicetest"
 	"github.com/guilhem/nabos/services/internal/network"
 )
 
@@ -26,7 +28,25 @@ func (h *harness) startDeviceCore(t *testing.T) {
 	if busDaemon == "" {
 		busDaemon = which(t, "dbus-daemon")
 	}
-	daemon := exec.Command(busDaemon, "--session", "--nofork", "--print-address=1")
+	args := []string{"--session", "--nofork", "--print-address=1"}
+	if h.requireAgents {
+		// The bus only authenticates EXTERNAL Unix credentials. Service-level
+		// authorization remains in the actual production binaries. An abstract
+		// socket also works with deeply nested image-test workspaces.
+		config := `<busconfig><type>session</type><listen>unix:abstract=` + filepath.Base(h.tmp) + `</listen><auth>EXTERNAL</auth>
+<policy context="default"><allow user="root"/>`
+		for _, account := range h.accounts {
+			config += fmt.Sprintf(`<allow user="%d"/>`, account.Uid)
+		}
+		config += `<allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>`
+		path := filepath.Join(h.tmp, "bus.conf")
+		if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+			t.Fatal(err)
+		}
+		args = []string{"--config-file=" + path, "--nofork", "--print-address=1"}
+	}
+	daemon := exec.Command(busDaemon, args...)
+	daemon.Stderr = os.Stderr
 	out, err := daemon.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +60,9 @@ func (h *harness) startDeviceCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", strings.TrimSpace(address))
-	h.startSystemdIdentity(t)
+	if !h.requireAgents {
+		devicetest.UseCurrentUser(t, "NABOS_DEVICE_USER")
+	}
 	h.startDeviceDaemon()
 	api, err := device.Open()
 	if err != nil {
@@ -73,21 +95,34 @@ func (h *harness) startDeviceDaemon() {
 	if audioMS == 0 {
 		audioMS = 200
 	}
-	units := ""
+	users := ""
+	presenceUser := busidentity.ExpectedUser("NABOS_HARDWARE_USER", "nab-hardware")
+	if !h.requireAgents {
+		presenceUser = os.Getenv("NABOS_DEVICE_USER")
+	}
 	if h.requireAgents {
-		units = "nabos.service:nab-hardware.service"
+		users = busidentity.ExpectedUser("NABOS_APP_USER", "nab-app") + ":" + busidentity.ExpectedUser("NABOS_HARDWARE_USER", "nab-hardware")
 	}
 	assets := os.Getenv("NABOS_TEST_ASSETS")
 	if assets == "" {
 		assets = filepath.Join(repo, "assets")
 	}
+	h.directory("device", filepath.Join(h.tmp, "device-data"))
+	guard, err := os.OpenFile(filepath.Join(h.tmp, "network-guard"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		h.fatalf("network guard: %v", err)
+	}
+	h.own("device", guard.Name())
+	if err := guard.Close(); err != nil {
+		h.fatalf("network guard: %v", err)
+	}
 	h.spawn("device", append(h.device, "--simulate"),
 		"DEVICE_CORE_BUS_ADDRESS="+os.Getenv("DBUS_SYSTEM_BUS_ADDRESS"),
-		"DEVICE_CORE_PRESENCE_UNIT=nab-hardware.service",
+		"DEVICE_CORE_PRESENCE_USER="+presenceUser,
 		"DEVICE_CORE_DATA_DIR="+filepath.Join(h.tmp, "device-data"),
 		"DEVICE_CORE_NETWORK_GUARD="+filepath.Join(h.tmp, "network-guard"),
 		"DEVICE_CORE_HTTP_ADDR=", "DEVICE_CORE_LVA_UNIT=", "DEVICE_CORE_UPDATE_REPO=", "DEVICE_CORE_UPDATE_ASSET=",
-		"DEVICE_CORE_MAINTENANCE_UNITS="+units,
+		"DEVICE_CORE_MAINTENANCE_USERS="+users,
 		"DEVICE_CORE_AUDIO_ROOTS="+filepath.Join(assets, "sounds"), fmt.Sprintf("DEVICE_CORE_SIM_AUDIO_MS=%d", audioMS),
 		"DEVICE_CORE_IMAGE_VERSION=v0.0.1", "DEVICE_CORE_DEFAULT_LOCALE=fr_FR", "DEVICE_CORE_DEFAULT_VOLUME=100")
 }
@@ -103,7 +138,7 @@ func TestDeviceCore(t *testing.T) {
 		binary = filepath.Join(repo, "build/cargo/device-core-tests/debug/device-core")
 	}
 	h := &harness{t: t, tmp: t.TempDir(), device: commandLine(binary), procs: map[string]*exec.Cmd{}, simAudioMS: 2000}
-	t.Cleanup(func() { h.stop("device", syscall.SIGTERM); h.stop("dbus", syscall.SIGTERM) })
+	t.Cleanup(h.cleanup)
 	h.startDeviceCore(t)
 	ctx := context.Background()
 	var capabilities []string

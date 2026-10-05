@@ -249,7 +249,7 @@ func TestPolkitRule(t *testing.T) {
 ` + rules + fmt.Sprintf(`
 const details = %s;
 const action = { id: %s, lookup: (k) => details[k] };
-console.log(polkit.rules[0](action, { user: %s, system_unit: "device-core.service", no_new_privileges: true }));
+console.log(polkit.rules[0](action, { user: %s }));
 `, must(json.Marshal(details)), must(json.Marshal(action)), must(json.Marshal(user)))
 		return strings.TrimSpace(run(t, "", "node", "-e", js))
 	}
@@ -260,26 +260,30 @@ console.log(polkit.rules[0](action, { user: %s, system_unit: "device-core.servic
 		details      map[string]string
 		want         string
 	}{
-		{"nabos", "org.freedesktop.login1.reboot", nil, "yes"},
-		{"nabos", "org.freedesktop.login1.power-off-multiple-sessions", nil, "yes"},
-		{"nabos", manage, units("linux-voice-assistant.service", "start"), "yes"},
-		{"nabos", manage, units("ssh.service", "start"), "yes"},
-		{"nabos", manage, units("ssh.service", "stop"), "yes"},
-		{"nabos", manage, units("nabos-rauc-manual.service", "start"), "yes"},
-		{"nabos", manage, units("nabos-rauc-manual.service", "stop"), "yes"},
-		{"nabos", manage, units("nabos-rauc-manual.service", "restart"), "no"},
-		{"nabos", manage, units("nabos-rauc-manual.service", "enable"), "no"},
-		{"nabos", manage, units("ssh.service", "restart"), "no"},
-		{"nabos", manage, units("ssh.service", "enable"), "no"},
+		{"device-core", "org.freedesktop.login1.reboot", nil, "yes"},
+		{"device-core", "org.freedesktop.login1.power-off-multiple-sessions", nil, "yes"},
+		{"device-core", manage, units("linux-voice-assistant.service", "start"), "yes"},
+		{"device-core", manage, units("ssh.service", "start"), "yes"},
+		{"device-core", manage, units("ssh.service", "stop"), "yes"},
+		{"device-core", manage, units("nabos-rauc-manual.service", "start"), "yes"},
+		{"device-core", manage, units("nabos-rauc-manual.service", "stop"), "yes"},
+		{"device-core", manage, units("nabos-rauc-manual.service", "restart"), "no"},
+		{"device-core", manage, units("nabos-rauc-manual.service", "enable"), "no"},
+		{"device-core", manage, units("ssh.service", "restart"), "no"},
+		{"device-core", manage, units("ssh.service", "enable"), "no"},
 		{"nobody", manage, units("ssh.service", "start"), "not_handled"},
-		{"nabos", manage, units("linux-voice-assistant.service", "enable"), "no"},
-		{"nabos", "org.freedesktop.systemd1.manage-unit-files", nil, "not_handled"},
-		{"nabos", "org.freedesktop.timedate1.set-time", nil, "yes"},
-		{"nabos", "org.freedesktop.timedate1.set-ntp", nil, "not_handled"},
-		{"nabos", manage, units("systemd-timesyncd.service", "start"), "yes"},
-		{"nabos", manage, units("systemd-timesyncd.service", "stop"), "yes"},
-		{"nabos", manage, units("systemd-timesyncd.service", "restart"), "no"},
+		{"device-core", manage, units("linux-voice-assistant.service", "enable"), "no"},
+		{"device-core", "org.freedesktop.systemd1.manage-unit-files", nil, "not_handled"},
+		{"device-core", "org.freedesktop.timedate1.set-time", nil, "yes"},
+		{"device-core", "org.freedesktop.timedate1.set-ntp", nil, "not_handled"},
+		{"device-core", manage, units("systemd-timesyncd.service", "start"), "yes"},
+		{"device-core", manage, units("systemd-timesyncd.service", "stop"), "yes"},
+		{"device-core", manage, units("systemd-timesyncd.service", "restart"), "no"},
 		{"nobody", "org.freedesktop.login1.reboot", nil, "not_handled"},
+		{"nab-app", "org.freedesktop.login1.reboot", nil, "no"},
+		{"nab-hardware", manage, units("ssh.service", "start"), "no"},
+		{"nab-audio", "org.freedesktop.timedate1.set-time", nil, "no"},
+		{"nab-audio", "org.freedesktop.RealtimeKit1.acquire-real-time", nil, "not_handled"},
 	} {
 		if got := decide(c.user, c.action, c.details); got != c.want {
 			t.Errorf("%s %s %v: %s, want %s", c.user, c.action, c.details, got, c.want)
@@ -287,7 +291,7 @@ console.log(polkit.rules[0](action, { user: %s, system_unit: "device-core.servic
 	}
 }
 
-func TestNetworkPolkitUnitBoundary(t *testing.T) {
+func TestNetworkPolkitAccountBoundary(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not available")
 	}
@@ -298,14 +302,12 @@ const polkit = { Result: { YES: 'yes', NO: 'no', NOT_HANDLED: 'not_handled' },
 ` + rules + `
 const decide = (suffix, subject) => polkit.rules[0](
   {id: 'org.freedesktop.NetworkManager.' + suffix}, subject);
-const core = {user: 'nabos', system_unit: 'device-core.service', no_new_privileges: true};
+const core = {user: 'device-core'};
 for (const action of ['network-control', 'wifi.scan', 'wifi.share.open',
                      'settings.modify.system', 'checkpoint-rollback']) {
   assert.equal(decide(action, core), 'yes');
-  assert.equal(decide(action, {...core, system_unit: 'nabos.service'}), 'no');
-  assert.equal(decide(action, {...core, system_unit: 'nab-hardware.service'}), 'no');
-  assert.equal(decide(action, {...core, system_unit: 'user@1000.service'}), 'no');
-  assert.equal(decide(action, {...core, no_new_privileges: false}), 'no');
+  for (const user of ['nab-app', 'nab-hardware', 'nab-audio'])
+    assert.equal(decide(action, {user}), 'no');
   assert.equal(decide(action, {...core, user: 'nobody'}), 'not_handled');
 }
 assert.equal(decide('settings.modify.hostname', core), 'no');
@@ -314,7 +316,7 @@ assert.equal(polkit.rules[0]({id: 'org.freedesktop.login1.reboot'}, core), 'not_
 	run(t, "", "node", "-e", js)
 }
 
-func TestRaucInstallerOnlyForNabos(t *testing.T) {
+func TestRaucInstallerOnlyForDeviceCore(t *testing.T) {
 	type rule struct {
 		XMLName xml.Name
 		Attrs   []xml.Attr `xml:",any,attr"`
@@ -347,20 +349,20 @@ func TestRaucInstallerOnlyForNabos(t *testing.T) {
 		t.Errorf("root policy %v", a)
 	}
 	install := false
-	for _, r := range policies["nabos"] {
+	for _, r := range policies["device-core"] {
 		a := attrs(r)
 		if r.XMLName.Local != "allow" || a["send_destination"] != "de.pengutronix.rauc" {
-			t.Errorf("nabos rule %s %v", r.XMLName.Local, a)
+			t.Errorf("device-core rule %s %v", r.XMLName.Local, a)
 		}
 		if a["send_interface"] == "de.pengutronix.rauc.Installer" {
 			if a["send_member"] != "InstallBundle" {
-				t.Errorf("nabos may call Installer.%s", a["send_member"])
+				t.Errorf("device-core may call Installer.%s", a["send_member"])
 			}
 			install = true
 		}
 	}
 	if !install {
-		t.Error("nabos cannot install bundles")
+		t.Error("device-core cannot install bundles")
 	}
 }
 

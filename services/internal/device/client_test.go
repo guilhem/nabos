@@ -245,8 +245,8 @@ func TestCatalogueChecksAllowSlowRepliesAndHonorCallerCancellation(t *testing.T)
 func TestInvocationsAuthenticateAndFenceOwners(t *testing.T) {
 	for _, operation := range []string{"Call", "WaitAudio"} {
 		for _, pinned := range []bool{false, true} {
-			for _, mode := range []string{"trusted", "wrong unit", "lookup denied", "systemd absent", "owner changes during authentication", "owner changes during call", "unit changes during call", "pinned unit revoked", "pinned public name"} {
-				if !pinned && (mode == "pinned unit revoked" || mode == "pinned public name") {
+			for _, mode := range []string{"trusted", "wrong account", "account absent", "owner absent", "owner changes during authentication", "owner changes during call", "account changes during call", "pinned account revoked", "pinned public name"} {
+				if !pinned && (mode == "pinned account revoked" || mode == "pinned public name") {
 					continue
 				}
 				t.Run(fmt.Sprintf("%s/pinned=%t/%s", operation, pinned, mode), func(t *testing.T) {
@@ -281,24 +281,28 @@ func TestInvocationsAuthenticateAndFenceOwners(t *testing.T) {
 						}
 						return nil
 					}
-					var unit atomic.Value
-					unit.Store("device-core.service")
-					devicetest.InstallIdentity(t, fixture.Conn, func(dbus.Sender) (string, error) {
-						if mode == "lookup denied" {
-							return "", errors.New("secret identity error")
-						}
+					client.Conn.Close()
+					conn, err := dbus.ConnectSystemBus(devicetest.CredentialReplies(func() {
 						if mode == "owner changes during authentication" {
 							if err := changeOwner(); err != nil {
-								return "", err
+								t.Error(err)
 							}
 						}
-						return unit.Load().(string), nil
-					})
-					if mode == "wrong unit" {
-						unit.Store("nabos.service")
+					})...)
+					if err != nil {
+						t.Fatal(err)
 					}
-					if mode == "systemd absent" {
-						if _, err := fixture.Conn.ReleaseName("org.freedesktop.systemd1"); err != nil {
+					client.Conn = conn
+					defer conn.Close()
+					expected := os.Getenv("NABOS_DEVICE_USER")
+					t.Setenv("NABOS_DEVICE_USER", expected)
+					switch mode {
+					case "wrong account":
+						t.Setenv("NABOS_DEVICE_USER", devicetest.WrongUser(t))
+					case "account absent":
+						t.Setenv("NABOS_DEVICE_USER", "nabos-no-such-test-account")
+					case "owner absent":
+						if _, err := fixture.Conn.ReleaseName(device.Destination); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -313,8 +317,8 @@ func TestInvocationsAuthenticateAndFenceOwners(t *testing.T) {
 								return dbus.MakeFailedError(err)
 							}
 						}
-						if mode == "unit changes during call" {
-							unit.Store("nabos.service")
+						if mode == "account changes during call" {
+							os.Setenv("NABOS_DEVICE_USER", devicetest.WrongUser(t))
 						}
 						return nil
 					}
@@ -371,11 +375,11 @@ func TestInvocationsAuthenticateAndFenceOwners(t *testing.T) {
 						}
 						return result, nil
 					}
-					if mode == "pinned unit revoked" {
+					if mode == "pinned account revoked" {
 						if _, err := invoke(); err != nil {
 							t.Fatal("initial pinned invocation", err)
 						}
-						unit.Store("nabos.service")
+						os.Setenv("NABOS_DEVICE_USER", devicetest.WrongUser(t))
 					}
 					result, err := invoke()
 					wantCalls := int32(0)
@@ -388,7 +392,7 @@ func TestInvocationsAuthenticateAndFenceOwners(t *testing.T) {
 						if !errors.Is(err, device.ErrUnavailable) || result != "" {
 							t.Fatal("authentication or ownership failure exposed a result", result, err)
 						}
-						if mode == "owner changes during call" || mode == "unit changes during call" || mode == "pinned unit revoked" {
+						if mode == "owner changes during call" || mode == "account changes during call" || mode == "pinned account revoked" {
 							wantCalls = 1
 						}
 					}
