@@ -43,12 +43,6 @@
       "url": "https://codeload.github.com/guilhem/device-core/tar.gz/d3f4525b6d6e93bcd267431004d8431d53dc5daa",
       "sha256": "1f6390d87774eeb004281e894f92e204f0851605a87a95d33e34304beb74fdda"
     },
-    "ears": {
-      "repository": "pguyot/tagtagtag-ears",
-      "commit": "5ad1f1398ec03b28f0abf4df1f6ba60a5c0cec35",
-      "url": "https://codeload.github.com/pguyot/tagtagtag-ears/tar.gz/5ad1f1398ec03b28f0abf4df1f6ba60a5c0cec35",
-      "sha256": "db46eff125483604dae0320aa322c7cda3e5abbd33ce9b7310b98f4f06107921"
-    },
     "sound": {
       "repository": "pguyot/wm8960",
       "commit": "b552bdcedb74d162daf2318fc77116b2f209a84e",

@@ -8,8 +8,8 @@ only hardware; states, media and choreographies belong to the Go `nabos` process
 
 | Member | Arguments / return | Meaning |
 |---|---|---|
-| `Ready` property | `b` | Required ears, LEDs and button are available; RFID is optional. |
-| `Status` property | `(sbssbbsnn)` | model, simulated, left ear status, right ear status, LEDs, button, reader kind, left position, right position. Positions are -1 when unknown. |
+| `Ready` property | `b` | Required ears, LEDs and button are initialized; false during ear calibration. RFID is optional. |
+| `Status` property | `(sbssbbsnn)` | model, simulated, left ear status, right ear status, LEDs, button, reader kind, left position, right position. Ear status is `initializing` during initialization; positions are -1 when unknown. |
 | `Claim()` | no arguments or return | Acquire exclusive hardware control for the calling connection. |
 | `Release()` | no arguments or return | Drain admitted operations and relinquish control. |
 | `SetLeds(colors)` | `a(yyyy)` | Up to five distinct (index, red, green, blue) entries; indices 0–4. |
@@ -41,6 +41,36 @@ ear movements and indivisible RFID writes finish before control can be reclaimed
 Commands are not replayed after reconnection. Long operations and cleanup have
 bounded waits; a timeout never proves that physical work has stopped.
 
+## Ear lifecycle and supervision
+
+The Rust process drives the ears through GPIO character devices (`gpiocdev`);
+there is no `/dev/ear*` kernel driver or ears DT overlay. The wire signatures and
+D-Bus name remain unchanged. The mechanism has 17 physical positions; command
+values still allow extra turns as described above.
+
+The service uses systemd `Type=notify`, `NotifyAccess=main` and a 1-second
+watchdog. Calibration starts only after watchdog activation is confirmed.
+Systemd startup notification is separate from the D-Bus `Ready` property:
+`Status` reports ears as `initializing` and `Ready` stays false until required
+hardware initialization succeeds. The service requires the system bus socket
+and I²C bus 1; runtime files and `HOME` use `/run/nab-hardware` with a read-only
+root and `ProtectSystem=strict`.
+
+`SIGTERM` cuts ear drive while allowing an admitted indivisible NFC write to
+finish within 5 seconds. The watchdog uses `SIGKILL` with
+`KillMode=control-group`; after process exit, systemd runs
+`/usr/bin/nab-hardware --stop-ears` with `TimeoutStopSec=6s` and restarts the
+service. This helper requests motor GPIO outputs low directly, without D-Bus,
+LED or NFC initialization. Closing GPIO file descriptors alone does not
+guarantee that motors stop. A software timeout or helper return code is not
+proof of the electrical output state.
+
+Physical qualification under the actual read-only systemd service is still
+required: all 17 positions in both directions, concurrent motion under load,
+`SIGKILL`/`SIGABRT`/`SIGSTOP`, a blocked worker, termination during calibration,
+and electrical measurements after FD closure and the helper across repeated
+restarts. See the [image qualification procedure](build.md#qualification-des-oreilles-userspace).
+
 ## Maintenance and presence
 
 Hardware and application separately export the existing device-core maintenance
@@ -58,3 +88,7 @@ simulation and test event injection never use the host system bus. Test-only
 injection is exposed exclusively in simulation through
 `io.github.guilhem.NabHardware1.Simulation` at the same object path: `Button(st)`,
 `EarMoved(y)` and `Tag(bsaysbbyyay)` emit the corresponding typed events.
+
+Simulation checks software behavior; it does not establish physical position,
+calibration accuracy, electrical motor shutdown or operation under the actual
+read-only systemd service.

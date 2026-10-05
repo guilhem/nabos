@@ -183,7 +183,8 @@ impl Harness {
             led_brightness: 200,
             led_strip: "grb".into(),
         };
-        let hw = Arc::new(Hw::open(&cfg, tx, None));
+        let ears = hw::ears::Ears::open(true, &cfg.gpio_chip, tx.clone());
+        let hw = Arc::new(Hw::open(&cfg, tx, None, ears));
         let hardware = Hardware::new(hw);
         let h = hardware.clone();
         let task = tokio::spawn(async move { run(device, h, rx).await });
@@ -712,7 +713,8 @@ async fn private_bus_hardware_does_not_replace_or_queue_for_existing_owner() {
         led_brightness: 200,
         led_strip: "grb".into(),
     };
-    let hardware = Hardware::new(Arc::new(Hw::open(&cfg, tx, None)));
+    let ears = hw::ears::Ears::open(true, &cfg.gpio_chip, tx.clone());
+    let hardware = Hardware::new(Arc::new(Hw::open(&cfg, tx, None, ears)));
     assert!(
         tokio::time::timeout(Duration::from_secs(2), run(device.clone(), hardware, rx))
             .await

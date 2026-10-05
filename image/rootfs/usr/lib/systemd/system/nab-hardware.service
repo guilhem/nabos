@@ -1,12 +1,12 @@
 [Unit]
 Description=Nabaztag hardware (D-Bus)
-Requires=dev-i2c\x2d1.device
+Requires=dbus.socket dev-i2c\x2d1.device
 Wants=device-core.service
-After=systemd-tmpfiles-setup.service tagtagtag-mixerd.service device-core.service dev-i2c\x2d1.device
+After=systemd-tmpfiles-setup.service tagtagtag-mixerd.service device-core.service dbus.socket dev-i2c\x2d1.device
 
 [Service]
-Type=dbus
-BusName=io.github.guilhem.NabHardware1
+Type=notify
+NotifyAccess=main
 User=nab-hardware
 Group=nab-hardware
 # rpi_ws281x drives PWM+DMA through /dev/mem (kmem, see 60-nabos.rules) and
@@ -18,6 +18,12 @@ Environment=HOME=/run/nab-hardware
 RuntimeDirectory=nab-hardware
 WorkingDirectory=/run/nab-hardware
 ExecStart=/usr/bin/nab-hardware
+ExecStopPost=/usr/bin/nab-hardware --stop-ears
+WatchdogSec=1s
+WatchdogSignal=SIGKILL
+KillMode=control-group
+# Admitted NFC writes have their own five-second physical budget.
+TimeoutStopSec=6s
 Restart=always
 RestartSec=2
 UMask=0027

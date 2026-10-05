@@ -69,7 +69,7 @@ func TestDeviceCoreImageContract(t *testing.T) {
 
 func TestHardwareApplicationImageContract(t *testing.T) {
 	for name, required := range map[string][]string{
-		"nab-hardware": {"User=nab-hardware", "Group=nab-hardware", "Type=dbus", "BusName=io.github.guilhem.NabHardware1", "SupplementaryGroups=gpio video kmem", "AmbientCapabilities=CAP_SYS_RAWIO", "CapabilityBoundingSet=CAP_SYS_RAWIO", "RuntimeDirectory=nab-hardware", "WorkingDirectory=/run/nab-hardware", `Requires=dev-i2c\x2d1.device`, `After=systemd-tmpfiles-setup.service tagtagtag-mixerd.service device-core.service dev-i2c\x2d1.device`},
+		"nab-hardware": {"User=nab-hardware", "Group=nab-hardware", "Type=notify", "NotifyAccess=main", "WatchdogSec=1s", "WatchdogSignal=SIGKILL", "KillMode=control-group", "ExecStopPost=/usr/bin/nab-hardware --stop-ears", "TimeoutStopSec=6s", "SupplementaryGroups=gpio video kmem", "AmbientCapabilities=CAP_SYS_RAWIO", "CapabilityBoundingSet=CAP_SYS_RAWIO", "RuntimeDirectory=nab-hardware", "WorkingDirectory=/run/nab-hardware", "Environment=HOME=/run/nab-hardware", "Restart=always", "RestartSec=2", `Requires=dbus.socket dev-i2c\x2d1.device`, `After=systemd-tmpfiles-setup.service tagtagtag-mixerd.service device-core.service dbus.socket dev-i2c\x2d1.device`},
 		"nabos":        {"User=nab-app", "AmbientCapabilities=CAP_NET_BIND_SERVICE", "CapabilityBoundingSet=CAP_NET_BIND_SERVICE", "Environment=NABOS_HTTP_ADDR=:80", "Environment=NABOS_DATA_DIR=/data/nabos", "ReadWritePaths=/data/nabos", "RuntimeDirectory=nabos", "WorkingDirectory=/run/nabos", "PrivateDevices=yes"},
 	} {
 		unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system", name+".service"))
@@ -79,7 +79,7 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 			}
 		}
 		for _, line := range strings.Split(unit, "\n") {
-			if strings.HasPrefix(line, "ReadWritePaths=") && name == "nab-hardware" || strings.HasPrefix(line, "SupplementaryGroups=") && name == "nabos" || strings.Contains(line, "mosquitto") || line == "DefaultDependencies=no" {
+			if (strings.HasPrefix(line, "ReadWritePaths=") || strings.HasPrefix(line, "BusName=")) && name == "nab-hardware" || strings.HasPrefix(line, "SupplementaryGroups=") && name == "nabos" || strings.Contains(line, "mosquitto") || line == "DefaultDependencies=no" {
 				t.Errorf("%s unexpected %q", name, line)
 			}
 		}
@@ -99,7 +99,6 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 		`KERNEL=="mem", GROUP="kmem", MODE="0660"`,
 		`KERNEL=="vcio", GROUP="video", MODE="0660"`,
 		`SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"`,
-		`KERNEL=="ear[01]", GROUP="gpio", MODE="0660"`,
 		i2cRule,
 	} {
 		if !strings.Contains(udev, rule+"\n") {

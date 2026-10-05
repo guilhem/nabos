@@ -111,7 +111,7 @@ func TestImageIsolation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			write(t, filepath.Join(fixture, "lib/modules", kernel, "updates/nabos/ears.ko"), "shipped module")
+			write(t, filepath.Join(fixture, "lib/modules", kernel, "updates/nabos/snd-soc-wm8960.ko"), "shipped module")
 			write(t, filepath.Join(boot, "u-boot.bin"), "shipped U-Boot")
 			write(t, filepath.Join(boot, "boot.env"), "nabos_dtb="+dtbs[scenario.target]+"\n")
 			copyFile(t, pristine, filepath.Join(boot, dtbs[scenario.target]))
