@@ -248,14 +248,16 @@ node.name = test-sink media.class = Audio/Sink node.driver = true audio.position
                                 'PIPEWIRE_REMOTE': '/run/nabos-audio/pipewire-0'}
             wait_for(lambda: 'Volume:' in run(1003, ['wpctl', 'get-volume', '@DEFAULT_AUDIO_SINK@'],
                                              clientenv, (1004,)).stdout)
-            expect(run(1003, ['wpctl', 'set-volume', '@DEFAULT_AUDIO_SINK@', '0.42'], clientenv, (1004,)))
-            require('0.42' in run(1003, ['wpctl', 'get-volume', '@DEFAULT_AUDIO_SINK@'],
-                                 clientenv, (1004,)).stdout, 'Volume did not change')
             sound = work / 'silence.wav'
             with wave.open(str(sound), 'wb') as wav:
                 wav.setparams((2, 2, 48000, 0, 'NONE', 'not compressed'))
                 wav.writeframes(bytes(4800 * 4))
             expect(run(1003, ['aplay', '-q', '-D', 'default', str(sound)], clientenv, (1004,)))
+            # The Debian null sink applies volume only after its first audio format
+            # negotiation. Exercise playback before checking its software mixer.
+            expect(run(1003, ['wpctl', 'set-volume', '@DEFAULT_AUDIO_SINK@', '0.42'], clientenv, (1004,)))
+            expect(run(1003, ['wpctl', 'get-volume', '@DEFAULT_AUDIO_SINK@'], clientenv, (1004,)),
+                   output='Volume: 0.42')
             wait_for(lambda: 'test-sink' in run(1004, ['pactl', 'list', 'short', 'sinks'], audioenv).stdout)
             socket = Path('/run/nabos-audio/pipewire-0').stat()
             require((socket.st_uid, socket.st_gid, socket.st_mode & 0o777) == (1004, 1004, 0o660),
