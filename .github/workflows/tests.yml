@@ -108,6 +108,16 @@ jobs:
           chmod 0644 "$identity/passwd" "$identity/group"
           mount --bind "$identity/passwd" /etc/passwd
           mount --bind "$identity/group" /etc/group
+          # Dedicated users cannot traverse the runner's private build tree.
+          runtime=$(mktemp -d)
+          trap 'umount /etc/group /etc/passwd 2>/dev/null || true; rm -rf -- "$identity" "$runtime"' EXIT
+          chmod 0755 "$runtime"
+          install -m 0755 "$NABOS_BIN" "$runtime/nabos"
+          install -m 0755 "$NABOS_HARDWARE_BIN" "$runtime/nab-hardware"
+          install -m 0755 "$DEVICE_CORE_BIN" "$runtime/device-core"
+          cp -a "$NABOS_TEST_ASSETS" "$runtime/assets"
+          export NABOS_BIN="$runtime/nabos" NABOS_HARDWARE_BIN="$runtime/nab-hardware"
+          export DEVICE_CORE_BIN="$runtime/device-core" NABOS_TEST_ASSETS="$runtime/assets"
           export NABOS_INTEGRATION=1 NABOS_APP_USER=nab-app NABOS_HARDWARE_USER=nab-hardware NABOS_DEVICE_USER=device-core
           "$1" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
           NAMESPACE

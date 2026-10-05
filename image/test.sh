@@ -428,16 +428,22 @@ done
 fdtget "$root/boot/dtb/$dtb" /__symbols__ i2s /__symbols__ i2c1 /__symbols__ gpio /__symbols__ sound >/dev/null
 
 # Use the shipped loader/libc for Rust; the Go application is static.
+# Variables in the generated wrappers are resolved when the child runs.
+# shellcheck disable=SC2016
 for name in nab-hardware device-core nabos; do
-  prefix=()
-  if [[ $target == zero-armv6 ]]; then
-    sysroot=/
-    if [[ $name != nabos ]]; then sysroot=$root; fi
-    prefix=(qemu-arm-static -cpu arm1176 -L "$sysroot")
-  elif [[ $name != nabos ]]; then
-    prefix=("$root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" --library-path "$root/usr/lib/aarch64-linux-gnu")
-  fi
-  printf '#!/bin/bash\nexec %s"$@"\n' "$(printf '%q ' "${prefix[@]}" "$root/usr/bin/$name")" > "$work/$name-test"
+  {
+    printf '#!/bin/bash\nroot=$(cd -- "$(dirname -- "$0")/root" && pwd)\nexec '
+    if [[ $target == zero-armv6 ]]; then
+      if [[ $name == nabos ]]; then
+        printf 'qemu-arm-static -cpu arm1176 -L / '
+      else
+        printf 'qemu-arm-static -cpu arm1176 -L "$root" '
+      fi
+    elif [[ $name != nabos ]]; then
+      printf '"$root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" --library-path "$root/usr/lib/aarch64-linux-gnu" '
+    fi
+    printf '"$root/usr/bin/%s" "$@"\n' "$name"
+  } > "$work/$name-test"
   chmod 755 "$work/$name-test"
 done
 # The sandbox simulates boot decisions; it does not boot a kernel or hardware.
@@ -456,11 +462,19 @@ tests_pid=
 "$GO" test -c -o "$work/product-test" ./tests/integration
 chmod 0755 "$work"
 sudo --preserve-env unshare --mount --net --pid --fork --kill-child --propagation private \
-  bash -s -- "$root" "$work/product-test" <<'SH'
+  bash -s -- "$work" "$work/product-test" <<'SH'
 set -euo pipefail
 ip link set lo up
 mount -t proc proc /proc
-mount --bind "$1/etc/passwd" /etc/passwd
-mount --bind "$1/etc/group" /etc/group
-exec "$2" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
+mount --bind "$1/root/etc/passwd" /etc/passwd
+mount --bind "$1/root/etc/group" /etc/group
+# Expose only this disposable tree through a traversable path. The caller's
+# home/build ancestors retain their permissions.
+exposed=$(mktemp -d /tmp/nabos-image-e2e.XXXXXX)
+trap 'umount --recursive "$exposed"; rmdir "$exposed"' EXIT
+mount --rbind "$1" "$exposed"
+export TMPDIR="$exposed/tmp" NABOS_TEST_ASSETS="$exposed/root/usr/share/nabos"
+export NABOS_BIN="$exposed/nabos-test" NABOS_HARDWARE_BIN="$exposed/nab-hardware-test"
+export DEVICE_CORE_BIN="$exposed/device-core-test"
+"$2" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
 SH
