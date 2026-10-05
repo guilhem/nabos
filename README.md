@@ -54,7 +54,9 @@ Cette extraction utilise de nouveaux contrats et fichiers de configuration. Aucu
 
 Linux Voice Assistant est préinstallé uniquement sur ARM64 et **désactivé par défaut**. Son activation utilise Home Assistant pour la reconnaissance et la synthèse. Le bouton précède la qualification du mot d'activation et de l'annulation d'écho. L'API de périphériques reste en boucle locale.
 
-Les pilotes oreilles, WM8960, CR14 et ST25R391x et la bibliothèque `rpi_ws281x` commandent le matériel. Un seul lecteur RFID est activé selon la carte détectée. Les sons et chorégraphies sont rangés dans `assets/`.
+`nab-hardware` pilote les oreilles en Rust via GPIO character device (`gpiocdev`), et les lecteurs CR14/ST25R391x directement via I²C. Seul le son WM8960 conserve ses modules et son overlay noyau ; les LED utilisent toujours `rpi_ws281x`. Un seul lecteur RFID est activé selon la carte détectée. Les sons et chorégraphies sont rangés dans `assets/`.
+
+La calibration des oreilles commence après confirmation de l’activation du watchdog systemd. L’API matérielle reste non prête pendant cette étape. Le service dispose d’un helper d’arrêt des moteurs après sa sortie ; la fermeture des descripteurs GPIO seule ne garantit pas leur arrêt électrique. Les simulations vérifient les contrats logiciels ; la [qualification physique sous systemd avec racine en lecture seule](docs/build.md#qualification-des-oreilles-userspace) reste à effectuer.
 
 ## Services
 

@@ -198,13 +198,17 @@ pub struct Hw {
 }
 
 impl Hw {
-    pub fn open(cfg: &Config, tx: Tx, presence: Option<crate::network::Presence>) -> Hw {
+    pub fn open(
+        cfg: &Config,
+        tx: Tx,
+        presence: Option<crate::network::Presence>,
+        ears: ears::Ears,
+    ) -> Hw {
         let sim = cfg.simulate;
         // Physical setup confirmation remains available while LED initialization
         // waits for its hardware thread.
         let button = sim || button::spawn(&cfg.gpio_chip, cfg.button_gpio, tx.clone(), presence);
         let leds = leds::Leds::open(cfg);
-        let ears = ears::Ears::open(sim, tx.clone());
         let spawn_reader = |reader: rfid::Reader| {
             let kind = reader.kind();
             let (wtx, wrx) = std::sync::mpsc::channel();

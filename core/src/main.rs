@@ -25,6 +25,7 @@ mod device;
 mod hw;
 mod maintenance;
 mod network;
+mod supervision;
 
 pub struct Config {
     pub simulate: bool,
@@ -68,7 +69,7 @@ impl Config {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage: nab-hardware [--simulate] [--version]\nConfiguration via NABOS_* variables, see docs/hardware-dbus.md");
+        println!("usage: nab-hardware [--simulate] [--version] [--stop-ears]\nConfiguration via NABOS_* variables, see docs/hardware-dbus.md");
         return;
     }
     if args.iter().any(|a| a == "--version") {
@@ -82,6 +83,17 @@ fn main() {
         _ => 2,
     };
     LOG_LEVEL.store(level, Ordering::Relaxed);
+    if args.iter().any(|a| a == "--stop-ears") {
+        if args.len() != 1 {
+            error!("--stop-ears must be used alone");
+            std::process::exit(2);
+        }
+        if let Err(e) = hw::ears::stop_all(&env_or("NABOS_GPIO_CHIP", "/dev/gpiochip0")) {
+            error!("cannot turn ear motors off: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let cfg = Config::from_env(args.iter().any(|a| a == "--simulate"));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -89,6 +101,9 @@ fn main() {
         .expect("tokio runtime");
     rt.block_on(async move {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        // Own the motor outputs low before D-Bus, LED or reader initialization
+        // can block. Only bus::run starts calibration after systemd's barrier.
+        let ears = hw::ears::Ears::open(cfg.simulate, &cfg.gpio_chip, tx.clone());
         let device = match device::Device::open(cfg.simulate).await {
             Ok(device) => device,
             Err(e) => {
@@ -98,12 +113,20 @@ fn main() {
         };
         let presence = network::start(device.clone());
         let hw = tokio::task::spawn_blocking(move || {
-            std::sync::Arc::new(hw::Hw::open(&cfg, tx, Some(presence)))
+            std::sync::Arc::new(hw::Hw::open(&cfg, tx, Some(presence), ears))
         })
         .await
         .expect("hardware initialization thread");
-        if let Err(e) = bus::run(device, bus::Hardware::new(hw), rx).await {
+        let result = bus::run(device, bus::Hardware::new(hw.clone()), rx).await;
+        hw.ears.request_stop();
+        let stopped = hw.ears.shutdown().await;
+        if let Err(e) = &result {
             error!("hardware service: {e}");
+        }
+        if let Err(e) = &stopped {
+            error!("ear shutdown: {e}");
+        }
+        if result.is_err() || stopped.is_err() {
             std::process::exit(1);
         }
     });

@@ -222,7 +222,7 @@ impl Hardware {
             let quiet = tokio::time::timeout(WORK_TIMEOUT, async {
                 let _serial = hardware.serial.lock().await;
                 hardware.hw.leds.clear().await?;
-                // '.' waits for the real driver. There is no motor stop command.
+                // Wait for actual quiescence, including any admitted movement.
                 hardware.hw.ears.wait_idle().await?;
                 loop {
                     let busy = hardware
@@ -806,14 +806,29 @@ pub async fn run(
     bus.request_name_with_flags(SERVICE, zbus::fdo::RequestNameFlags::DoNotQueue.into())
         .await
         .map_err(|e| e.to_string())?;
+    let watchdog = crate::supervision::Watchdog::from_env(hardware.hw.info.simulated)?;
+    if let Some(watchdog) = &watchdog {
+        watchdog.ready()?;
+    }
+    hardware.hw.ears.start()?;
     maintenance::start(device, hardware.clone());
     let emitter = SignalEmitter::new(&bus, PATH).map_err(|e| e.to_string())?;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut watchdog_tick = tokio::time::interval(
+        watchdog
+            .as_ref()
+            .map_or(Duration::from_secs(1), |w| w.interval),
+    );
     let mut status = hardware.hw.status();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| e.to_string())?;
     loop {
         tokio::select! {
+            _=term.recv()=>break,
+            _=tokio::signal::ctrl_c()=>break,
+            _=watchdog_tick.tick(), if watchdog.is_some()=> {
+                watchdog.as_ref().unwrap().ping(hardware.hw.ears.healthy())?;
+            }
             owner=owners.next() => {
                 let Some(owner)=owner else {hardware.invalidate(true);return Err("bus disconnected".into());};
                 if let Ok(args)=owner.args() {
@@ -846,12 +861,22 @@ pub async fn run(
                     Api::changed(&emitter,&status).await.map_err(|e|e.to_string())?;
                 }
             }
-            _=term.recv()=>break,
-            _=tokio::signal::ctrl_c()=>break,
         }
     }
+    // This flag bypasses serial admission and the motor command queues, so a
+    // slow LED clear or indivisible NFC write cannot delay the motor stop.
+    hardware.hw.ears.request_stop();
     hardware.invalidate(true);
-    hardware.wait_quiet().await.map_err(|e| e.to_string())
+    let quiet = hardware.wait_quiet();
+    tokio::pin!(quiet);
+    loop {
+        tokio::select! {
+            result=&mut quiet=>return result.map_err(|e| e.to_string()),
+            _=watchdog_tick.tick(), if watchdog.is_some()=> {
+                watchdog.as_ref().unwrap().ping(hardware.hw.ears.healthy())?;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
