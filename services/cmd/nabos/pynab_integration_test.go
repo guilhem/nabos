@@ -15,7 +15,6 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/device"
-	"github.com/guilhem/nabos/services/internal/devicetest"
 	"github.com/guilhem/nabos/services/internal/hardware"
 	"github.com/guilhem/nabos/services/internal/rabbit"
 )
@@ -91,9 +90,6 @@ func (f *nativeFixture) Get(iface, name string) (dbus.Variant, *dbus.Error) {
 	}
 	if name == "Ready" {
 		return dbus.MakeVariant(f.status.Ready()), nil
-	}
-	if name == "Id" {
-		return dbus.MakeVariant("nab-hardware.service"), nil
 	}
 	return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", nil)
 }
@@ -218,7 +214,6 @@ func startNative(t *testing.T, a *App) *nativeFixture {
 func startNativeDispatch(t *testing.T, a *App, dispatch func(appEvent)) *nativeFixture {
 	t.Helper()
 	f := &nativeFixture{conn: appFixture(t, a).Conn, status: hardware.Status{Model: "test", LeftEar: "ok", RightEar: "ok", Leds: true, Button: true, RFID: "st25tb"}, observed: make(chan appEvent, 128)}
-	devicetest.RequireProcessFD(t, f.conn)
 	for _, name := range []string{hardware.Destination} {
 		if _, err := f.conn.RequestName(name, dbus.NameFlagDoNotQueue); err != nil {
 			t.Fatal(err)

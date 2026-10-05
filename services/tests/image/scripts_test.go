@@ -303,9 +303,9 @@ esac`, c.deviceInactive, c.hardwareInactive, c.appInactive),
 *) exit 1 ;;
 esac`, !c.deviceUnready, !c.hardwareUnready),
 		"curl": fmt.Sprintf("n=$(($(cat %s) + 1)); echo $n > %s; [ $n -gt %d ]", counter, counter, c.healthyAfter),
-		// runuser -u nabos -- env ... pactl list KIND
-		"runuser": `[ "$1 $2 $3" = "-u nabos --" ] || exit 1; shift 3; exec "$@"`,
-		"pactl":   `[ "$XDG_RUNTIME_DIR $LC_ALL $1" = "/run/user/1000 C list" ] && cat ` + tmp + "/$2",
+		// runuser -u nab-audio -- env ... pactl list KIND
+		"runuser": `[ "$1 $2 $3" = "-u nab-audio --" ] || exit 1; shift 3; exec "$@"`,
+		"pactl":   `[ "$XDG_RUNTIME_DIR $LC_ALL $1" = "/run/user/1004 C list" ] && cat ` + tmp + "/$2",
 		// findmnt -n -o COLUMNS --mountpoint PATH
 		"findmnt":     `eval "p=\$$#"; case $p in ` + cases + "*) exit 1;; esac",
 		"rauc":        fmt.Sprintf("exit %d", map[bool]int{false: 0, true: 1}[c.raucFails]),

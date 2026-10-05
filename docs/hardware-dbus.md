@@ -27,10 +27,14 @@ only hardware; states, media and choreographies belong to the Go `nabos` process
 | `Tag(removed, tech, uid, support, locked, formatted, picture, app, data)` signal | `bsaysbbyyay` | UID and payload retain their bytes; numeric application identifiers are interpreted by Go. |
 
 All mutators require a claim owned by the same unique D-Bus connection. Claim
-authenticates the actual `nabos.service` using ProcessFD and systemd
-GetUnitByPIDFD, without a PID fallback. Authorization is rechecked before a
+authenticates the unique sender as the `nab-app` Unix account using
+`org.freedesktop.DBus.GetConnectionUnixUser`. Authorization is rechecked before a
 deferred mutation. Go verifies that the service owner belongs to
-`nab-hardware.service` before trusting status and events.
+`nab-hardware` before trusting status and events. Maintenance callbacks require
+the current device-core owner and its `device-core` Unix account. Explicit
+`NABOS_APP_USER`, `NABOS_HARDWARE_USER` and `NABOS_DEVICE_USER` overrides select
+alternate account names, including on private test buses; simulation never bypasses
+authentication.
 
 Loss of the owner drops pending work, ends pulses and clears LEDs. Already sent
 ear movements and indivisible RFID writes finish before control can be reclaimed.
@@ -45,7 +49,7 @@ the application holds its complete activity gate, including chapter silences.
 Recovery stays blocked until the current authenticated daemon confirms safety.
 
 Only the physical GPIO reader calls device-core `Network.ReportPresence`. The
-trusted presence unit is `nab-hardware.service`; HTTP cannot create that proof.
+trusted presence account is `nab-hardware`; HTTP cannot create that proof.
 
 ## Simulation
 

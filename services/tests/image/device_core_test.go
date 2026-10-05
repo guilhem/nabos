@@ -11,17 +11,17 @@ import (
 func TestDeviceCoreImageContract(t *testing.T) {
 	unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/device-core.service"))
 	for _, required := range []string{
-		"User=nabos", "Environment=HOME=/var/lib/nabos", "Environment=XDG_RUNTIME_DIR=/run/user/1000",
+		"User=device-core", "Environment=HOME=/data/device-core", "Environment=XDG_RUNTIME_DIR=/run/device-core", "Environment=PIPEWIRE_REMOTE=/run/nabos-audio/pipewire-0", "SupplementaryGroups=nab-media nab-audio",
 		"Environment=DEVICE_CORE_DATA_DIR=/data/device-core", "Environment=DEVICE_CORE_NETWORK_GUARD=/run/lock/device-core/network",
-		"Environment=DEVICE_CORE_PRESENCE_UNIT=nab-hardware.service",
-		"Environment=DEVICE_CORE_MAINTENANCE_UNITS=nabos.service:nab-hardware.service", "RuntimeDirectory=device-core", "WorkingDirectory=/run/device-core",
-		"CapabilityBoundingSet=", "ProtectSystem=strict", "ReadWritePaths=/data/device-core /var/lib/nabos /run/device-core /run/lock/device-core",
+		"Environment=DEVICE_CORE_PRESENCE_USER=nab-hardware",
+		"Environment=DEVICE_CORE_MAINTENANCE_USERS=nab-app:nab-hardware", "RuntimeDirectory=device-core", "WorkingDirectory=/run/device-core",
+		"CapabilityBoundingSet=", "ProtectSystem=strict", "ReadWritePaths=/data/device-core /run/device-core /run/lock/device-core",
 	} {
 		if !strings.Contains(unit, required+"\n") {
 			t.Errorf("missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"CAP_SYS_RAWIO", "SupplementaryGroups", "AmbientCapabilities", "DEVICE_CORE_HTTP_ADDR", "Environment=DEVICE_CORE_LVA_UNIT=", "RuntimeDirectory=device-core/lock"} {
+	for _, forbidden := range []string{"CAP_SYS_RAWIO", "AmbientCapabilities", "DEVICE_CORE_HTTP_ADDR", "Environment=DEVICE_CORE_LVA_UNIT=", "RuntimeDirectory=device-core/lock"} {
 		if strings.Contains(unit, forbidden) {
 			t.Errorf("unexpected %q", forbidden)
 		}
@@ -35,8 +35,8 @@ func TestDeviceCoreImageContract(t *testing.T) {
 		t.Error("obsolete D-Bus policy remains")
 	}
 	policy := read(t, filepath.Join(rootfsDir, "etc/dbus-1/system.d/io.github.guilhem.DeviceCore1.conf"))
-	if !strings.Contains(policy, `<deny own="io.github.guilhem.DeviceCore1"/>`) || !strings.Contains(policy, `<policy user="nabos">`) {
-		t.Error("missing default deny/shared-account policy")
+	if !strings.Contains(policy, `<deny own="io.github.guilhem.DeviceCore1"/>`) || !strings.Contains(policy, `<policy user="device-core">`) {
+		t.Error("missing default deny/service-account policy")
 	}
 	for _, file := range []string{"etc/systemd/system/ssh.service.d/nabos.conf", "etc/ssh/sshd_config.d/00-nabos.conf"} {
 		if !strings.Contains(read(t, filepath.Join(rootfsDir, file)), "/data/device-core/ssh/authorized_keys") {
@@ -63,11 +63,11 @@ func TestDeviceCoreImageContract(t *testing.T) {
 
 func TestHardwareApplicationImageContract(t *testing.T) {
 	for name, required := range map[string][]string{
-		"nab-hardware": {"Type=dbus", "BusName=io.github.guilhem.NabHardware1", "SupplementaryGroups=gpio video kmem", "AmbientCapabilities=CAP_SYS_RAWIO", "CapabilityBoundingSet=CAP_SYS_RAWIO", "RuntimeDirectory=nab-hardware", "WorkingDirectory=/run/nab-hardware"},
-		"nabos":        {"AmbientCapabilities=CAP_NET_BIND_SERVICE", "CapabilityBoundingSet=CAP_NET_BIND_SERVICE", "Environment=NABOS_HTTP_ADDR=:80", "Environment=NABOS_DATA_DIR=/data/nabos", "ReadWritePaths=/data/nabos", "RuntimeDirectory=nabos", "WorkingDirectory=/run/nabos", "PrivateDevices=yes"},
+		"nab-hardware": {"User=nab-hardware", "Type=dbus", "BusName=io.github.guilhem.NabHardware1", "SupplementaryGroups=gpio video kmem", "AmbientCapabilities=CAP_SYS_RAWIO", "CapabilityBoundingSet=CAP_SYS_RAWIO", "RuntimeDirectory=nab-hardware", "WorkingDirectory=/run/nab-hardware"},
+		"nabos":        {"User=nab-app", "AmbientCapabilities=CAP_NET_BIND_SERVICE", "CapabilityBoundingSet=CAP_NET_BIND_SERVICE", "Environment=NABOS_HTTP_ADDR=:80", "Environment=NABOS_DATA_DIR=/data/nabos", "ReadWritePaths=/data/nabos", "RuntimeDirectory=nabos", "WorkingDirectory=/run/nabos", "PrivateDevices=yes"},
 	} {
 		unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system", name+".service"))
-		for _, line := range append(required, "User=nabos", "ExecStart=/usr/bin/"+name, "ProtectSystem=strict", "NoNewPrivileges=yes") {
+		for _, line := range append(required, "ExecStart=/usr/bin/"+name, "ProtectSystem=strict", "NoNewPrivileges=yes") {
 			if !strings.Contains(unit, line+"\n") {
 				t.Errorf("%s missing %q", name, line)
 			}
@@ -84,15 +84,15 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 		}
 	}
 	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
-	if !strings.Contains(prepare, "usermod -G audio nabos") {
-		t.Error("shared account must not inherit hardware groups")
+	if !strings.Contains(prepare, "usermod -G '' nabos") {
+		t.Error("operator account must not inherit hardware groups")
 	}
 	udev := read(t, filepath.Join(rootfsDir, "etc/udev/rules.d/60-nabos.rules"))
 	if !strings.Contains(udev, `KERNEL=="ear[01]|rfid0|nfc0", GROUP="gpio", MODE="0660"`) {
 		t.Error("ear/RFID access must require hardware group")
 	}
 	policy := read(t, filepath.Join(rootfsDir, "etc/dbus-1/system.d/io.github.guilhem.NabHardware1.conf"))
-	for _, rule := range []string{`<deny own="io.github.guilhem.NabHardware1"/>`, `<deny send_destination="io.github.guilhem.NabHardware1"/>`, `<policy user="nabos">`, `<allow own="io.github.guilhem.NabHardware1"/>`, `<allow send_destination="io.github.guilhem.NabHardware1"/>`} {
+	for _, rule := range []string{`<deny own="io.github.guilhem.NabHardware1"/>`, `<deny send_destination="io.github.guilhem.NabHardware1"/>`, `<policy user="nab-app">`, `<allow own="io.github.guilhem.NabHardware1"/>`, `<allow send_destination="io.github.guilhem.NabHardware1"/>`} {
 		if !strings.Contains(policy, rule) {
 			t.Errorf("missing hardware bus policy %s", rule)
 		}
@@ -104,7 +104,7 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 
 func TestDeviceCorePrivateDevices(t *testing.T) {
 	unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/device-core.service"))
-	for _, required := range []string{"PrivateDevices=yes", "CapabilityBoundingSet=", "NoNewPrivileges=yes", "Environment=XDG_RUNTIME_DIR=/run/user/1000"} {
+	for _, required := range []string{"PrivateDevices=yes", "CapabilityBoundingSet=", "NoNewPrivileges=yes", "Environment=XDG_RUNTIME_DIR=/run/device-core"} {
 		if !strings.Contains(unit, required+"\n") {
 			t.Errorf("missing device isolation setting %q", required)
 		}
@@ -161,24 +161,23 @@ func TestLVAUnitAdvertisedOnlyWhenInstalled(t *testing.T) {
 	}
 }
 
-func TestDeviceCoreSystemPolkitUnitBoundary(t *testing.T) {
+func TestDeviceCoreSystemPolkitAccountBoundary(t *testing.T) {
 	imageTools(t, "node")
 	rules := read(t, filepath.Join(rootfsDir, "etc/polkit-1/rules.d/50-nabos.rules"))
 	run(t, "", "node", "-e", `const assert = require('node:assert/strict');
 const polkit = {Result: {YES:'yes', NO:'no', NOT_HANDLED:'not_handled'}, rules:[], addRule(f) { this.rules.push(f); }};
 `+rules+`
 const decide = (id, subject, unit='', verb='') => polkit.rules[0]({id,lookup:k=>({unit,verb}[k])},subject);
-const core = {user:'nabos',system_unit:'device-core.service',no_new_privileges:true};
+const core = {user:'device-core'};
 for (const id of ['org.freedesktop.login1.reboot','org.freedesktop.login1.power-off', 'org.freedesktop.timedate1.set-time']) {
   assert.equal(decide(id,core),'yes');
-  for (const unit of ['nab-hardware.service','nabos.service','user@1000.service',''])
-    assert.equal(decide(id,{...core,system_unit:unit}),'no');
-  assert.equal(decide(id,{...core,no_new_privileges:false}),'no');
+  for (const user of ['nab-app','nab-hardware','nab-audio'])
+    assert.equal(decide(id,{user}),'no');
 }
 for (const unit of ['linux-voice-assistant.service','ssh.service','systemd-timesyncd.service','nabos-rauc-manual.service']) {
   const id='org.freedesktop.systemd1.manage-units';
   assert.equal(decide(id,core,unit,'start'),'yes');
-  assert.equal(decide(id,{...core,system_unit:'nabos.service'},unit,'start'),'no');
+  assert.equal(decide(id,{user:'nab-app'},unit,'start'),'no');
   assert.equal(decide(id,core,unit,'enable'),'no');
 }
 `)
@@ -193,7 +192,7 @@ func TestNetworkLockTmpfilesPreservesInode(t *testing.T) {
 			// Exercise tmpfiles on an owned root. Production owners are checked
 			// separately; this check needs no root or host account named nabos.
 			fields := strings.Fields(line)
-			if fields[0] == "d" && fields[3] != "root" || fields[0] == "f" && fields[3] != "nabos" || fields[5] != "-" {
+			if fields[0] == "d" && fields[3] != "root" || fields[0] == "f" && fields[3] != "device-core" || fields[5] != "-" {
 				t.Fatalf("unsafe lock rule: %s", line)
 			}
 			fields[3], fields[4] = fmt.Sprint(os.Getuid()), fmt.Sprint(os.Getgid())

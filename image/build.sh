@@ -120,9 +120,6 @@ cp "$repo/services/go.sum" "$payload/inputs/"
 cp "$repo/image/lva-requirements.lock" "$payload/inputs/"
 "$nab_image" unpack "$payload/inputs/sources.lock.json" "$payload/inputs" "$payload/src"
 cp -a "$repo/image" "$payload/image"
-nm_fetch_args=()
-if [[ -n $replay ]]; then nm_fetch_args=(--offline); fi
-bash "$repo/image/network-manager.sh" fetch "$payload/inputs/network-manager" "${nm_fetch_args[@]}"
 if ! $base_cached; then
   xz --decompress --stdout "$payload/inputs/raspios.img.xz" > "$work/base.img"
   printf '%s  %s\n' "$image_hash" "$work/base.img" | sha256sum --check
@@ -176,7 +173,6 @@ if ! $base_cached; then
   cp --reflink=auto --sparse=always "$work/base.img" "$work/builder.img"
   mount_image "$work/builder.img"
   in_target build-packages
-  sudo env QEMU_CPU="$qemu_cpu" chroot "$root" /bin/bash /nabos-build/image/network-manager.sh build
   in_target drivers
   in_target wheels
   unmount_image
@@ -280,8 +276,6 @@ genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" --inputpat
 chmod a-w "$work/images/sdcard.img" "$work/images/rootfs.ext4" "$work/images/boot.vfat"
 if $defer_tests; then
   echo 'Image verification deferred to the separate CI job'
-  # Preserve the offline replay inputs even when verification runs elsewhere.
-  bash "$repo/image/test-bus.sh" "$payload/inputs/test-bus" "$work/test-bus" >/dev/null
 else
   echo "$(date -u +%FT%TZ) Testing a disposable copy of the assembled SD image"
   bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" "$payload" "$work/components/uboot/u-boot.bin"

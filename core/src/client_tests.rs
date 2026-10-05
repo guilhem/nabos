@@ -1,10 +1,47 @@
-//! Private-bus tests use the real bus ProcessFD; systemd alone is a fixture.
+//! Private-bus tests authenticate real Unix credentials, without systemd fixtures.
 use super::*;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use zbus::zvariant::{OwnedFd, OwnedObjectPath};
+use zbus::zvariant::OwnedObjectPath;
+use zbus::Proxy;
+
+fn current_user() -> String {
+    let output = Command::new("id").arg("-un").output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+fn wrong_user() -> &'static str {
+    if unsafe { libc::getuid() } == 0 {
+        "nobody"
+    } else {
+        "root"
+    }
+}
+fn account_test() -> bool {
+    if std::env::var_os("NABOS_TEST_ACCOUNTS").is_some() {
+        return false;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            std::thread::current().name().unwrap(),
+            "--ignored",
+        ])
+        .env("NABOS_TEST_ACCOUNTS", "1")
+        .env("NABOS_APP_USER", current_user())
+        .env("NABOS_DEVICE_USER", current_user())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
 
 struct PrivateBus {
     child: Child,
@@ -15,7 +52,7 @@ impl PrivateBus {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nab-hardware-test-{}-{}",
+            "b-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -62,65 +99,6 @@ impl Drop for PrivateBus {
     }
 }
 
-struct Systemd {
-    caller_unit: Arc<Mutex<String>>,
-    daemon_unit: Arc<Mutex<String>>,
-    daemon_pid: Arc<Mutex<u32>>,
-    release_daemon: Arc<Mutex<Option<(Connection, String)>>>,
-}
-struct Unit(Arc<Mutex<String>>);
-#[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
-impl Unit {
-    #[zbus(property)]
-    fn id(&self) -> String {
-        self.0.lock().unwrap().clone()
-    }
-}
-#[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
-impl Systemd {
-    #[zbus(name = "GetUnitByPIDFD")]
-    async fn get_unit_by_pidfd(&self, fd: OwnedFd) -> (OwnedObjectPath, String, Vec<u8>) {
-        use std::os::fd::AsRawFd;
-        let info =
-            std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd())).unwrap();
-        let pid: u32 = info
-            .lines()
-            .find_map(|l| l.strip_prefix("Pid:\t"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!(
-            pid == std::process::id() || pid == *self.daemon_pid.lock().unwrap(),
-            "the bus must supply a real pinned caller FD"
-        );
-        let release = self.release_daemon.lock().unwrap().take();
-        if let Some((bus, owner)) = release {
-            Proxy::new(&bus, owner, "/Test", "io.github.guilhem.DeviceCore1.Test")
-                .await
-                .unwrap()
-                .call::<_, _, ()>("ReleaseService", &())
-                .await
-                .unwrap();
-        }
-        let daemon = pid == *self.daemon_pid.lock().unwrap();
-        let (path, unit) = if daemon {
-            (
-                "/org/freedesktop/systemd1/unit/device_2dcore_2eservice",
-                &self.daemon_unit,
-            )
-        } else {
-            (
-                "/org/freedesktop/systemd1/unit/nabos_2eservice",
-                &self.caller_unit,
-            )
-        };
-        (
-            path.try_into().unwrap(),
-            unit.lock().unwrap().clone(),
-            vec![0; 16],
-        )
-    }
-}
 struct Manager;
 #[zbus::interface(name = "io.github.guilhem.DeviceCore1.Manager")]
 impl Manager {
@@ -147,11 +125,6 @@ impl Network {
 }
 struct Harness {
     bus: PrivateBus,
-    unit: Arc<Mutex<String>>,
-    _systemd: Connection,
-    daemon_unit: Arc<Mutex<String>>,
-    daemon_id: Arc<Mutex<String>>,
-    release_daemon: Arc<Mutex<Option<(Connection, String)>>>,
     daemon: Connection,
     hardware: Arc<Hardware>,
     connection: Connection,
@@ -162,55 +135,16 @@ struct Harness {
 impl Harness {
     async fn new() -> Self {
         let bus = PrivateBus::new();
-        let unit = Arc::new(Mutex::new("nabos.service".into()));
-        let daemon_unit = Arc::new(Mutex::new("device-core.service".into()));
-        let daemon_id = Arc::new(Mutex::new("device-core.service".into()));
-        let daemon_pid = Arc::new(Mutex::new(0));
-        let release_daemon = Arc::new(Mutex::new(None));
-        let systemd = zbus::connection::Builder::address(bus.address.as_str())
-            .unwrap()
-            .name("org.freedesktop.systemd1")
-            .unwrap()
-            .serve_at(
-                "/org/freedesktop/systemd1",
-                Systemd {
-                    caller_unit: unit.clone(),
-                    daemon_unit: daemon_unit.clone(),
-                    daemon_pid: daemon_pid.clone(),
-                    release_daemon: release_daemon.clone(),
-                },
-            )
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        systemd
-            .object_server()
-            .at(
-                "/org/freedesktop/systemd1/unit/nabos_2eservice",
-                Unit(unit.clone()),
-            )
-            .await
-            .unwrap();
-        systemd
-            .object_server()
-            .at(
-                "/org/freedesktop/systemd1/unit/device_2dcore_2eservice",
-                Unit(daemon_id.clone()),
-            )
-            .await
-            .unwrap();
         let daemon_process = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "bus::tests::private_bus_rejects_name_takeover_and_untrusted_daemon_unit",
+                "bus::tests::private_bus_rejects_name_takeover_and_untrusted_daemon_user",
                 "--ignored",
             ])
             .env("NABOS_F1_DAEMON_ADDRESS", &bus.address)
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
-        *daemon_pid.lock().unwrap() = daemon_process.id();
         let daemon = bus.connect().await;
         let dbus = fdo::DBusProxy::new(&daemon).await.unwrap();
         eventually(|| async {
@@ -263,11 +197,6 @@ impl Harness {
         eventually(|| async { !hardware.state.lock().unwrap().maintenance.blocked() }).await;
         Self {
             bus,
-            unit,
-            _systemd: systemd,
-            daemon_unit,
-            daemon_id,
-            release_daemon,
             daemon,
             hardware,
             connection,
@@ -336,8 +265,11 @@ where
 }
 
 #[tokio::test]
-#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+#[ignore = "requires a private D-Bus daemon"]
 async fn private_bus_auth_bounds_wire_and_owner_disconnect() {
+    if account_test() {
+        return;
+    }
     let h = Harness::new().await;
     let caller = h.bus.connect().await;
     let other = h.bus.connect().await;
@@ -356,9 +288,17 @@ async fn private_bus_auth_bounds_wire_and_owner_disconnect() {
         .call::<_, _, ()>("SetLeds", &(vec![(0u8, 1u8, 2u8, 3u8)],))
         .await
         .is_err());
-    *h.unit.lock().unwrap() = "untrusted.service".into();
-    assert!(api.call::<_, _, ()>("Claim", &()).await.is_err());
-    *h.unit.lock().unwrap() = "nabos.service".into();
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    for account in [
+        OsString::from(wrong_user()),
+        OsString::from(""),
+        OsString::from("nabos-no-such-test-account"),
+        OsString::from_vec(vec![0xff]),
+    ] {
+        std::env::set_var("NABOS_APP_USER", account);
+        assert!(api.call::<_, _, ()>("Claim", &()).await.is_err());
+    }
+    std::env::set_var("NABOS_APP_USER", current_user());
     api.call::<_, _, ()>("Claim", &()).await.unwrap();
     assert!(outsider.call::<_, _, ()>("Claim", &()).await.is_err());
     api.call::<_, _, ()>("Claim", &()).await.unwrap();
@@ -479,8 +419,11 @@ async fn private_bus_auth_bounds_wire_and_owner_disconnect() {
 }
 
 #[tokio::test]
-#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+#[ignore = "requires a private D-Bus daemon"]
 async fn private_bus_maintenance_fences_deferred_mutations_and_authenticates_current_daemon() {
+    if account_test() {
+        return;
+    }
     let h = Harness::new().await;
     let caller = h.bus.connect().await;
     let outsider = h.bus.connect().await;
@@ -563,8 +506,11 @@ async fn private_bus_maintenance_fences_deferred_mutations_and_authenticates_cur
 }
 
 #[tokio::test]
-#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+#[ignore = "requires a private D-Bus daemon"]
 async fn private_bus_simulation_emits_hardware_interface_and_preserves_presence() {
+    if account_test() {
+        return;
+    }
     let h = Harness::new().await;
     let caller = h.bus.connect().await;
     let api = h.api(&caller).await;
@@ -639,8 +585,11 @@ async fn private_bus_simulation_emits_hardware_interface_and_preserves_presence(
 }
 
 #[tokio::test]
-#[ignore = "requires a recent private D-Bus with ProcessFD (Ubuntu 26.04)"]
+#[ignore = "requires a private D-Bus daemon"]
 async fn private_bus_explicit_address_survives_redirected_system_environment() {
+    if account_test() {
+        return;
+    }
     const TEST: &str =
         "bus::tests::private_bus_explicit_address_survives_redirected_system_environment";
     if let Ok(expected) = std::env::var("NABOS_TEST_PRIVATE_BUS_ID") {
@@ -684,9 +633,12 @@ async fn private_bus_explicit_address_survives_redirected_system_environment() {
 }
 
 #[tokio::test]
-#[ignore = "requires a recent private D-Bus with ProcessFD"]
-async fn private_bus_rejects_name_takeover_and_untrusted_daemon_unit() {
+#[ignore = "requires a private D-Bus daemon"]
+async fn private_bus_rejects_name_takeover_and_untrusted_daemon_user() {
     daemon_fixture_process().await;
+    if account_test() {
+        return;
+    }
     let h = Harness::new().await;
     let attacker = h.bus.connect().await;
     assert!(
@@ -704,7 +656,7 @@ async fn private_bus_rejects_name_takeover_and_untrusted_daemon_unit() {
     );
     let owner = h.daemon_owner.as_str();
     assert!(maintenance::authorize(&h.connection, owner).await.is_ok());
-    *h.daemon_unit.lock().unwrap() = "other.service".into();
+    std::env::set_var("NABOS_DEVICE_USER", wrong_user());
     assert!(maintenance::authorize(&h.connection, owner).await.is_err());
     assert!(h
         .agent(&h.daemon)
@@ -720,22 +672,33 @@ async fn private_bus_rejects_name_takeover_and_untrusted_daemon_unit() {
         })
         .await;
     assert!(h.hardware.state.lock().unwrap().maintenance.blocked());
-    *h.daemon_unit.lock().unwrap() = "device-core.service".into();
-    *h.daemon_id.lock().unwrap() = "wrong.service".into();
-    assert!(maintenance::authorize(&h.connection, owner).await.is_err());
-    *h.daemon_id.lock().unwrap() = "device-core.service".into();
-    *h.release_daemon.lock().unwrap() = Some((h.daemon.clone(), h.daemon_owner.clone()));
+    std::env::set_var("NABOS_DEVICE_USER", current_user());
+    assert!(
+        authorize_user(
+            &h.connection,
+            crate::device::SERVICE,
+            "NABOS_DEVICE_USER",
+            "device-core"
+        )
+        .await
+        .is_err(),
+        "well-known sender is never accepted"
+    );
+    h.service_name("ReleaseService").await;
     assert!(
         maintenance::authorize(&h.connection, owner).await.is_err(),
-        "owner change during pidfd lookup must be fenced"
+        "live old owner must be fenced after losing the name"
     );
     h.service_name("RequestService").await;
     eventually(|| async { !h.hardware.state.lock().unwrap().maintenance.blocked() }).await;
 }
 
 #[tokio::test]
-#[ignore = "requires a recent private D-Bus with ProcessFD"]
+#[ignore = "requires a private D-Bus daemon"]
 async fn private_bus_hardware_does_not_replace_or_queue_for_existing_owner() {
+    if account_test() {
+        return;
+    }
     let bus = PrivateBus::new();
     let holder = bus.connect().await;
     holder.request_name(SERVICE).await.unwrap(); // deliberately allows replacement
@@ -776,7 +739,7 @@ async fn private_bus_hardware_does_not_replace_or_queue_for_existing_owner() {
     assert!(!device.connection().await.unwrap().is_closed());
 }
 
-// A distinct process is necessary: pidfds identify processes, not connections.
+// The daemon has its own connection and process lifetime for owner-loss tests.
 struct DaemonControl {
     agent: Arc<Mutex<String>>,
     presence: Arc<Mutex<Vec<u64>>>,

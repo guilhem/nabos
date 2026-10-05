@@ -14,7 +14,7 @@ if [ "${1:-}" = cleanup ]; then
 	exit 0
 fi
 
-install -d -m 0750 -o root -g nabos "$work"
+install -d -m 0750 -o root -g device-core "$work"
 # Snapshot before verifying: the source directory belongs to the unprivileged updater.
 [ ! -L "$source" ] && [ -f "$source" ]
 size=$(stat -c %s "$source")
@@ -52,7 +52,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=NabOS manual update
 rauc resign --no-verify --cert="$runtime/cert.pem" --key="$runtime/key.pem" \
 	"$work/input.raucb" "$work/bundle.raucb"
 rm -f "$runtime/key.pem" "$work/input.raucb"
-chown root:nabos "$work/bundle.raucb"
+chown root:device-core "$work/bundle.raucb"
 chmod 0640 "$work/bundle.raucb"
 hash=$(openssl x509 -in "$runtime/cert.pem" -hash -noout)
 install -m 0644 "$runtime/cert.pem" "$trust/$hash.new"

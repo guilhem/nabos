@@ -40,7 +40,7 @@ mkdir -p /data $PERSIST
 # The overlay replaces the package directory mode; persist copies it on first boot.
 chmod 0700 /etc/NetworkManager/system-connections /var/lib/NetworkManager
 chown nabos:nabos /var/lib/nabos
-chmod 0700 /var/lib/nabos
+chmod 0711 /var/lib/nabos
 chmod 0440 /etc/sudoers.d/010_nabos-nopasswd
 
 # Advertise Voice only when finalize installed its executable environment.

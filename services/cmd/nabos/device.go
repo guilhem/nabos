@@ -20,7 +20,7 @@ func (a *App) clockNow() time.Time { _, _, now := a.clockSnapshot(); return now 
 
 // Acquire holds the product media gate across the complete maintenance
 // operation, including silence between chapters. Generic audio/voice use the
-// daemon's own gate; the parent validates this agent's systemd unit.
+// daemon's own gate; the parent validates this agent's Unix account.
 type maintenanceAgent struct {
 	app                                             *App
 	mu                                              sync.Mutex

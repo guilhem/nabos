@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/godbus/dbus/v5"
 	"github.com/guilhem/nabos/services/internal/device"
 	"github.com/guilhem/nabos/services/internal/devicetest"
@@ -12,105 +11,57 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
 
-// The real bus supplies ProcessFD. Only the systemd unit attribution is mocked.
+// This hook delays real UnixUser replies; credentials are never fabricated.
 type deviceIdentity struct {
 	mu          sync.Mutex
-	requester   string
-	conn        *dbus.Conn
-	unit, id    string
 	afterLookup func()
-}
-type identityUnit struct {
-	identity *deviceIdentity
-	hardware bool
-}
-
-func (u identityUnit) Get(iface, name string) (dbus.Variant, *dbus.Error) {
-	if iface != "org.freedesktop.systemd1.Unit" || name != "Id" {
-		return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", nil)
-	}
-	if u.hardware {
-		return dbus.MakeVariant("nab-hardware.service"), nil
-	}
-	u.identity.mu.Lock()
-	defer u.identity.mu.Unlock()
-	return dbus.MakeVariant(u.identity.id), nil
-}
-func (i *deviceIdentity) GetUnitByPIDFD(sender dbus.Sender, fd dbus.UnixFD) (dbus.ObjectPath, string, []byte, *dbus.Error) {
-	defer syscall.Close(int(fd))
-	if _, err := os.ReadFile(fmt.Sprintf("/proc/self/fdinfo/%d", fd)); err != nil {
-		return "", "", nil, dbus.MakeFailedError(err)
-	}
-	i.mu.Lock()
-	unit, hook := i.unit, i.afterLookup
-	i.mu.Unlock()
-	if string(sender) != i.requester {
-		// Both daemons are fixtures in this process. Use the requester's
-		// installed owner subscription to distinguish hardware from audio.
-		ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
-		defer cancel()
-		var rules map[string][]string
-		if err := i.conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.Debug.Stats.GetAllMatchRules", 0).Store(&rules); err != nil {
-			return "", "", nil, dbus.MakeFailedError(err)
-		}
-		for _, rule := range rules[string(sender)] {
-			if strings.Contains(rule, "io.github.guilhem.NabHardware1") {
-				return "/org/freedesktop/systemd1/unit/hardware", "nab-hardware.service", []byte{1}, nil
-			}
-		}
-	}
-	if hook != nil {
-		hook()
-	}
-	return "/org/freedesktop/systemd1/unit/device", unit, []byte{1}, nil
 }
 
 var deviceIdentities = map[*App]*deviceIdentity{}
 
-func installDeviceIdentity(t *testing.T, a *App, conn *dbus.Conn) {
+func installDeviceIdentity(t *testing.T, a *App, _ *dbus.Conn) {
 	t.Helper()
-	i := &deviceIdentity{requester: a.device.Conn.Names()[0], conn: conn, unit: "device-core.service", id: "device-core.service"}
-	if reply, err := conn.RequestName("org.freedesktop.systemd1", dbus.NameFlagDoNotQueue); err != nil || reply != dbus.RequestNameReplyPrimaryOwner && reply != dbus.RequestNameReplyAlreadyOwner {
-		t.Fatal(reply, err)
-	}
-	if err := conn.Export(i, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager"); err != nil {
+	i := &deviceIdentity{}
+	conn, err := dbus.ConnectSystemBus(devicetest.CredentialReplies(func() {
+		i.mu.Lock()
+		hook := i.afterLookup
+		i.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
+	})...)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for path, hardware := range map[dbus.ObjectPath]bool{"/org/freedesktop/systemd1/unit/device": false, "/org/freedesktop/systemd1/unit/hardware": true} {
-		if err := conn.Export(identityUnit{i, hardware}, path, "org.freedesktop.DBus.Properties"); err != nil {
-			t.Fatal(err)
-		}
+	a.device.Conn.Close()
+	a.device.Conn = conn
+	if err := conn.Export(a.agent, device.Path("Agent"), device.Interface("Agent")); err != nil {
+		t.Fatal(err)
 	}
 	deviceIdentities[a] = i
 	t.Cleanup(func() { delete(deviceIdentities, a) })
 }
 
-func TestDeviceIdentityRejectsWrongUnitAndOwnerChange(t *testing.T) {
+func TestDeviceIdentityRejectsWrongAccountAndOwnerChange(t *testing.T) {
 	a := testApp(t)
 	f := appFixture(t, a)
-	devicetest.RequireProcessFD(t, f.Conn)
 	ctx := context.Background()
 	owner, err := a.device.TrustedOwner(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	i := deviceIdentities[a]
-	for _, tc := range []struct{ unit, id string }{{"nabos.service", "nabos.service"}, {"device-core.service", "wrong.service"}} {
-		i.mu.Lock()
-		i.unit, i.id = tc.unit, tc.id
-		i.mu.Unlock()
+	for _, expected := range []string{devicetest.WrongUser(t), "nabos-no-such-test-account", ""} {
+		t.Setenv("NABOS_DEVICE_USER", expected)
 		if a.device.Authenticate(ctx, owner) == nil || a.agent.daemon(dbus.Sender(owner)) {
-			t.Fatal("untrusted unit accepted", tc)
+			t.Fatal("untrusted account accepted", expected)
 		}
 	}
-	i.mu.Lock()
-	i.unit, i.id = "device-core.service", "device-core.service"
-	i.mu.Unlock()
+	devicetest.UseCurrentUser(t, "NABOS_DEVICE_USER")
+	i := deviceIdentities[a]
 	i.mu.Lock()
 	i.afterLookup = func() {
 		if _, err := f.Conn.ReleaseName(device.Destination); err != nil {
@@ -176,11 +127,8 @@ func TestPublishedSettingsAuthenticateAndFenceConfigRead(t *testing.T) {
 			if err := f.Conn.ExportMethodTable(map[string]interface{}{"Read": read}, device.Path("Config"), device.Interface("Config")); err != nil {
 				t.Fatal(err)
 			}
-			identity := deviceIdentities[a]
 			if mode == "untrusted" {
-				identity.mu.Lock()
-				identity.unit = "other.service"
-				identity.mu.Unlock()
+				t.Setenv("NABOS_DEVICE_USER", devicetest.WrongUser(t))
 			}
 			a.publishSettings(ctx) // also used before deviceLoop at startup
 			expectedReads := int32(1)
@@ -190,9 +138,7 @@ func TestPublishedSettingsAuthenticateAndFenceConfigRead(t *testing.T) {
 			if reads.Load() != expectedReads {
 				t.Fatal("read from untrusted owner", reads.Load())
 			}
-			identity.mu.Lock()
-			identity.unit = "device-core.service"
-			identity.mu.Unlock()
+			devicetest.UseCurrentUser(t, "NABOS_DEVICE_USER")
 			if mode == "owner changed during read" {
 				if _, err := replacement.ReleaseName(device.Destination); err != nil {
 					t.Fatal(err)
@@ -269,9 +215,9 @@ func TestMaintenanceResumeAuthenticationFailureNeverUnpausesEngine(t *testing.T)
 				close(entered)
 				<-release
 				if mode == "denied" {
-					identity.mu.Lock()
-					identity.id = "wrong.service"
-					identity.mu.Unlock()
+					if _, err := appFixture(t, a).Conn.ReleaseName(device.Destination); err != nil {
+						t.Error(err)
+					}
 				}
 				close(returned)
 			}
@@ -311,8 +257,10 @@ func TestMaintenanceResumeAuthenticationFailureNeverUnpausesEngine(t *testing.T)
 			}
 			identity.mu.Lock()
 			identity.afterLookup = nil
-			identity.id = "device-core.service"
 			identity.mu.Unlock()
+			if _, err := appFixture(t, a).Conn.RequestName(device.Destination, dbus.NameFlagDoNotQueue); err != nil {
+				t.Fatal(err)
+			}
 			a.agent.mu.Lock()
 			retryErr := a.agent.resume(owner)
 			a.agent.mu.Unlock()

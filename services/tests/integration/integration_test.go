@@ -12,15 +12,16 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/guilhem/nabos/services/internal/busidentity"
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/device"
 	"golang.org/x/sys/unix"
@@ -37,13 +38,12 @@ type harness struct {
 	httpPort              int
 	haPort                int
 	procs                 map[string]*exec.Cmd
-	mu                    sync.Mutex
-	units                 map[uint32]string
 	requireAgents         bool
 	simAudioMS            int
 	hardware, app, device []string
 	deviceAPI             *device.Client
 	bus                   *dbus.Conn
+	accounts              map[string]*syscall.Credential
 }
 
 func freePort(t *testing.T) int {
@@ -119,24 +119,72 @@ func (h *harness) build() {
 	}
 }
 
+// Only the integration launcher runs as root; product daemons drop to their
+// actual dedicated accounts before exec, with no supplementary host groups.
+func (h *harness) serviceAccounts() {
+	h.t.Helper()
+	if os.Geteuid() != 0 {
+		h.fatalf("TestEndToEnd requires euid 0 and dedicated accounts in a private mount/network namespace")
+	}
+	h.accounts = make(map[string]*syscall.Credential)
+	seen := map[uint32]bool{0: true}
+	for _, service := range []struct{ role, environment, fallback string }{
+		{"app", "NABOS_APP_USER", "nab-app"},
+		{"hardware", "NABOS_HARDWARE_USER", "nab-hardware"},
+		{"device", "NABOS_DEVICE_USER", "device-core"},
+	} {
+		account, err := user.Lookup(busidentity.ExpectedUser(service.environment, service.fallback))
+		if err != nil {
+			h.fatalf("%s account: %v", service.role, err)
+		}
+		uid, uidErr := strconv.ParseUint(account.Uid, 10, 32)
+		gid, gidErr := strconv.ParseUint(account.Gid, 10, 32)
+		if uidErr != nil || gidErr != nil || seen[uint32(uid)] {
+			h.fatalf("%s needs a distinct nonroot UID", service.role)
+		}
+		seen[uint32(uid)] = true
+		h.accounts[service.role] = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	}
+	if err := os.Chmod(h.tmp, 0755); err != nil {
+		h.fatalf("%v", err)
+	}
+}
+
+func (h *harness) own(role, path string) {
+	if account := h.accounts[role]; account != nil {
+		if err := os.Chown(path, int(account.Uid), int(account.Gid)); err != nil {
+			h.fatalf("%s ownership: %v", path, err)
+		}
+	}
+}
+
+func (h *harness) directory(role, path string) {
+	if err := os.MkdirAll(path, 0700); err != nil {
+		h.fatalf("%v", err)
+	}
+	h.own(role, path)
+}
+
 func (h *harness) spawn(name string, args []string, env ...string) {
 	logf, err := os.OpenFile(filepath.Join(h.tmp, name+".log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		h.fatalf("%v", err)
 	}
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = append(os.Environ(), env...)
-	cmd.Dir = h.tmp
-	cmd.Stdout, cmd.Stderr = logf, logf
-	h.mu.Lock()
-	err = cmd.Start()
-	if err == nil {
-		unit := map[string]string{"hardware": "nab-hardware.service", "app": "nabos.service", "device": "device-core.service"}[name]
-		if unit != "" {
-			h.units[uint32(cmd.Process.Pid)] = unit
-		}
+	if account := h.accounts[name]; account != nil {
+		runtime := filepath.Join(h.tmp, name+"-run")
+		h.directory(name, runtime)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: account}
+		cmd.Dir = runtime
+		env = append(env, "HOME="+runtime, "XDG_RUNTIME_DIR="+runtime)
+		h.own(name, logf.Name())
 	}
-	h.mu.Unlock()
+	cmd.Env = append(os.Environ(), env...)
+	if cmd.Dir == "" {
+		cmd.Dir = h.tmp
+	}
+	cmd.Stdout, cmd.Stderr = logf, logf
+	err = cmd.Start()
 	logf.Close()
 	if err != nil {
 		h.fatalf("%s: %v", name, err)
@@ -159,9 +207,6 @@ func (h *harness) stop(name string, sig os.Signal) {
 		cmd.Process.Kill()
 		<-done
 	}
-	h.mu.Lock()
-	delete(h.units, uint32(cmd.Process.Pid))
-	h.mu.Unlock()
 }
 
 func (h *harness) waitFor(timeout time.Duration, what string, cond func() bool) {
@@ -190,9 +235,7 @@ func (h *harness) startHardware() {
 
 func (h *harness) startApp() {
 	data := filepath.Join(h.tmp, "data")
-	if err := os.MkdirAll(data, 0o755); err != nil {
-		h.fatalf("%v", err)
-	}
+	h.directory("app", data)
 	cfg := filepath.Join(data, "application.json")
 	if _, err := os.Stat(cfg); os.IsNotExist(err) {
 		st := config.Defaults()
@@ -213,6 +256,7 @@ func (h *harness) startApp() {
 			h.fatalf("%v", err)
 		}
 	}
+	h.own("app", cfg)
 	assets := os.Getenv("NABOS_TEST_ASSETS")
 	if assets == "" {
 		assets = filepath.Join(repo, "assets")
@@ -301,13 +345,16 @@ func TestEndToEnd(t *testing.T) {
 	if os.Getenv("NABOS_INTEGRATION") != "1" {
 		t.Skip("set NABOS_INTEGRATION=1")
 	}
+
 	tmp, err := os.MkdirTemp("", "nabos-e2e-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, tmp: tmp, httpPort: freePort(t), haPort: freePort(t), procs: map[string]*exec.Cmd{}, requireAgents: true}
-	h.build()
+	h := &harness{t: t, tmp: tmp, procs: map[string]*exec.Cmd{}, requireAgents: true}
 	defer h.cleanup()
+	h.serviceAccounts()
+	h.httpPort, h.haPort = freePort(t), freePort(t)
+	h.build()
 	h.startDeviceCore(t)
 	h.bus, err = dbus.ConnectSystemBus()
 	if err != nil {
@@ -351,20 +398,16 @@ func TestEndToEnd(t *testing.T) {
 		}
 	})
 
-	h.check("hardware rejects an untrusted unit", func(t *testing.T) {
+	h.check("hardware rejects an untrusted account", func(t *testing.T) {
 		if err := h.bus.Object(hardwareName, hardwarePath).Call(hardwareName+".Claim", 0).Err; err == nil {
 			t.Fatal("test process obtained hardware control")
 		}
-		h.mu.Lock()
-		h.units[uint32(os.Getpid())] = "nabos.service"
-		h.mu.Unlock()
-		defer func() {
-			h.mu.Lock()
-			delete(h.units, uint32(os.Getpid()))
-			h.mu.Unlock()
-		}()
-		if _, err := h.deviceAPI.Call(context.Background(), "Network", "ReportPresence", monotonic(t)); err == nil {
-			t.Fatal("Go application identity fabricated physical presence")
+		cmd := exec.Command(which(t, "dbus-send"), "--bus="+os.Getenv("DBUS_SYSTEM_BUS_ADDRESS"), "--print-reply", "--reply-timeout=3000",
+			"--dest="+device.Destination, string(device.Path("Network")), device.Interface("Network")+".ReportPresence", "uint64:"+strconv.FormatUint(monotonic(t), 10))
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: h.accounts["app"]}
+		output, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "org.freedesktop.DBus.Error.AccessDenied") {
+			t.Fatal("application account presence rejection", err, string(output))
 		}
 	})
 	password := url.Values{"password": {"carotte-42"}, "confirm": {"carotte-42"}}

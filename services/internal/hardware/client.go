@@ -182,7 +182,7 @@ func ownerOf(ctx context.Context, conn *dbus.Conn) (string, error) {
 	return owner, err
 }
 func authenticate(ctx context.Context, conn *dbus.Conn, owner string) error {
-	return busidentity.Authenticate(ctx, conn, Destination, owner, "nab-hardware.service")
+	return busidentity.Authenticate(ctx, conn, Destination, owner, busidentity.ExpectedUser("NABOS_HARDWARE_USER", "nab-hardware"))
 }
 func (c *Client) recover(ctx context.Context, conn *dbus.Conn) error {
 	ctx, cancel := context.WithTimeout(ctx, Timeout)

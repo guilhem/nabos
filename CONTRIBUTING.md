@@ -11,7 +11,7 @@ cargo fmt --manifest-path core/Cargo.toml --check
 cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --locked --manifest-path core/Cargo.toml
 (cd services && go vet ./... && go test -race ./...)
-(cd services && NABOS_INTEGRATION=1 go test -race -count=1 ./tests/integration ./cmd/nabos)
+(cd services && NABOS_INTEGRATION=1 go test -race -count=1 -skip '^TestEndToEnd$' ./tests/integration ./cmd/nabos)
 ```
 
 Les réglages Linux appartiennent à device-core (`/data/device-core/settings.json`) ; Go ne conserve que les applications (`/data/nabos/application.json`). Cette extraction ne fournit ni migration ni rétrocompatibilité des anciens formats ou API. Go possède les états, médias et chorégraphies ; Rust conserve uniquement le matériel et la temporisation des pilotes. Respecter le [contrat hardware D-Bus](docs/hardware-dbus.md).

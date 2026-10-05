@@ -73,8 +73,8 @@ minutes old; zero timestamps, other gestures, delayed old edges and duplicates
 cannot renew proof. Service restarts require opening setup and a new press.
 
 `ReportPresence(monotonic_ns:t)` is D-Bus-only. The daemon resolves the actual
-sender from bus credentials and systemd, and accepts only `nab-hardware.service`
-configured through `DEVICE_CORE_PRESENCE_UNIT`. A relayed application event does not
+unique sender from bus Unix credentials, and accepts only the `nab-hardware` account
+configured through `DEVICE_CORE_PRESENCE_USER`. A relayed application event does not
 prove presence to the Linux network controller. HTTP never exposes this method.
 
 `AcquireGuard(expected_generation:s)→h` checks a ready client connection and

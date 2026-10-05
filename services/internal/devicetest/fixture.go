@@ -59,32 +59,6 @@ type Fixture struct {
 	Audio                          device.AudioStatus
 }
 
-// RequireProcessFD probes the fixture connection, not a service's authentication.
-// Integration CI requires this capability; older unit-test hosts may skip.
-func RequireProcessFD(t *testing.T, conn *dbus.Conn) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), device.Timeout)
-	defer cancel()
-	var credentials map[string]dbus.Variant
-	if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetConnectionCredentials", 0, conn.Names()[0]).Store(&credentials); err != nil {
-		t.Fatal(err)
-	}
-	v, ok := credentials["ProcessFD"]
-	if !ok {
-		if os.Getenv("NABOS_INTEGRATION") == "1" {
-			t.Fatal("integration fixtures require D-Bus ProcessFD credentials")
-		}
-		t.Skip("host D-Bus does not provide ProcessFD credentials")
-	}
-	var fd dbus.UnixFD
-	if err := v.Store(&fd); err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Close(int(fd)); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func New(t *testing.T) *Fixture {
 	t.Helper()
 	daemon := exec.Command("dbus-daemon", "--session", "--nofork", "--print-address=1")
@@ -109,11 +83,12 @@ func New(t *testing.T) *Fixture {
 	if reply, err := conn.RequestName(device.Destination, dbus.NameFlagDoNotQueue); err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		t.Fatalf("bus ownership: %v %v", reply, err)
 	}
-	InstallIdentity(t, conn, nil)
+	UseCurrentUser(t, "NABOS_DEVICE_USER")
 	return Attach(t, conn)
 }
 func Attach(t *testing.T, conn *dbus.Conn) *Fixture {
 	t.Helper()
+	UseCurrentUser(t, "NABOS_DEVICE_USER", "NABOS_HARDWARE_USER")
 	f := &Fixture{Conn: conn, Revision: "instance:1", Settings: device.Settings{Locale: "fr_FR", Timezone: "Europe/Paris", Volume: 100, AutoCheck: true, Updates: device.Updates{Channel: "stable", Start: device.HM{Hour: 3}, End: device.HM{Hour: 5}}}, ClockQuality: "ntp", ClockUnix: time.Now().Unix(), ConnectivityState: "ok", VoiceSupported: true, VoiceStatus: "idle", UpdateState: device.UpdateStatus{Current: "v1.0.0", State: "idle"}, Audio: device.AudioStatus{State: "idle", Volume: 100}}
 	f.MaintenanceAgents, f.ManagerReady = true, true
 	f.SSHRevision = "ssh-instance:1"

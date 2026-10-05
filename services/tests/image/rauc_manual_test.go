@@ -56,8 +56,8 @@ func TestManualBundleTrustIsTemporary(t *testing.T) {
 		"/run/nabos-rauc-manual", runtime,
 		"/run/nabos-rauc-trust", trust,
 		"/data/device-core/updates/manual.raucb", filepath.Join(dir, "upload.raucb"),
-		"-o root -g nabos", fmt.Sprintf("-o %d -g %d", os.Getuid(), os.Getgid()),
-		"root:nabos", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"-o root -g device-core", fmt.Sprintf("-o %d -g %d", os.Getuid(), os.Getgid()),
+		"root:device-core", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 	).Replace(read(t, filepath.Join(rootfsDir, "usr/lib/nabos/rauc-manual")))
 	path := filepath.Join(dir, "helper.sh")
 	write(t, path, helper)

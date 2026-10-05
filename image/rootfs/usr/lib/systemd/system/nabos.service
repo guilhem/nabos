@@ -1,14 +1,14 @@
 [Unit]
 Description=Nabaztag application (states, media, choreography, HTTP :80)
-Wants=user@1000.service device-core.service nab-hardware.service
-After=systemd-tmpfiles-setup.service user@1000.service device-core.service nab-hardware.service
+Wants=device-core.service nab-hardware.service
+After=systemd-tmpfiles-setup.service device-core.service nab-hardware.service
 
 [Service]
 Type=exec
-User=nabos
-Group=nabos
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=HOME=/var/lib/nabos
+User=nab-app
+Group=nab-app
+Environment=XDG_RUNTIME_DIR=/run/nabos
+Environment=HOME=/data/nabos
 Environment=NABOS_DATA_DIR=/data/nabos
 Environment=NABOS_HTTP_ADDR=:80
 AmbientCapabilities=CAP_NET_BIND_SERVICE

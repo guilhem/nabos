@@ -29,7 +29,7 @@ esac
 # for "sinks", a non-monitor capture source for "sources". Device-core opens ALSA
 # lazily, so this is what proves the audio hardware; a null sink never matches.
 audio_card() {
-	runuser -u nabos -- env XDG_RUNTIME_DIR=/run/user/1000 LC_ALL=C pactl list "$1" 2> /dev/null | awk '
+	runuser -u nab-audio -- env XDG_RUNTIME_DIR=/run/user/1004 LC_ALL=C pactl list "$1" 2> /dev/null | awk '
 		/^(Sink|Source) #/ { if (card && !monitor) found = 1; card = 0; monitor = 0 }
 		/alsa\.card_name = "tagtagtag-sound"/ { card = 1 }
 		/^[[:space:]]*Monitor of Sink: / && $NF != "n/a" { monitor = 1 }

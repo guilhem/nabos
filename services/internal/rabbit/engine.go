@@ -698,6 +698,7 @@ func (e *Engine) advance() {
 			e.failed = false
 		}
 		e.onlinePending = false
+		e.publish()
 		if e.handlers.OnOnline != nil {
 			e.handlers.OnOnline()
 		}
