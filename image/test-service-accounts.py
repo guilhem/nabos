@@ -117,6 +117,18 @@ def main():
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, interrupted)
         try:
+            # A regular sentinel in private /dev exercises DAC with real image
+            # accounts; it never opens an I2C controller or validates hardware.
+            i2c = Path('/dev/i2c-1')
+            i2c.touch()
+            os.chown(i2c, 0, grp.getgrnam('nab-hardware').gr_gid)
+            i2c.chmod(0o660)
+            for uid in (1000, 1001, 1002, 1003, 1004):
+                result = run(uid, ['python3', '-B', '-c',
+                    "import os; os.close(os.open('/dev/i2c-1', os.O_RDWR))"])
+                expect(result, error=None if uid == 1002 else 'PermissionError')
+            i2c.unlink()
+            print('PASS: I2C bus file permissions allow only the hardware account', flush=True)
             # Exercise ownership migration on existing bytes, including sounds
             # uploaded as 0600 by the former shared account.
             sound = Path('/data/nabos/media/sounds/user/existing.wav')

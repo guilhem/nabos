@@ -54,7 +54,13 @@ func TestDeviceCoreImageContract(t *testing.T) {
 		}
 	}
 	makefile := read(t, filepath.Join(repo, "Makefile"))
-	for _, required := range []string{"$$out/inputs/$$component", "$$inputs/$$component/Cargo.lock", "$$inputs/$$component/cargo-vendor", "$$repo/build/sysroot/$$component/$$target", "--locked --offline", "export RUST_COMPONENT = nab-hardware", `"$$out/nabos" ./cmd/nabos`, "if [[ $$component == nab-hardware ]]", "--exclude=./.source", "cc_key=CC_$${rust_target//-/_}", `"$$cc_key=$$linker"`} {
+	for _, required := range []string{
+		"$$out/inputs/$$component", "$$inputs/$$component/Cargo.lock", "$$inputs/$$component/cargo-vendor", "$$repo/build/sysroot/$$component/$$target", "--locked --offline", "export RUST_COMPONENT = nab-hardware", `"$$out/nabos" ./cmd/nabos`, "if [[ $$component == nab-hardware ]]", "--exclude=./.source", "cc_key=CC_$${rust_target//-/_}", `"$$cc_key=$$linker"`,
+		`cargo vendor --locked --manifest-path "$$source/Cargo.toml" "$$component_inputs/cargo-vendor" > "$$component_inputs/cargo-vendor.toml"`,
+		`cp "$$inputs/$$component/cargo-vendor.toml" "$$component_inputs/"`,
+		`cargo --config "$$component_inputs/cargo-vendor.toml"`,
+		`--config "source.vendored-sources.directory=\"$$component_inputs/cargo-vendor\""`,
+	} {
 		if !strings.Contains(makefile, required) {
 			t.Errorf("Make lacks %q", required)
 		}
@@ -63,7 +69,7 @@ func TestDeviceCoreImageContract(t *testing.T) {
 
 func TestHardwareApplicationImageContract(t *testing.T) {
 	for name, required := range map[string][]string{
-		"nab-hardware": {"User=nab-hardware", "Type=dbus", "BusName=io.github.guilhem.NabHardware1", "SupplementaryGroups=gpio video kmem", "AmbientCapabilities=CAP_SYS_RAWIO", "CapabilityBoundingSet=CAP_SYS_RAWIO", "RuntimeDirectory=nab-hardware", "WorkingDirectory=/run/nab-hardware"},
+		"nab-hardware": {"User=nab-hardware", "Group=nab-hardware", "Type=dbus", "BusName=io.github.guilhem.NabHardware1", "SupplementaryGroups=gpio video kmem", "AmbientCapabilities=CAP_SYS_RAWIO", "CapabilityBoundingSet=CAP_SYS_RAWIO", "RuntimeDirectory=nab-hardware", "WorkingDirectory=/run/nab-hardware", `Requires=dev-i2c\x2d1.device`, `After=systemd-tmpfiles-setup.service tagtagtag-mixerd.service device-core.service dev-i2c\x2d1.device`},
 		"nabos":        {"User=nab-app", "AmbientCapabilities=CAP_NET_BIND_SERVICE", "CapabilityBoundingSet=CAP_NET_BIND_SERVICE", "Environment=NABOS_HTTP_ADDR=:80", "Environment=NABOS_DATA_DIR=/data/nabos", "ReadWritePaths=/data/nabos", "RuntimeDirectory=nabos", "WorkingDirectory=/run/nabos", "PrivateDevices=yes"},
 	} {
 		unit := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system", name+".service"))
@@ -73,7 +79,7 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 			}
 		}
 		for _, line := range strings.Split(unit, "\n") {
-			if strings.HasPrefix(line, "ReadWritePaths=") && name == "nab-hardware" || strings.HasPrefix(line, "SupplementaryGroups=") && name == "nabos" || strings.Contains(line, "mosquitto") {
+			if strings.HasPrefix(line, "ReadWritePaths=") && name == "nab-hardware" || strings.HasPrefix(line, "SupplementaryGroups=") && name == "nabos" || strings.Contains(line, "mosquitto") || line == "DefaultDependencies=no" {
 				t.Errorf("%s unexpected %q", name, line)
 			}
 		}
@@ -88,8 +94,34 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 		t.Error("operator account must not inherit hardware groups")
 	}
 	udev := read(t, filepath.Join(rootfsDir, "etc/udev/rules.d/60-nabos.rules"))
-	if !strings.Contains(udev, `KERNEL=="ear[01]|rfid0|nfc0", GROUP="gpio", MODE="0660"`) {
-		t.Error("ear/RFID access must require hardware group")
+	i2cRule := `SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="0660", TAG+="systemd"`
+	for _, rule := range []string{
+		`KERNEL=="mem", GROUP="kmem", MODE="0660"`,
+		`KERNEL=="vcio", GROUP="video", MODE="0660"`,
+		`SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"`,
+		`KERNEL=="ear[01]", GROUP="gpio", MODE="0660"`,
+		i2cRule,
+	} {
+		if !strings.Contains(udev, rule+"\n") {
+			t.Errorf("missing hardware device access rule %s", rule)
+		}
+	}
+	for _, line := range strings.Split(udev, "\n") {
+		if !strings.HasPrefix(line, "#") && strings.Contains(line, "i2c") && line != i2cRule {
+			t.Errorf("unexpected I2C access rule: %s", line)
+		}
+	}
+	units, err := filepath.Glob(filepath.Join(rootfsDir, "usr/lib/systemd/system/*.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range units {
+		for _, line := range strings.Split(read(t, file), "\n") {
+			if (strings.HasPrefix(line, "Group=") || strings.HasPrefix(line, "SupplementaryGroups=")) &&
+				strings.Contains(line, "nab-hardware") && filepath.Base(file) != "nab-hardware.service" {
+				t.Errorf("private hardware group granted to %s: %s", file, line)
+			}
+		}
 	}
 	policy := read(t, filepath.Join(rootfsDir, "etc/dbus-1/system.d/io.github.guilhem.NabHardware1.conf"))
 	for _, rule := range []string{`<deny own="io.github.guilhem.NabHardware1"/>`, `<deny send_destination="io.github.guilhem.NabHardware1"/>`, `<policy user="nab-app">`, `<allow own="io.github.guilhem.NabHardware1"/>`, `<allow send_destination="io.github.guilhem.NabHardware1"/>`} {
@@ -97,8 +129,8 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 			t.Errorf("missing hardware bus policy %s", rule)
 		}
 	}
-	if !strings.Contains(read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/nabos-rfid.service")), "Before=nab-hardware.service\n") {
-		t.Error("RFID probe must precede hardware")
+	if !strings.Contains(prepare, "nab-hardware:1002") || !strings.Contains(prepare, "--user-group --no-create-home") {
+		t.Error("hardware needs its fixed private account and primary group")
 	}
 }
 

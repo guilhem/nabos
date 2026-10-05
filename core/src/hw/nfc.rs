@@ -1,261 +1,382 @@
-//! ST25R391x reader (/dev/nfc0, pguyot/st25r391x driver, nfc.h protocol v1).
-//! Reader state machine:
-//! discover+select, read ST25TB blocks or T2T NDEF, removal detection, writes.
+//! ST25R391x hardware adapter; the crate owns RF, I2C and programming holds.
 
-use super::Tech;
-use super::{
-    decode_st25tb, poll_readable, send, st25tb_compatible, HwEvent, TagEvent, Tx, WriteReq,
+use super::{decode_st25tb, rfid, st25tb_compatible, TagEvent, Tech, WriteReq};
+use i2cdev::linux::LinuxI2CDevice;
+use st25r391x::{
+    Device, ErrorKind, FrameOptions, Outcome, Settings, St25r391x, Tag, TagId, Technology,
+    I2C_ADDRESS,
 };
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
-use std::sync::mpsc::Receiver;
+use std::io;
 use std::time::{Duration, Instant};
 
-pub const DEVICE: &str = "/dev/nfc0";
-const PROTOCOL_VERSION_1: u64 = 0x004E_4643_0000_0001;
-const GET_PROTOCOL_VERSION: libc::c_ulong = 0x8008_4E00; // _IOR('N', 0, uint64_t)
-const REMOVED_TIMEOUT: Duration = Duration::from_millis(1500);
-
-const IDLE_REQUEST: u8 = 2;
-const IDLE_ACK: u8 = 3;
-const DISCOVER: u8 = 4;
-const DETECTED: u8 = 5;
-const SELECT: u8 = 6;
-const SELECTED: u8 = 7;
-const TRANSCEIVE: u8 = 8;
-const TRANSCEIVE_RESPONSE: u8 = 9;
-
-const TYPE_T2T: u8 = 2;
-const TYPE_ST25TB: u8 = 17;
-// Protocol mask pynfcdev NFCTagProtocol.ALL.
-const ALL_PROTOCOLS: u64 = (1 << 1)
-    | (1 << 2)
-    | (1 << 3)
-    | (1 << 4)
-    | (1 << 5)
-    | (1 << 6)
-    | (1 << 7)
-    | (1 << 16)
-    | (1 << 17)
-    | (1 << 24);
-
-const F_BITS: u8 = 1 << 2;
-const F_TX_ONLY: u8 = 1 << 3;
-const F_NOCRC_RX: u8 = 1 << 5;
-const F_NOPAR_RX: u8 = 1 << 6;
-const F_ERROR: u8 = 1 << 7;
-
+type Io<T> = io::Result<T>;
+const POLL_TIMEOUT: Duration = Duration::from_secs(2);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const CLEANUP_TIMEOUT: Duration = Duration::from_millis(100);
 const NABAZTAG_NDEF_TYPE: &[u8] = b"tagtagtag.fr:z";
 
-fn tech_name(t: u8) -> &'static str {
-    match t {
-        1 => "iso14443a",
-        2 => "iso14443a_t2t",
-        3 => "iso14443a_mifare_classic",
-        4 => "iso14443a_nfcdep",
-        6 => "iso14443a_t4t",
-        7 => "iso14443a_t4t_nfcdep",
-        8 => "iso14443a_t1t",
-        16 => "iso14443b",
-        17 => "st25tb",
-        _ => "unknown",
+pub struct Reader<D: Device = LinuxI2CDevice> {
+    dev: St25r391x<D>,
+    settings: Settings,
+}
+
+// TagTagTag NFC board profile used by the previous board driver. Keep the
+// crate's tuning controls; regulator adjustment remains library-owned.
+fn board_settings() -> Settings {
+    Settings {
+        supply_3v: false,
+        receiver_a: [0x08, 0x2d, 0, 0],
+        receiver_b: [0x04, 0x3d, 0, 0],
+        correlator_b: [0x1b, 0],
+        ..Settings::default()
     }
 }
 
-/// Tag id as used by the driver (protocol order) from a tag info payload.
-fn tag_id(tag_type: u8, info: &[u8]) -> Option<Vec<u8>> {
-    match tag_type {
-        1..=4 | 6..=8 => {
-            let n = *info.get(3)? as usize;
-            info.get(4..4 + n).map(<[u8]>::to_vec)
+fn io_err(message: impl Into<String>) -> io::Error {
+    io::Error::other(message.into())
+}
+
+fn remaining(deadline: Instant) -> Io<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "operation deadline reached",
+        ))
+    } else {
+        Ok(left)
+    }
+}
+
+fn pending(req: &WriteReq) -> Io<()> {
+    match req.stopped() {
+        Some(reason) => Err(io_err(reason)),
+        None => Ok(()),
+    }
+}
+
+fn event(tag: &Tag) -> TagEvent {
+    let (tech, uid) = match tag {
+        Tag::St25tb(t) => ("st25tb", t.uid.into_iter().rev().collect()),
+        Tag::NfcB(t) => ("iso14443b", t.pupi.to_vec()),
+        Tag::NfcA(t) => {
+            let tech = match (t.iso_dep(), t.nfc_dep()) {
+                (true, true) => "iso14443a_t4t_nfcdep",
+                (true, false) => "iso14443a_t4t",
+                (false, true) => "iso14443a_nfcdep",
+                _ if t.classic_hint() => "iso14443a_mifare_classic",
+                _ if t.type2_hint() => "iso14443a_t2t",
+                _ => "iso14443a",
+            };
+            (tech, t.uid.clone())
         }
-        16 => info.get(0..4).map(<[u8]>::to_vec),
-        17 => info.get(0..8).map(<[u8]>::to_vec),
-        _ => None,
+    };
+    TagEvent {
+        tech,
+        uid,
+        support: "unknown",
+        ..Default::default()
     }
 }
 
-fn uid_for_event(tag_type: u8, id: &[u8]) -> Vec<u8> {
-    let mut uid = id.to_vec();
-    if tag_type == TYPE_ST25TB {
+fn tag_id(ev: &TagEvent) -> Option<TagId> {
+    if ev.tech == "st25tb" {
+        let mut uid: [u8; 8] = ev.uid.as_slice().try_into().ok()?;
         uid.reverse();
+        Some(TagId::St25tb(uid))
+    } else if ev.tech == "iso14443b" {
+        Some(TagId::NfcB(ev.uid.as_slice().try_into().ok()?))
+    } else if ev.tech.starts_with("iso14443a") && [4, 7, 10].contains(&ev.uid.len()) {
+        Some(TagId::NfcA(ev.uid.clone()))
+    } else {
+        None
     }
-    uid
 }
 
-struct Dev {
-    f: File,
-    idle: bool,
+impl Reader {
+    pub fn open() -> Io<Option<Self>> {
+        let device = LinuxI2CDevice::new("/dev/i2c-1", I2C_ADDRESS).map_err(io::Error::other)?;
+        Self::from_device(device, board_settings())
+    }
 }
 
-type Io<T> = std::io::Result<T>;
-
-fn io_err(msg: &str) -> std::io::Error {
-    std::io::Error::other(msg.to_string())
-}
-
-impl Dev {
-    fn send(&mut self, typ: u8, payload: &[u8]) -> Io<()> {
-        let mut msg = vec![typ];
-        msg.extend_from_slice(&(payload.len() as u16).to_le_bytes());
-        msg.extend_from_slice(payload);
-        if matches!(typ, DISCOVER | SELECT | TRANSCEIVE) {
-            self.idle = false;
-        }
-        self.f.write_all(&msg)
-    }
-
-    fn recv(&mut self, timeout: Duration) -> Io<Option<(u8, Vec<u8>)>> {
-        if !poll_readable(&self.f, timeout) {
-            return Ok(None);
-        }
-        let mut h = [0u8; 3];
-        self.f.read_exact(&mut h)?;
-        let mut payload = vec![0; u16::from_le_bytes([h[1], h[2]]) as usize];
-        self.f.read_exact(&mut payload)?;
-        if h[0] == IDLE_ACK {
-            self.idle = true;
-        }
-        Ok(Some((h[0], payload)))
-    }
-
-    fn go_idle(&mut self) -> Io<bool> {
-        if self.idle {
-            return Ok(true);
-        }
-        self.send(IDLE_REQUEST, &[])?;
-        let end = Instant::now() + Duration::from_secs(1);
-        while !self.idle && Instant::now() < end {
-            self.recv(Duration::from_millis(100))?;
-        }
-        // Discovery may resume without an ACK when the driver was already idle;
-        // that assumption cannot prove completion of an admitted physical write.
-        let confirmed = self.idle;
-        self.idle = true;
-        Ok(confirmed)
-    }
-
-    fn discover(&mut self, protocols: u64, select: bool) -> Io<()> {
-        self.go_idle()?;
-        let mut p = protocols.to_le_bytes().to_vec();
-        p.extend_from_slice(&0u32.to_le_bytes()); // polling period
-        p.extend_from_slice(&[0, 0, select as u8]); // device count, max bitrate, flags
-        self.send(DISCOVER, &p)
-    }
-
-    /// Returns (rx_count, rx data).
-    fn transceive(&mut self, tx: &[u8], rx_timeout_us: u16, flags: u8) -> Io<(u16, Vec<u8>)> {
-        let count = if flags & F_BITS != 0 {
-            tx.len() * 8
-        } else {
-            tx.len()
-        } as u16;
-        let mut p = count.to_le_bytes().to_vec();
-        p.extend_from_slice(&rx_timeout_us.to_le_bytes());
-        p.push(flags);
-        p.extend_from_slice(tx);
-        self.send(TRANSCEIVE, &p)?;
-        let end = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < end {
-            if let Some((typ, r)) = self.recv(Duration::from_millis(200))? {
-                if typ == TRANSCEIVE_RESPONSE && r.len() >= 3 {
-                    if r[2] & F_ERROR != 0 {
-                        self.idle = true; // chip unselected, field off
-                        return Err(io_err("transceive error"));
-                    }
-                    return Ok((u16::from_le_bytes([r[0], r[1]]), r[3..].to_vec()));
-                }
+impl<D: Device> Reader<D> {
+    fn from_device(device: D, settings: Settings) -> Io<Option<Self>> {
+        let mut dev = St25r391x::new(device);
+        match dev.probe(POLL_TIMEOUT) {
+            Ok(_) => {}
+            Err(e)
+                if matches!(&e.kind, ErrorKind::UnexpectedIdentity(_))
+                    || matches!(e.raw_os_error(), Some(libc::ENXIO | libc::EREMOTEIO)) =>
+            {
+                return Ok(None)
             }
+            Err(e) => return Err(io::Error::other(e)),
         }
-        Err(io_err("transceive timeout"))
+        dev.initialize(settings.clone(), POLL_TIMEOUT)
+            .map_err(io::Error::other)?;
+        Ok(Some(Self { dev, settings }))
     }
 
-    fn st25tb_read(&mut self, blocks: impl IntoIterator<Item = u8>) -> Io<Vec<u8>> {
-        let mut out = Vec::new();
-        for b in blocks {
-            let (n, d) = self.transceive(&[0x08, b], 302, 0)?;
-            if n != 6 || d.len() < 4 {
-                return Err(io_err("short ST25TB read"));
-            }
-            out.extend_from_slice(&d[..4]);
-        }
-        Ok(out)
-    }
-
-    fn st25tb_write(&mut self, payload: &[u8], control: &super::WriteControl) -> Io<()> {
-        for (i, chunk) in payload.chunks(4).enumerate() {
-            let mut tx = vec![0x09, 7 + i as u8];
-            tx.extend_from_slice(chunk);
-            let (n, _) = self.transceive(&tx, 7000, F_TX_ONLY)?;
-            if n != 0 {
-                return Err(io_err("unexpected ST25TB write answer"));
-            }
-        }
-        let back = self.st25tb_read(7..7 + (payload.len() / 4) as u8)?;
-        // Every block and the verification read have answered, even when the
-        // bytes differ. Physical completion is separate from write success.
-        control.finish();
-        if back != payload {
-            return Err(io_err("written data mismatch"));
+    fn ready(&mut self, deadline: Instant) -> Io<()> {
+        if self.dev.is_poisoned() {
+            self.dev
+                .initialize(self.settings.clone(), remaining(deadline)?)
+                .map_err(io::Error::other)?;
         }
         Ok(())
     }
 
-    /// Read count blocks from start (4 blocks per READ).
-    fn t2t_read(&mut self, start: usize, count: usize, pending: Option<&WriteReq>) -> Io<Vec<u8>> {
-        let (mut b, mut left, mut out) = (start, count, Vec::new());
-        while left > 0 {
-            if let Some(reason) = pending.and_then(WriteReq::stopped) {
-                return Err(io_err(reason));
+    pub fn shutdown(&mut self) -> Io<()> {
+        self.dev.shutdown(CLEANUP_TIMEOUT).map_err(io::Error::other)
+    }
+
+    pub fn poll(&mut self, known: &[TagEvent]) -> Io<Vec<TagEvent>> {
+        let deadline = Instant::now() + POLL_TIMEOUT;
+        let result = self.poll_inner(known, deadline);
+        let cleanup = self.shutdown();
+        match (result, cleanup) {
+            (result, Ok(())) => result,
+            (Ok(_), Err(e)) => Err(e),
+            (Err(operation), Err(cleanup)) => {
+                Err(io_err(format!("{operation}; shutdown: {cleanup}")))
             }
-            if b > 255 {
-                // ponytail: no T2T sector select, tags above 1 KiB are reported as unknown
-                return Err(io_err("T2T sector select unsupported"));
+        }
+    }
+
+    fn poll_inner(&mut self, known: &[TagEvent], deadline: Instant) -> Io<Vec<TagEvent>> {
+        let mut found = Vec::new();
+        // Select every current identity, rather than letting general discovery
+        // repeatedly choose another tag and expire a still-present one.
+        for ev in known {
+            let Some(id) = tag_id(ev) else { continue };
+            self.ready(deadline)?;
+            match self.dev.select(&id, remaining(deadline)?) {
+                Ok(tag) => found.push(event(&tag)),
+                Err(e) if matches!(&e.kind, ErrorKind::NoResponse | ErrorKind::TagMismatch) => {}
+                Err(e) => return Err(io::Error::other(e)),
             }
-            let (n, d) = self.transceive(&[0x30, b as u8], 25000, 0)?;
-            if n != 18 || d.len() < 16 {
+            self.shutdown()?;
+        }
+        for technology in [Technology::NfcA, Technology::NfcB, Technology::St25tb] {
+            self.ready(deadline)?;
+            if let Some(tag) = self
+                .dev
+                .discover(technology, remaining(deadline)?)
+                .map_err(io::Error::other)?
+            {
+                let mut ev = event(&tag);
+                if !rfid::known(&found, &ev) {
+                    if !rfid::known(known, &ev) {
+                        if let Err(e) = self.read_selected(&tag, &mut ev, deadline) {
+                            warn!("NFC {} tag {:?} payload: {e}", ev.tech, ev.uid);
+                            ev = event(&tag);
+                        }
+                    }
+                    found.push(ev);
+                }
+            }
+            self.shutdown()?;
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        Ok(found)
+    }
+
+    fn read_selected(&mut self, tag: &Tag, ev: &mut TagEvent, deadline: Instant) -> Io<()> {
+        match tag {
+            Tag::St25tb(t) if st25tb_compatible(&t.uid) => {
+                let data = self.st25tb_read((7..=15).chain([255]), deadline)?;
+                decode_st25tb(&data, ev);
+            }
+            Tag::NfcA(t) if t.type2_hint() => {
+                if let Some((cc, area)) = self.t2t_area(deadline, None)? {
+                    decode_t2t(cc, &area, ev);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn st25tb_read(
+        &mut self,
+        blocks: impl IntoIterator<Item = u8>,
+        deadline: Instant,
+    ) -> Io<Vec<u8>> {
+        let mut data = Vec::new();
+        for block in blocks {
+            let mut rx = [0; 6];
+            let result = self
+                .dev
+                .exchange(
+                    &[0x08, block],
+                    &mut rx,
+                    FrameOptions::default(),
+                    remaining(deadline)?,
+                )
+                .map_err(io::Error::other)?;
+            if result.outcome != Outcome::Received || result.bits != 48 || result.bytes != 6 {
+                return Err(io_err("short ST25TB read"));
+            }
+            data.extend_from_slice(&rx[..4]);
+        }
+        Ok(data)
+    }
+
+    fn t2t_read(
+        &mut self,
+        start: usize,
+        count: usize,
+        deadline: Instant,
+        req: Option<&WriteReq>,
+    ) -> Io<Vec<u8>> {
+        if start + count > 256 {
+            // ponytail: no sector select; support pages 0..255 until larger tags are qualified.
+            return Err(io_err("T2T sector select unsupported"));
+        }
+        let mut out = Vec::with_capacity(count * 4);
+        let mut page = start;
+        while page < start + count {
+            if let Some(req) = req {
+                pending(req)?;
+            }
+            let mut rx = [0; 18];
+            let options = FrameOptions {
+                response_timeout: Duration::from_millis(25),
+                ..FrameOptions::default()
+            };
+            let result = self
+                .dev
+                .exchange(&[0x30, page as u8], &mut rx, options, remaining(deadline)?)
+                .map_err(io::Error::other)?;
+            if result.outcome != Outcome::Received || result.bits != 144 || result.bytes != 18 {
                 return Err(io_err("short T2T read"));
             }
-            let keep = left.min(4);
-            out.extend_from_slice(&d[..keep * 4]);
-            b += keep;
-            left -= keep;
+            let keep = (start + count - page).min(4);
+            out.extend_from_slice(&rx[..keep * 4]);
+            page += keep;
         }
         Ok(out)
     }
 
-    /// Capability container and TLV area (starting at block 4).
-    fn t2t_area(&mut self, pending: Option<&WriteReq>) -> Io<([u8; 4], Vec<u8>)> {
-        let first = self.t2t_read(3, 4, pending)?;
-        let cc = [first[0], first[1], first[2], first[3]];
-        if cc[0] != 0xE1 || cc[1] != 0x10 || !(cc[3] == 0x00 || cc[3] == 0x0F) {
-            return Err(io_err("not an NDEF formatted T2T"));
-        }
+    fn t2t_area(
+        &mut self,
+        deadline: Instant,
+        req: Option<&WriteReq>,
+    ) -> Io<Option<([u8; 4], Vec<u8>)>> {
+        let cc: [u8; 4] = self.t2t_read(3, 1, deadline, req)?.try_into().unwrap();
         let size = cc[2] as usize * 8;
-        let mut area = first[4..].to_vec();
-        area.extend(self.t2t_read(7, size.saturating_sub(12) / 4, pending)?);
-        Ok((cc, area))
+        if cc[0] != 0xe1 || cc[1] != 0x10 || ![0, 0x0f].contains(&cc[3]) || size == 0 || size > 1008
+        {
+            return Ok(None);
+        }
+        let area = self.t2t_read(4, size / 4, deadline, req)?;
+        Ok(Some((cc, area)))
     }
 
-    fn t2t_write(&mut self, req: &WriteReq) -> Io<()> {
-        let (cc, area) = self.t2t_area(Some(req))?;
-        if cc[3] != 0 {
-            return Err(io_err("tag is read-only"));
+    pub fn write(&mut self, req: &WriteReq) -> Result<(), String> {
+        self.write_inner(req).map_err(|e| e.to_string())
+    }
+
+    fn write_inner(&mut self, req: &WriteReq) -> Io<()> {
+        pending(req)?;
+        if req.payload.is_empty() || req.payload.len() > 36 || !req.payload.len().is_multiple_of(4)
+        {
+            return Err(io_err("invalid block payload"));
         }
-        let new = ndef::rewrite_area(&area, &ndef::record(NABAZTAG_NDEF_TYPE, &req.payload))
-            .ok_or_else(|| io_err("no space on tag"))?;
-        req.admit().map_err(|e| io_err(&e))?;
-        // All pages form one indivisible write after this admission point.
-        for (i, (old, new)) in area.chunks(4).zip(new.chunks(4)).enumerate() {
-            if old == new {
-                continue;
+        let id = match req.tech {
+            Tech::St25tb => {
+                let mut uid: [u8; 8] = req
+                    .uid
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| io_err("invalid ST25TB UID"))?;
+                uid.reverse();
+                if !st25tb_compatible(&uid) {
+                    return Err(io_err("unsupported tag model"));
+                }
+                TagId::St25tb(uid)
             }
-            let mut tx = vec![0xA2, 4 + i as u8];
-            tx.extend_from_slice(new);
-            let (n, d) = self.transceive(&tx, 30000, F_BITS | F_NOCRC_RX | F_NOPAR_RX)?;
-            if n != 4 || d.first().is_none_or(|a| a & 0x0F != 0x0A) {
-                return Err(io_err("T2T write not acknowledged"));
+            Tech::T2t if [4, 7, 10].contains(&req.uid.len()) => TagId::NfcA(req.uid.clone()),
+            _ => return Err(io_err("invalid T2T UID")),
+        };
+        self.ready(req.deadline)?;
+        pending(req)?;
+        let tag = self
+            .dev
+            .select(&id, remaining(req.deadline)?)
+            .map_err(io::Error::other)?;
+        let prepared = if req.tech == Tech::T2t {
+            if !matches!(tag, Tag::NfcA(ref t) if t.type2_hint()) {
+                return Err(io_err("not a T2T tag"));
+            }
+            let (cc, area) = self
+                .t2t_area(req.deadline, Some(req))?
+                .ok_or_else(|| io_err("unsupported T2T capability container"))?;
+            if cc[3] != 0 {
+                return Err(io_err("tag is read-only"));
+            }
+            let new = ndef::rewrite_area(&area, &ndef::record(NABAZTAG_NDEF_TYPE, &req.payload))
+                .ok_or_else(|| io_err("no space on tag"))?;
+            Some((area, new))
+        } else {
+            None
+        };
+        req.admit().map_err(io_err)?;
+        let deadline = Instant::now() + WRITE_TIMEOUT;
+        if let Some((area, new)) = prepared {
+            for (i, (old, data)) in area
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(new.as_chunks::<4>().0)
+                .enumerate()
+            {
+                if old == data {
+                    continue;
+                }
+                let tx = [0xa2, 4 + i as u8, data[0], data[1], data[2], data[3]];
+                let mut rx = [0; 1];
+                let options = FrameOptions {
+                    rx_crc: false,
+                    rx_parity: false,
+                    response_timeout: Duration::from_millis(30),
+                    ..FrameOptions::default()
+                };
+                let result = self
+                    .dev
+                    .exchange(&tx, &mut rx, options, remaining(deadline)?)
+                    .map_err(io::Error::other)?;
+                if result.outcome != Outcome::Received
+                    || result.bytes != 1
+                    || result.bits != 4
+                    || rx[0] & 0x0f != 0x0a
+                {
+                    return Err(io_err("T2T write not acknowledged"));
+                }
+            }
+            if self.t2t_read(4, new.len() / 4, deadline, None)? != new {
+                return Err(io_err("written data mismatch"));
+            }
+        } else {
+            for (i, data) in req.payload.as_chunks::<4>().0.iter().enumerate() {
+                let tx = [0x09, 7 + i as u8, data[0], data[1], data[2], data[3]];
+                let options = FrameOptions {
+                    tx_only: true,
+                    ..FrameOptions::default()
+                };
+                let result = self
+                    .dev
+                    .exchange(&tx, &mut [], options, remaining(deadline)?)
+                    .map_err(io::Error::other)?;
+                if result.outcome != Outcome::Transmitted {
+                    return Err(io_err("unexpected ST25TB write answer"));
+                }
+            }
+            if self.st25tb_read(7..7 + (req.payload.len() / 4) as u8, deadline)? != req.payload {
+                return Err(io_err("written data mismatch"));
             }
         }
         Ok(())
@@ -420,184 +541,6 @@ fn decode_t2t(cc: [u8; 4], area: &[u8], ev: &mut TagEvent) {
     }
 }
 
-enum Next {
-    Discover,
-    Removal(u8, Vec<u8>),
-}
-
-struct Reader {
-    dev: Dev,
-    tx: Tx,
-    requests: Receiver<WriteReq>,
-}
-
-impl Reader {
-    fn emit(&self, ev: TagEvent) {
-        send(&self.tx, HwEvent::Tag(ev));
-    }
-
-    fn base_event(tag_type: u8, id: &[u8]) -> TagEvent {
-        TagEvent {
-            tech: tech_name(tag_type),
-            uid: uid_for_event(tag_type, id),
-            support: "unknown",
-            ..Default::default()
-        }
-    }
-
-    /// A tag was selected by discovery: read it and report it.
-    fn read_selected(&mut self, tag_type: u8, id: Vec<u8>) -> Io<Next> {
-        let mut ev = Self::base_event(tag_type, &id);
-        let read = match tag_type {
-            TYPE_ST25TB if st25tb_compatible(&id) => self
-                .dev
-                .st25tb_read((7..=15).chain([255]))
-                .map(|d| decode_st25tb(&d, &mut ev)),
-            TYPE_T2T => self
-                .dev
-                .t2t_area(None)
-                .map(|(cc, area)| decode_t2t(cc, &area, &mut ev)),
-            _ => Ok(()),
-        };
-        if let Err(e) = read {
-            debug!("NFC read {}: {e}", ev.tech);
-            ev = Self::base_event(tag_type, &id);
-        }
-        self.emit(ev);
-        self.dev.go_idle()?;
-        Ok(Next::Removal(tag_type, id))
-    }
-
-    fn write(&mut self, req: WriteReq) -> Io<Next> {
-        let (tag_type, id) = match req.tech {
-            Tech::St25tb => (TYPE_ST25TB, uid_for_event(TYPE_ST25TB, &req.uid)),
-            Tech::T2t => (TYPE_T2T, req.uid.clone()),
-        };
-        if let Some(reason) = req.stopped() {
-            let _ = req.reply.send(Err(reason.into()));
-            return Ok(Next::Discover);
-        }
-        self.dev.go_idle()?;
-        if let Some(reason) = req.stopped() {
-            let _ = req.reply.send(Err(reason.into()));
-            return Ok(Next::Discover);
-        }
-        let mut sel = vec![tag_type];
-        if tag_type == TYPE_T2T {
-            sel.push(id.len() as u8);
-        }
-        sel.extend_from_slice(&id);
-        self.dev.send(SELECT, &sel)?;
-        let mut selected = false;
-        while req.stopped().is_none() {
-            if let Some((typ, _)) = self.dev.recv(Duration::from_millis(100))? {
-                if typ == SELECTED {
-                    selected = true;
-                    break;
-                }
-            }
-        }
-        let result = if let Some(reason) = req.stopped() {
-            Err(reason.to_string())
-        } else if !selected {
-            Err("timeout".to_string())
-        } else if tag_type == TYPE_ST25TB {
-            req.admit().and_then(|_| {
-                self.dev
-                    .st25tb_write(&req.payload, &req.control)
-                    .map_err(|e| e.to_string())
-            })
-        } else {
-            self.dev.t2t_write(&req).map_err(|e| e.to_string())
-        };
-        if result.is_ok() {
-            req.control.finish();
-        }
-        if self.dev.go_idle()? {
-            // A failed readback is still completed work when physical idle is
-            // acknowledged. Preserve write-failed, but release the barrier.
-            req.control.finish();
-        }
-        let _ = req.reply.send(result);
-        Ok(Next::Removal(tag_type, id))
-    }
-
-    fn discover(&mut self) -> Io<Next> {
-        self.dev.discover(ALL_PROTOCOLS, true)?;
-        loop {
-            if let Ok(req) = self.requests.try_recv() {
-                return self.write(req);
-            }
-            match self.dev.recv(Duration::from_millis(100))? {
-                Some((SELECTED, p)) if !p.is_empty() => {
-                    return match tag_id(p[0], &p[1..]) {
-                        Some(id) => self.read_selected(p[0], id),
-                        None => {
-                            self.dev.go_idle()?;
-                            Ok(Next::Discover)
-                        }
-                    };
-                }
-                Some((IDLE_ACK, _)) => self.dev.discover(ALL_PROTOCOLS, true)?,
-                _ => {}
-            }
-        }
-    }
-
-    fn removal(&mut self, tag_type: u8, id: Vec<u8>) -> Io<Next> {
-        self.dev.discover(1u64 << tag_type, false)?;
-        let mut deadline = Instant::now() + REMOVED_TIMEOUT;
-        loop {
-            if let Ok(req) = self.requests.try_recv() {
-                return self.write(req);
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            match self.dev.recv(Duration::from_millis(100))? {
-                Some((DETECTED, p)) if !p.is_empty() => {
-                    if tag_id(p[0], &p[1..]).as_deref() == Some(&id[..]) {
-                        deadline = Instant::now() + REMOVED_TIMEOUT;
-                    } else {
-                        break;
-                    }
-                }
-                Some((IDLE_ACK, _)) => self.dev.discover(1u64 << tag_type, false)?,
-                _ => {}
-            }
-        }
-        self.emit(TagEvent {
-            removed: true,
-            ..Self::base_event(tag_type, &id)
-        });
-        self.dev.go_idle()?;
-        Ok(Next::Discover)
-    }
-}
-
-pub fn run(requests: Receiver<WriteReq>, tx: Tx) -> std::io::Result<()> {
-    let f = OpenOptions::new().read(true).write(true).open(DEVICE)?;
-    let mut version: u64 = 0;
-    if unsafe { libc::ioctl(f.as_raw_fd(), GET_PROTOCOL_VERSION as _, &mut version) } < 0
-        || version != PROTOCOL_VERSION_1
-    {
-        return Err(io_err("incompatible nfc device protocol version"));
-    }
-    let mut r = Reader {
-        dev: Dev { f, idle: true },
-        tx,
-        requests,
-    };
-    info!("ST25R391x reader ready");
-    let mut next = Next::Discover;
-    loop {
-        next = match next {
-            Next::Discover => r.discover()?,
-            Next::Removal(t, id) => r.removal(t, id)?,
-        };
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,19 +574,229 @@ mod tests {
 }
 
 #[cfg(test)]
-mod cancellation_tests {
+mod adapter_tests {
     use super::*;
     use crate::hw::{Cancel, WriteControl};
-    use std::os::fd::OwnedFd;
-    use std::os::unix::net::UnixStream;
+    use i2cdev::linux::LinuxI2CError;
+    use std::sync::{Arc, Mutex};
 
-    fn request() -> (WriteReq, tokio::sync::oneshot::Receiver<Result<(), String>>) {
+    const UID: [u8; 8] = [1, 2, 3, 4, 5, 0x18, 2, 0xd0];
+
+    struct Chip {
+        registers: [u8; 64],
+        irqs: [u8; 4],
+        tx: Vec<u8>,
+        rx: Vec<u8>,
+        partial: u8,
+        accesses: Vec<Vec<u8>>,
+        frames: Vec<Vec<u8>>,
+        blocks: [[u8; 4]; 256],
+        pages: [u8; 1024],
+        probe_errno: Option<i32>,
+        cancel_select: Option<Cancel>,
+        cancel_program: Option<Cancel>,
+        expire_program: Option<Instant>,
+        fail_program: bool,
+        fail_payload: bool,
+        fail_shutdown: bool,
+        ack: u8,
+    }
+
+    impl Default for Chip {
+        fn default() -> Self {
+            let mut registers = [0; 64];
+            registers[0x3f] = 0x2a;
+            let mut pages = [0; 1024];
+            pages[12..16].copy_from_slice(&[0xe1, 0x10, 6, 0]);
+            pages[16..19].copy_from_slice(&[3, 0, 0xfe]);
+            Self {
+                registers,
+                irqs: [0; 4],
+                tx: Vec::new(),
+                rx: Vec::new(),
+                partial: 0,
+                accesses: Vec::new(),
+                frames: Vec::new(),
+                blocks: [[0xff; 4]; 256],
+                pages,
+                probe_errno: None,
+                cancel_select: None,
+                cancel_program: None,
+                expire_program: None,
+                fail_program: false,
+                fail_payload: false,
+                fail_shutdown: false,
+                ack: 0x0a,
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Bus(Arc<Mutex<Chip>>);
+
+    impl Device for Bus {
+        fn transfer(
+            &mut self,
+            write: &[u8],
+            read: Option<&mut [u8]>,
+        ) -> Result<u32, LinuxI2CError> {
+            let mut c = self.0.lock().unwrap();
+            c.accesses.push(write.to_vec());
+            if let Some(out) = read {
+                match write {
+                    [0x7f] if c.probe_errno.is_some() => {
+                        return Err(LinuxI2CError::Errno(c.probe_errno.unwrap()))
+                    }
+                    [0x5a] => {
+                        out.copy_from_slice(&c.irqs);
+                        c.irqs = [0; 4];
+                    }
+                    [0x5e] => out.copy_from_slice(&[c.rx.len() as u8, c.partial << 1]),
+                    [0x9f] => {
+                        assert_eq!(out.len(), c.rx.len());
+                        out.copy_from_slice(&c.rx);
+                    }
+                    [reg] => {
+                        let reg = (reg & 0x3f) as usize;
+                        out.copy_from_slice(&c.registers[reg..reg + out.len()]);
+                    }
+                    _ => panic!("unexpected read: {write:x?}"),
+                }
+                return Ok(2);
+            }
+            match write {
+                [0xc2]
+                    if c.fail_shutdown
+                        && c.frames.iter().any(|f| matches!(f.first(), Some(9 | 0xa2))) =>
+                {
+                    return Err(LinuxI2CError::Errno(libc::EIO))
+                }
+                [0xd6] => c.irqs[1] = 0x80,
+                [0xc8] => c.irqs[1] = 2,
+                [0xdb] => {
+                    c.tx.clear();
+                    c.rx.clear();
+                    c.partial = 0;
+                }
+                [0xc6 | 0xc7] => {
+                    c.rx = vec![0x44, 0];
+                    c.irqs = [0x18, 0, 0, 0];
+                }
+                [0xc4 | 0xc5] => {
+                    let frame = c.tx.clone();
+                    c.frames.push(frame.clone());
+                    c.partial = 0;
+                    c.rx = match frame.as_slice() {
+                        [0x0c] => Vec::new(),
+                        [0x06, 0] | [0x0e, 0x42] => vec![0x42, 0, 0],
+                        [0x0b] => {
+                            if let Some(cancel) = c.cancel_select.take() {
+                                cancel.cancel();
+                            }
+                            [UID.as_slice(), &[0, 0]].concat()
+                        }
+                        [0x93, 0x20] => vec![1, 2, 3, 4, 4],
+                        [0x93, 0x70, 1, 2, 3, 4, 4] => {
+                            if let Some(cancel) = c.cancel_select.take() {
+                                cancel.cancel();
+                            }
+                            vec![0, 0, 0]
+                        }
+                        [0x05, 0, 0 | 8] => Vec::new(),
+                        [0x08, block] => [c.blocks[*block as usize].as_slice(), &[0, 0]].concat(),
+                        [0x30, page] => {
+                            let start = *page as usize * 4;
+                            [&c.pages[start..start + 16], &[0, 0]].concat()
+                        }
+                        [0x09, block, data @ ..] => {
+                            c.blocks[*block as usize].copy_from_slice(data);
+                            Vec::new()
+                        }
+                        [0xa2, page, data @ ..] => {
+                            assert_eq!(write, &[0xc4], "WRITE includes TX CRC");
+                            assert_eq!(
+                                c.registers[5] & 0x40,
+                                0x40,
+                                "four-bit ACK has no RX parity"
+                            );
+                            assert_eq!(c.registers[0x0a], 0x80, "four-bit ACK has no RX CRC");
+                            let start = *page as usize * 4;
+                            c.pages[start..start + 4].copy_from_slice(data);
+                            c.partial = 4;
+                            vec![c.ack]
+                        }
+                        _ => panic!("unexpected RF frame: {frame:x?}"),
+                    };
+                    c.irqs = [
+                        if c.rx.is_empty() { 8 } else { 0x18 },
+                        if c.rx.is_empty() { 0x40 } else { 0 },
+                        0,
+                        0,
+                    ];
+                    if c.fail_payload && matches!(frame.first(), Some(8 | 0x30)) {
+                        c.fail_payload = false;
+                        return Err(LinuxI2CError::Errno(libc::EIO));
+                    }
+                    if matches!(frame.first(), Some(9 | 0xa2)) {
+                        if let Some(cancel) = c.cancel_program.take() {
+                            cancel.cancel();
+                        }
+                        if let Some(deadline) = c.expire_program.take() {
+                            std::thread::sleep(
+                                deadline.saturating_duration_since(Instant::now())
+                                    + Duration::from_millis(2),
+                            );
+                        }
+                        if c.fail_program {
+                            return Err(LinuxI2CError::Errno(libc::EIO));
+                        }
+                    }
+                }
+                [0xfb, ..] | [0x80, ..] => {
+                    if write[0] == 0x80 {
+                        c.tx = write[1..].to_vec();
+                    }
+                }
+                [command] if *command >= 0xc0 => {}
+                [reg, data @ ..] => {
+                    let start = *reg as usize;
+                    c.registers[start..start + data.len()].copy_from_slice(data);
+                    if *reg == 2 {
+                        c.registers[0x31] = if data[0] == 0 {
+                            0
+                        } else {
+                            0x10 | (data[0] & 0x40) >> 1
+                        };
+                        if data[0] == 0x81 {
+                            c.irqs[0] = 0x80;
+                        }
+                    }
+                }
+                _ => panic!("unexpected write: {write:x?}"),
+            }
+            Ok(1)
+        }
+    }
+
+    fn reader() -> (Reader<Bus>, Bus) {
+        let bus = Bus::default();
+        let reader = Reader::from_device(bus.clone(), board_settings())
+            .unwrap()
+            .unwrap();
+        (reader, bus)
+    }
+
+    fn request(tech: Tech) -> (WriteReq, tokio::sync::oneshot::Receiver<Result<(), String>>) {
         let (reply, rx) = tokio::sync::oneshot::channel();
         (
             WriteReq {
-                tech: Tech::St25tb,
-                uid: vec![0; 8],
-                payload: vec![1; 36],
+                tech,
+                uid: if tech == Tech::St25tb {
+                    UID.into_iter().rev().collect()
+                } else {
+                    vec![1, 2, 3, 4]
+                },
+                payload: crate::hw::encode_tag_data(7, 9, Some(&[2])),
                 deadline: Instant::now() + Duration::from_secs(1),
                 cancel: Cancel::default(),
                 control: WriteControl::default(),
@@ -652,120 +805,160 @@ mod cancellation_tests {
             rx,
         )
     }
-    fn reader(driver: UnixStream) -> Reader {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (_requests, requests) = std::sync::mpsc::channel();
-        Reader {
-            dev: Dev {
-                f: File::from(OwnedFd::from(driver)),
-                idle: true,
-            },
-            tx,
-            requests,
+
+    #[test]
+    fn probe_rejections_and_drop_never_initialize_or_shutdown() {
+        for errno in [
+            None,
+            Some(libc::ENXIO),
+            Some(libc::EREMOTEIO),
+            Some(libc::EIO),
+        ] {
+            let bus = Bus::default();
+            {
+                let mut c = bus.0.lock().unwrap();
+                c.registers[0x3f] = 0;
+                c.probe_errno = errno;
+            }
+            let result = Reader::from_device(bus.clone(), board_settings());
+            if errno == Some(libc::EIO) {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().is_none());
+            }
+            assert_eq!(bus.0.lock().unwrap().accesses, vec![vec![0x7f]]);
         }
     }
-    fn packet(chip: &mut UnixStream) -> (u8, Vec<u8>) {
-        let mut h = [0u8; 3];
-        chip.read_exact(&mut h).unwrap();
-        let mut payload = vec![0; u16::from_le_bytes([h[1], h[2]]) as usize];
-        chip.read_exact(&mut payload).unwrap();
-        (h[0], payload)
-    }
-    fn answer(chip: &mut UnixStream, typ: u8, payload: &[u8]) {
-        let mut message = vec![typ];
-        message.extend_from_slice(&(payload.len() as u16).to_le_bytes());
-        message.extend_from_slice(payload);
-        chip.write_all(&message).unwrap();
-    }
+
     #[test]
-    fn pending_selection_and_preparation_cancel_before_write_admission() {
-        let (driver, mut chip) = UnixStream::pair().unwrap();
-        let mut reader = reader(driver);
-        let (req, mut rx) = request();
+    fn canceled_pending_and_selection_requests_never_program() {
+        let (mut reader, bus) = reader();
+        let (req, _rx) = request(Tech::St25tb);
         req.cancel.cancel();
-        reader.write(req).unwrap();
-        assert_eq!(rx.try_recv().unwrap(), Err("canceled".into()));
-        assert!(!poll_readable(&chip, Duration::from_millis(5)));
-        let (req, mut rx) = request();
-        let control = req.control.clone();
-        let server = std::thread::spawn(move || {
-            assert_eq!(packet(&mut chip).0, SELECT);
-            control.cancel();
-            answer(&mut chip, SELECTED, &[]);
-            assert_eq!(packet(&mut chip).0, IDLE_REQUEST);
-            answer(&mut chip, IDLE_ACK, &[]);
-        });
-        reader.write(req).unwrap();
-        server.join().unwrap();
-        assert_eq!(rx.try_recv().unwrap(), Err("canceled".into()));
+        let before = bus.0.lock().unwrap().accesses.len();
+        assert_eq!(reader.write(&req), Err("canceled".into()));
+        assert_eq!(bus.0.lock().unwrap().accesses.len(), before);
+        let (req, _rx) = request(Tech::St25tb);
+        bus.0.lock().unwrap().cancel_select = Some(req.cancel.clone());
+        assert_eq!(reader.write(&req), Err("canceled".into()));
+        assert!(!req.control.uncertain());
+        assert!(!bus.0.lock().unwrap().frames.iter().any(|f| f[0] == 9));
+        reader.shutdown().unwrap();
     }
+
     #[test]
-    fn cancellation_after_first_admission_finishes_all_tag_blocks() {
-        let (driver, mut chip) = UnixStream::pair().unwrap();
-        let mut reader = reader(driver);
-        let (req, mut rx) = request();
-        let control = req.control.clone();
-        let completed = control.clone();
-        let server = std::thread::spawn(move || {
-            assert_eq!(packet(&mut chip).0, SELECT);
-            answer(&mut chip, SELECTED, &[]);
-            let mut written = 0;
-            loop {
-                let (typ, payload) = packet(&mut chip);
-                if typ == IDLE_REQUEST {
-                    answer(&mut chip, IDLE_ACK, &[]);
-                    break;
-                }
-                assert_eq!(typ, TRANSCEIVE);
-                if payload[5] == 0x09 {
-                    written += 1;
-                    control.cancel();
-                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[0, 0, 0]);
-                } else {
-                    assert_eq!(payload[5], 0x08);
-                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[6, 0, 0, 1, 1, 1, 1, 0, 0]);
-                }
-            }
-            assert_eq!(
-                written, 9,
-                "cancel cannot interrupt an admitted complete tag write"
-            );
-        });
-        reader.write(req).unwrap();
-        server.join().unwrap();
-        assert_eq!(rx.try_recv().unwrap(), Ok(()));
-        assert!(!completed.uncertain());
-    }
-    #[test]
-    fn acknowledged_readback_mismatch_is_failed_but_physically_completed() {
-        let (driver, mut chip) = UnixStream::pair().unwrap();
-        let mut reader = reader(driver);
-        let (req, mut rx) = request();
-        let control = req.control.clone();
-        let server = std::thread::spawn(move || {
-            assert_eq!(packet(&mut chip).0, SELECT);
-            answer(&mut chip, SELECTED, &[]);
-            loop {
-                let (typ, payload) = packet(&mut chip);
-                if typ == IDLE_REQUEST {
-                    answer(&mut chip, IDLE_ACK, &[]);
-                    break;
-                }
-                assert_eq!(typ, TRANSCEIVE);
-                if payload[5] == 0x09 {
-                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[0, 0, 0]);
-                } else {
-                    assert_eq!(payload[5], 0x08);
-                    answer(&mut chip, TRANSCEIVE_RESPONSE, &[6, 0, 0, 2, 2, 2, 2, 0, 0]);
-                }
-            }
-        });
-        reader.write(req).unwrap();
-        server.join().unwrap();
-        assert_eq!(rx.try_recv().unwrap(), Err("written data mismatch".into()));
-        assert!(
-            !control.uncertain(),
-            "a verified failure must not hold the hardware forever"
+    fn admitted_write_finishes_after_cancel_and_pending_deadline() {
+        let (mut reader, bus) = reader();
+        let (mut req, _rx) = request(Tech::St25tb);
+        req.deadline = Instant::now() + Duration::from_millis(200);
+        {
+            let mut c = bus.0.lock().unwrap();
+            c.cancel_program = Some(req.cancel.clone());
+            c.expire_program = Some(req.deadline);
+        }
+        reader.write(&req).unwrap();
+        assert!(Instant::now() > req.deadline);
+        let c = bus.0.lock().unwrap();
+        assert_eq!(
+            c.frames.iter().filter(|f| f[0] == 9).count(),
+            req.payload.len() / 4
         );
+        assert_eq!(c.blocks[7..7 + req.payload.len() / 4].concat(), req.payload);
+        drop(c);
+        reader.shutdown().unwrap();
+        assert!(
+            req.control.uncertain(),
+            "only the shared RFID loop finishes the barrier"
+        );
+    }
+
+    #[test]
+    fn type2_uses_four_bit_ack_and_reads_back_written_ndef() {
+        let (mut reader, bus) = reader();
+        let (req, _rx) = request(Tech::T2t);
+        reader.write(&req).unwrap();
+        let mut ev = TagEvent::default();
+        decode_t2t(
+            [0xe1, 0x10, 6, 0],
+            &bus.0.lock().unwrap().pages[16..64],
+            &mut ev,
+        );
+        assert_eq!((ev.app, ev.picture), (Some(9), Some(7)));
+        reader.shutdown().unwrap();
+        assert!(req.control.uncertain());
+        let (mut req, _rx) = request(Tech::T2t);
+        req.payload[0] ^= 1;
+        bus.0.lock().unwrap().ack = 0;
+        assert!(reader.write(&req).unwrap_err().contains("not acknowledged"));
+        reader.shutdown().unwrap();
+    }
+
+    #[test]
+    fn known_tag_polling_verifies_presence_without_payload_reads() {
+        let (mut reader, bus) = reader();
+        let known = [
+            TagEvent {
+                tech: "st25tb",
+                uid: UID.into_iter().rev().collect(),
+                ..Default::default()
+            },
+            TagEvent {
+                tech: "iso14443a_t2t",
+                uid: vec![1, 2, 3, 4],
+                ..Default::default()
+            },
+        ];
+        let found = reader.poll(&known).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(known.iter().all(|t| rfid::known(&found, t)));
+        assert!(!bus
+            .0
+            .lock()
+            .unwrap()
+            .frames
+            .iter()
+            .any(|f| matches!(f[0], 8 | 0x30)));
+        assert_eq!(reader.dev.field_state(), st25r391x::FieldState::Off);
+        bus.0.lock().unwrap().fail_payload = true;
+        let found = reader.poll(&[]).unwrap();
+        let unreadable = found.iter().find(|t| t.tech == "iso14443a_t2t").unwrap();
+        assert_eq!(unreadable.support, "unknown");
+        assert!(unreadable.data.is_none());
+        assert!(!reader.dev.is_poisoned());
+        assert_eq!(reader.dev.field_state(), st25r391x::FieldState::Off);
+    }
+
+    #[test]
+    fn ambiguous_write_and_failed_cleanup_keep_barrier_and_never_replay() {
+        let (mut reader, bus) = reader();
+        let (req, _rx) = request(Tech::St25tb);
+        {
+            let mut c = bus.0.lock().unwrap();
+            c.fail_program = true;
+            c.fail_shutdown = true;
+        }
+        let error = reader.write(&req).unwrap_err();
+        assert!(error.contains("PossiblyStarted") && error.contains("cleanup"));
+        assert!(reader.shutdown().is_err());
+        assert!(req.control.uncertain());
+        assert_eq!(
+            bus.0
+                .lock()
+                .unwrap()
+                .frames
+                .iter()
+                .filter(|f| f[0] == 9)
+                .count(),
+            1
+        );
+        {
+            let mut c = bus.0.lock().unwrap();
+            c.fail_program = false;
+            c.fail_shutdown = false;
+        }
+        let (next, _rx) = request(Tech::St25tb);
+        reader.write(&next).unwrap();
+        assert!(!reader.dev.is_poisoned());
+        reader.shutdown().unwrap();
     }
 }

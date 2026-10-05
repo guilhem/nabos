@@ -6,11 +6,11 @@ pub mod cr14;
 pub mod ears;
 pub mod leds;
 pub mod nfc;
+pub mod rfid;
 
 use crate::Config;
-use std::os::fd::AsRawFd;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 pub type Tx = UnboundedSender<HwEvent>;
@@ -39,7 +39,7 @@ pub fn send(tx: &Tx, ev: HwEvent) {
     let _ = tx.send(ev);
 }
 
-/// Admission is fenced against cancellation under one lock. An admitted driver
+/// Admission is fenced against cancellation under one lock. An admitted hardware
 /// command is indivisible; cancellation only removes commands still waiting.
 #[derive(Clone, Default)]
 pub struct Cancel(Arc<std::sync::Mutex<bool>>);
@@ -134,17 +134,6 @@ pub fn st25tb_compatible(uid_le: &[u8]) -> bool {
         && [0x18, 0x30, 0x1C, 0x0C, 0x3C].contains(&(uid_le[n - 3] & 0xFC))
 }
 
-/// Wait until fd is readable, false on timeout.
-pub fn poll_readable(fd: &impl AsRawFd, timeout: Duration) -> bool {
-    let mut p = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-    unsafe { libc::poll(&mut p, 1, ms) > 0 }
-}
-
 pub struct WriteReq {
     pub tech: Tech,
     pub uid: Vec<u8>,
@@ -216,29 +205,33 @@ impl Hw {
         let button = sim || button::spawn(&cfg.gpio_chip, cfg.button_gpio, tx.clone(), presence);
         let leds = leds::Leds::open(cfg);
         let ears = ears::Ears::open(sim, tx.clone());
-        let spawn_reader =
-            |kind: &'static str,
-             run: fn(std::sync::mpsc::Receiver<WriteReq>, Tx) -> std::io::Result<()>| {
-                let (wtx, wrx) = std::sync::mpsc::channel();
-                let t = tx.clone();
-                std::thread::Builder::new()
-                    .name(kind.into())
-                    .spawn(move || {
-                        if let Err(e) = run(wrx, t) {
-                            error!("{kind} reader stopped: {e}");
-                        }
-                    })
-                    .ok()?;
-                Some(Rfid { kind, tx: wtx })
-            };
+        let spawn_reader = |reader: rfid::Reader| {
+            let kind = reader.kind();
+            let (wtx, wrx) = std::sync::mpsc::channel();
+            let t = tx.clone();
+            std::thread::Builder::new()
+                .name(kind.into())
+                .spawn(move || {
+                    if let Err(e) = reader.run(wrx, t) {
+                        error!("{kind} reader stopped: {e}");
+                    }
+                })
+                .ok()?;
+            Some(Rfid { kind, tx: wtx })
+        };
         let (rfid, model) = if sim {
             (None, "simulated")
-        } else if std::path::Path::new(nfc::DEVICE).exists() {
-            (spawn_reader("st25r391x", nfc::run), "2022_NFC")
-        } else if std::path::Path::new(cr14::DEVICE).exists() {
-            (spawn_reader("cr14", cr14::run), "2019_TAGTAG")
         } else {
-            (None, "2019_TAG")
+            match rfid::Reader::open() {
+                Ok(reader) => {
+                    let model = reader.model();
+                    (spawn_reader(reader), model)
+                }
+                Err(e) => {
+                    warn!("RFID/NFC unavailable: {e}");
+                    (None, "2019_TAG")
+                }
+            }
         };
         Hw {
             leds,

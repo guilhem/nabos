@@ -1,7 +1,8 @@
 [Unit]
 Description=Nabaztag hardware (D-Bus)
+Requires=dev-i2c\x2d1.device
 Wants=device-core.service
-After=systemd-tmpfiles-setup.service nabos-rfid.service tagtagtag-mixerd.service device-core.service
+After=systemd-tmpfiles-setup.service tagtagtag-mixerd.service device-core.service dev-i2c\x2d1.device
 
 [Service]
 Type=dbus

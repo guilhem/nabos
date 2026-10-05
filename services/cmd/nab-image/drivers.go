@@ -17,8 +17,6 @@ var driverSet = []struct {
 }{
 	{"ears", "tagtagtag-ears", []string{"tagtagtag-ears"}},
 	{"sound", "tagtagtag-sound", []string{"snd-soc-wm8960", "snd-soc-max9759", "snd-soc-volume-gpio"}},
-	{"cr14", "cr14", []string{"cr14"}},
-	{"nfc", "st25r391x", []string{"st25r391x"}},
 }
 
 func kernelBuild(value string) (string, string, error) {
@@ -52,7 +50,7 @@ func runCmd(name string, args ...string) error {
 // each DTBO (which must keep external fixups) and optionally the modules.
 func drivers(lockPath string, args []string) error {
 	fs := flag.NewFlagSet("drivers", flag.ContinueOnError)
-	archives := fs.String("archives", "", "directory containing the locked ears/sound/cr14/nfc tar.gz files")
+	archives := fs.String("archives", "", "directory containing the locked ears/sound tar.gz files")
 	kernelArg := fs.String("kernel", "", "KERNELRELEASE or its headers build directory")
 	if err := fs.Parse(args); err != nil {
 		return err

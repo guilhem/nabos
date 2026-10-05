@@ -9,8 +9,11 @@
  *
  * Left enabled on purpose: mini UART (console), SD card and SDIO Wi-Fi,
  * firmware mailbox and vcio (LEDs), watchdog, RNG, thermal, OTP, ACT LED.
- * Analog audio, PWM, SPI, I2C and video are already disabled in the vendor DTB.
+ * Analog audio, PWM, SPI and video are already disabled in the vendor DTB.
  */
+
+/* Audio codec and userspace RFID/NFC readers share GPIO 2/3 on I2C bus 1. */
+&i2c1 { status = "okay"; };
 
 /* PL011 only carries the Bluetooth chip, which NabOS does not use. */
 &uart0 { status = "disabled"; };

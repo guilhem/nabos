@@ -9,7 +9,7 @@ gpu_mem=16
 # simple-framebuffer node stays disabled in Linux's DTB.
 max_framebuffers=0
 # No HAT EEPROM probe on GPIO 0/1: Linux overlays are applied explicitly by
-# boot.scr and nabos-rfid, never from a HAT.
+# boot.scr, never from a HAT.
 force_eeprom_read=0
 # Fixes the mini UART clock U-Boot uses for its console (GPIO 14/15 are unused).
 enable_uart=1

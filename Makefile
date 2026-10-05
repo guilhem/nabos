@@ -103,8 +103,9 @@ rust device-core:
 	  cp -a "$$inputs/rust-sysroot/." "$$out/inputs/rust-sysroot/"
 	  rm -rf "$$component_inputs/cargo-vendor"
 	  cp -a "$$inputs/$$component/cargo-vendor" "$$component_inputs/"
+	  cp "$$inputs/$$component/cargo-vendor.toml" "$$component_inputs/"
 	else
-	  cargo vendor --locked --manifest-path "$$source/Cargo.toml" "$$component_inputs/cargo-vendor" > /dev/null
+	  cargo vendor --locked --manifest-path "$$source/Cargo.toml" "$$component_inputs/cargo-vendor" > "$$component_inputs/cargo-vendor.toml"
 	fi
 	sysroot=$$repo/build/sysroot/$$component/$$target
 	rm -rf "$$sysroot"
@@ -133,7 +134,7 @@ rust device-core:
 	linker_key=CARGO_TARGET_$$(tr '[:lower:]-' '[:upper:]_' <<< "$$rust_target")_LINKER
 	export CARGO_TARGET_DIR=$${CARGO_TARGET_DIR:-$$repo/build/cargo/$$component}
 	# ring and other cc-rs builds need the same target CPU, headers and libc.
-	env "$$cc_key=$$linker" "$$ar_key=llvm-ar" "$$linker_key=$$linker" cargo --config 'source.crates-io.replace-with="vendored-sources"' \
+	env "$$cc_key=$$linker" "$$ar_key=llvm-ar" "$$linker_key=$$linker" cargo --config "$$component_inputs/cargo-vendor.toml" \
 	  --config "source.vendored-sources.directory=\"$$component_inputs/cargo-vendor\"" \
 	  build --locked --offline --release --manifest-path "$$source/Cargo.toml" --target "$$rust_target"
 	install -m755 "$$CARGO_TARGET_DIR/$$rust_target/release/$$component" "$$out/$$component"
