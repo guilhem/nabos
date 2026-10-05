@@ -59,6 +59,12 @@ archive de source distincte dans `image/sources.lock.json`. Seuls les pilotes
 oreilles et audio sont compilés comme modules noyau ; les modules et overlays
 CR14/ST25R391x et le service de probe `nabos-rfid` sont supprimés.
 
+Les sources audio viennent du fork `guilhem/wm8960` (branche `nabos-gpio-keys`).
+Son commit et son empreinte sont fixés dans `image/sources.lock.json` ; aucun
+patch audio local n'est appliqué pendant la fabrication. Le fork fournit aussi
+le mixer, son unité systemd et sa règle udev. Les oreilles conservent leur source
+upstream `pguyot/tagtagtag-ears` et le patch local `image/patches/ears.patch`.
+
 Les workflows réutilisables `go.yml`, `rust.yml`, `device-core.yml` et `uboot.yml` ont chacun leur matrice de plateformes `[zero-armv6, zero2-arm64]` : huit jobs indépendants, en parallèle des tests. `actions/setup-go` gère les modules et objets Go avec son cache intégré ; `actions-rust-lang/setup-rust-toolchain` installe Rust et gère le cache Cargo et sysroot ; U-Boot utilise ccache. Les caches sont séparés par cible et chaîne de compilation. Le job d'image attend leurs succès, récupère les archives de la même exécution et vérifie leur cible, leur révision et la version de nabos avant installation. Le manifeste `build-<cible>.json` distingue la révision NabOS, la révision et l’empreinte d’archive device-core et l’empreinte de son binaire. Pour device-core, l’identité de source externe, le SHA-256 de son archive, le verrou Cargo extrait de cette source, l’empreinte du binaire et son architecture ELF sont aussi vérifiés avant installation.
 
 Go et Rust sont cross-compilés sur x86-64. Les composants Rust utilisent Clang, LLD et llvm-ar ; le wrapper transmet le CPU/sysroot à Cargo et à `CC_<rust_target>` pour les sources C (notamment ring), avec `AR_<rust_target>=llvm-ar`. Rust utilise un petit sysroot dont les quatre paquets sont verrouillés par URL et SHA-256 dans `image/rust-sysroots.lock.json` : libc, fichiers de démarrage et libgcc. Les paquets ARMv6 viennent de Raspbian, jamais de Debian/Ubuntu ARMv7. U-Boot ARMv6 est cross-compilé sur x86-64 avec sa libgcc privée ; U-Boot ARM64 est construit sur un runner ARM64. Ses options A/B et watchdog ainsi que l'architecture de l'ELF sont vérifiées avant publication de l'artefact.

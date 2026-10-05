@@ -133,7 +133,8 @@ assert 'SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="066
 assert 'KERNEL=="ear[01]", GROUP="gpio", MODE="0660"' in udev
 volume_rules = [dict((key, (op, value)) for key, op, value in re.findall(
     r'([\w{}]+)\s*(==|!=|\+=|:=|=)\s*"([^"]*)"', line))
-    for line in udev if not line.lstrip().startswith('#')]
+    for line in Path('/usr/lib/udev/rules.d/60-tagtagtag-volume.rules').read_text().splitlines()
+    if not line.lstrip().startswith('#')]
 volume_rules = [rule for rule in volume_rules if rule.get('ATTRS{name}') == ('==', 'tagtagtag-volume')]
 assert len(volume_rules) == 1, volume_rules
 volume_rule = volume_rules[0]

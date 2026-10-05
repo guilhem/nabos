@@ -150,7 +150,7 @@ func TestPreparedBaseCache(t *testing.T) {
 					t.Fatalf("cache miss used the archive: exit %d\n%s%s", r.code, r.stdout, r.stderr)
 				}
 			}
-			for _, change := range []string{"epoch", "image/prepare.sh", "image/build-config/policy-rc.d", "services/cmd/nab-image/main.go", "services/go.mod", "image/patches/sound.patch"} {
+			for _, change := range []string{"epoch", "image/prepare.sh", "image/build-config/policy-rc.d", "services/cmd/nab-image/main.go", "services/go.mod", "image/sources.lock.json", "image/patches/ears.patch"} {
 				t.Run(change, func(t *testing.T) {
 					if change == "epoch" {
 						t.Setenv("NABOS_BASE_CACHE_EPOCH", "2026-10-01")

@@ -10,7 +10,7 @@ import (
 )
 
 // Check resolved phandles in the shipped overlay. Cached builds retain pristine
-// payload sources; compile provided patched sources only for standalone tests.
+// payload sources; compile provided sources only for standalone tests.
 func TestVolumeOverlay(t *testing.T) {
 	overlay := filepath.Join(os.Getenv("NABOS_IMAGE_OVERLAYS"), "tagtagtag-sound.dtbo")
 	tools := []string{"fdtoverlay", "fdtget"}
@@ -29,9 +29,9 @@ func TestVolumeOverlay(t *testing.T) {
 		dts := find(filepath.Join(sources, "sound"), "tagtagtag-sound-overlay.dts")
 		if len(dts) != 1 {
 			if os.Getenv("NABOS_IMAGE_BOOT") != "" {
-				t.Fatalf("expected one patched sound overlay source, got %v", dts)
+				t.Fatalf("expected one sound overlay source, got %v", dts)
 			}
-			t.Skip("patched sound source unavailable (set NABOS_SOURCES)")
+			t.Skip("sound source unavailable (set NABOS_SOURCES)")
 		}
 		tmp := t.TempDir()
 		overlay = filepath.Join(tmp, "sound.dtbo")

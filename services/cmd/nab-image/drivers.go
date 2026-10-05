@@ -46,7 +46,7 @@ func runCmd(name string, args ...string) error {
 	return cmd.Run()
 }
 
-// drivers applies the locked patches to the locked driver archives, builds
+// drivers verifies the locked driver archives, applies the ears patch and builds
 // each DTBO (which must keep external fixups) and optionally the modules.
 func drivers(lockPath string, args []string) error {
 	fs := flag.NewFlagSet("drivers", flag.ContinueOnError)
@@ -62,7 +62,6 @@ func drivers(lockPath string, args []string) error {
 	if err != nil {
 		return err
 	}
-	image := filepath.Dir(lockPath)
 	kernel, release := "", ""
 	if *kernelArg != "" {
 		if kernel, release, err = kernelBuild(*kernelArg); err != nil {
@@ -83,12 +82,14 @@ func drivers(lockPath string, args []string) error {
 		if err != nil {
 			return err
 		}
-		patch, err := filepath.Abs(filepath.Join(image, "patches", d.name+".patch"))
-		if err != nil {
-			return err
-		}
-		if err := runCmd("patch", "--batch", "--fuzz=0", "-d", source, "-p1", "-i", patch); err != nil {
-			return err
+		if d.name == "ears" {
+			patch, err := filepath.Abs(filepath.Join(filepath.Dir(lockPath), "patches", "ears.patch"))
+			if err != nil {
+				return err
+			}
+			if err := runCmd("patch", "--batch", "--fuzz=0", "-d", source, "-p1", "-i", patch); err != nil {
+				return err
+			}
 		}
 		if err := runCmd("make", "-C", source, d.overlay+".dtbo"); err != nil {
 			return err
@@ -101,7 +102,7 @@ func drivers(lockPath string, args []string) error {
 		if !strings.Contains(string(decoded), "__fixups__ {") {
 			return fmt.Errorf("no external fixups in %s", dtbo)
 		}
-		done := "patch + DTBO"
+		done := "DTBO"
 		if kernel != "" {
 			if err := runCmd("make", "-C", kernel, "M="+source, "modules"); err != nil {
 				return err

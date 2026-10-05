@@ -50,10 +50,10 @@
       "sha256": "db46eff125483604dae0320aa322c7cda3e5abbd33ce9b7310b98f4f06107921"
     },
     "sound": {
-      "repository": "pguyot/wm8960",
-      "commit": "b552bdcedb74d162daf2318fc77116b2f209a84e",
-      "url": "https://codeload.github.com/pguyot/wm8960/tar.gz/b552bdcedb74d162daf2318fc77116b2f209a84e",
-      "sha256": "27d724979cad644c74d1c6787c39c3de6a9c577a54fbd2a2e29e94813c03255c"
+      "repository": "guilhem/wm8960",
+      "commit": "f06f2243ba4b5595f41c4b1e9724d16108d67c6c",
+      "url": "https://codeload.github.com/guilhem/wm8960/tar.gz/f06f2243ba4b5595f41c4b1e9724d16108d67c6c",
+      "sha256": "8478e8f50a1582fd87c344a04f721fe5ff3c6aa11e655b98235056b08aa4fe99"
     },
     "led": {
       "repository": "jgarff/rpi_ws281x",

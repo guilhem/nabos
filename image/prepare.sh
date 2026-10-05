@@ -169,6 +169,7 @@ drivers)
   install -Dm644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf.default"
   install -m644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf"
   install -Dm644 "$src/sound/tagtagtag-mixerd.service" "$stage/usr/lib/systemd/system/tagtagtag-mixerd.service"
+  install -Dm644 "$src/sound/60-tagtagtag-volume.rules" "$stage/usr/lib/udev/rules.d/60-tagtagtag-volume.rules"
   # Keep the existing DMA/PWM library instead of reimplementing LED timing.
   cmake -S "$src/led" -B "$src/led-build" -DBUILD_SHARED=ON -DBUILD_TEST=OFF -DCMAKE_INSTALL_PREFIX=/usr
   cmake --build "$src/led-build" --parallel 2
