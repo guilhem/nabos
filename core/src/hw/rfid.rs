@@ -65,27 +65,21 @@ impl Reader {
             match requests.recv_timeout(POLL_PERIOD) {
                 Ok(request) => {
                     let result = self.write(&request);
-                    if result.is_ok() {
-                        for (tag, seen) in &mut tags.0 {
-                            if tag.uid == request.uid {
-                                *seen = Instant::now();
-                            }
-                        }
-                    }
                     finish_write(request, result, self.shutdown())?;
                 }
                 Err(RecvTimeoutError::Disconnected) => return self.shutdown(),
-                Err(RecvTimeoutError::Timeout) => {
-                    let known: Vec<_> = tags.0.iter().map(|(tag, _)| tag.clone()).collect();
-                    match self.poll(&known) {
-                        Ok(found) => {
-                            for event in tags.observe(found, Instant::now()) {
-                                send(&tx, HwEvent::Tag(event));
-                            }
-                        }
-                        Err(e) => warn!("{} polling: {e}", self.kind()),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            // Poll after every write, including a failed one, before expiring
+            // observations that aged while polling was blocked by the write.
+            let known: Vec<_> = tags.0.iter().map(|(tag, _)| tag.clone()).collect();
+            match self.poll(&known) {
+                Ok(found) => {
+                    for event in tags.observe(found, Instant::now()) {
+                        send(&tx, HwEvent::Tag(event));
                     }
                 }
+                Err(e) => warn!("{} polling: {e}", self.kind()),
             }
             for event in tags.expire(Instant::now()) {
                 send(&tx, HwEvent::Tag(event));
@@ -108,6 +102,7 @@ fn finish_write(
     result: Result<(), String>,
     cleanup: io::Result<()>,
 ) -> io::Result<()> {
+    let admitted = request.control.uncertain();
     // Verified RF off includes the library's programming hold, even after an
     // ambiguous write. Failed cleanup retains an admitted write's maintenance
     // barrier and stops the reader without replaying memory commands.
@@ -118,7 +113,14 @@ fn finish_write(
         Ok(()) => result,
         Err(e) => Err(format!("{result:?}; reader shutdown: {e}")),
     });
-    cleanup
+    match cleanup {
+        Err(e) if !admitted => {
+            // The crate requires reinitialization before the next RF operation.
+            warn!("Reader shutdown before write admission: {e}");
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 #[derive(Default)]
@@ -202,9 +204,29 @@ mod tests {
 
     #[test]
     fn write_result_and_verified_physical_completion_are_independent() {
-        for (result, cleanup, uncertain) in [
-            (Err("readback mismatch".into()), Ok(()), false),
-            (Ok(()), Err(io::Error::other("RF off unconfirmed")), true),
+        for (admitted, result, cleanup, uncertain, fatal) in [
+            (true, Err("readback mismatch".into()), Ok(()), false, false),
+            (
+                true,
+                Ok(()),
+                Err(io::Error::other("RF off unconfirmed")),
+                true,
+                true,
+            ),
+            (
+                false,
+                Err("timeout".into()),
+                Err(io::Error::other("transient I2C failure")),
+                false,
+                false,
+            ),
+            (
+                false,
+                Err("canceled".into()),
+                Err(io::Error::other("transient I2C failure")),
+                false,
+                false,
+            ),
         ] {
             let (reply, mut rx) = tokio::sync::oneshot::channel();
             let control = WriteControl::default();
@@ -217,8 +239,10 @@ mod tests {
                 control: control.clone(),
                 reply,
             };
-            request.admit().unwrap();
-            let _ = finish_write(request, result, cleanup);
+            if admitted {
+                request.admit().unwrap();
+            }
+            assert_eq!(finish_write(request, result, cleanup).is_err(), fatal);
             assert!(rx.try_recv().unwrap().is_err());
             assert_eq!(control.uncertain(), uncertain);
         }
