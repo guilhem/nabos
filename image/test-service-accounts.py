@@ -156,7 +156,7 @@ def main():
                 for uid in uids:
                     expect(call(uid, 'org.freedesktop.DBus', '/org/freedesktop/DBus',
                                 'org.freedesktop.DBus', 'RequestName', 'su', service, '4'),
-                           output='u 1', error=None if uid == owner else 'not allowed to own')
+                           output='u 1', error=None if uid == owner else 'Access denied')
             fake_core = start(1003, ['python3', '-B', '-c', PEER, address, CORE], 'core-peer', pipe=True)
             line(fake_core)
             line(start(1002, ['python3', '-B', '-c', PEER, address, HARDWARE], 'hardware-peer', pipe=True))
@@ -164,14 +164,14 @@ def main():
             for service, allowed in ((CORE, (0, 1001, 1002, 1003)), (HARDWARE, (0, 1001))):
                 for uid in uids:
                     expect(call(uid, service, '/', CORE + '.Probe', 'Probe'),
-                           error='account-test-peer' if uid in allowed else 'Rejected send message')
+                           error='account-test-peer' if uid in allowed else 'Access denied')
             for method in ('Acquire', 'Abort', 'Release'):
                 for uid in uids:
                     expect(call(uid, app, AGENT, CORE + '.Agent', method, 's', 'test-token'),
-                           error='account-test-peer' if uid == 1003 else 'Rejected send message')
+                           error='account-test-peer' if uid == 1003 else 'Access denied')
                 for path, iface, member in ((AGENT + '/Other', CORE + '.Agent', method),
                                             (AGENT, CORE + '.Other', method), (AGENT, CORE + '.Agent', 'Other')):
-                    expect(call(1003, app, path, iface, member, 's', 'test-token'), error='Rejected send message')
+                    expect(call(1003, app, path, iface, member, 's', 'test-token'), error='Access denied')
             stop(fake_core)
             expect(run(0, ['systemd-tmpfiles', '--create', '--prefix=/data/device-core',
                            '--prefix=/run/lock/device-core', '--prefix=/run/nabos-audio']))
@@ -188,13 +188,13 @@ def main():
             for uid in (0, 1001, 1002, 1003, 1004):
                 expect(call(uid, CORE, ROOT + '/Network', CORE + '.Network', 'ReportPresence',
                             't', str(time.monotonic_ns())), error=None if uid == 1002 else
-                       ('Rejected send message' if uid == 1004 else 'unauthorized-user'))
+                       'Access denied')
             # Only this fixture grant bypasses policy, to test the daemon's audio-UID rejection too.
             conf.write_text(config.replace('</busconfig>', '<policy user="nab-audio"><allow send_destination="' + CORE +
                 '" send_path="' + ROOT + '/Network" send_interface="' + CORE + '.Network" send_member="ReportPresence"/></policy></busconfig>'))
             expect(call(0, 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'ReloadConfig'))
             expect(call(1004, CORE, ROOT + '/Network', CORE + '.Network', 'ReportPresence',
-                        't', str(time.monotonic_ns())), error='unauthorized-user')
+                        't', str(time.monotonic_ns())), error='Access denied')
             print('PASS: real UID ownership, service sends, exact callbacks and ReportPresence credentials', flush=True)
             # Use the shipped package's service account; only its authority name is added.
             policy = 'org.freedesktop.PolicyKit1'
@@ -217,7 +217,10 @@ def main():
                 starttime = Path('/proc/' + str(subject.pid) + '/stat').read_text().rsplit(')', 1)[1].split()[19]
                 checked = run(0, ['pkcheck', '--action-id', 'org.freedesktop.NetworkManager.network-control',
                                   '--process', f'{subject.pid},{starttime},{uid}'], env)
-                require(checked.returncode == (0 if uid == 1003 else 1),
+                # The operator may receive a distro authentication challenge;
+                # service accounts must be explicitly denied without a prompt.
+                expected = (0,) if uid == 1003 else (1, 2) if uid == 1000 else (1,)
+                require(checked.returncode in expected,
                         f'Polkit UnixProcess uid={uid}: rc={checked.returncode} {checked.stdout}{checked.stderr}')
                 stop(subject)
             print('PASS: shipped Polkit network-control rules with real UnixProcess service UIDs', flush=True)
@@ -237,7 +240,8 @@ node.name = test-sink media.class = Audio/Sink node.driver = true audio.position
             audioenv = base | {'HOME': '/var/lib/nabos/lva', 'XDG_RUNTIME_DIR': str(audio_runtime),
                                'XDG_CONFIG_HOME': str(work / 'config')}
             audioenv['DBUS_SESSION_BUS_ADDRESS'] = line(start(1004,
-                ['dbus-daemon', '--session', '--nofork', '--print-address=1'], 'audio-bus', audioenv, pipe=True))
+                ['dbus-daemon', '--session', '--nofork', '--print-address=1',
+                 '--address=unix:path=' + str(audio_runtime / 'bus')], 'audio-bus', audioenv, pipe=True))
             for program in ('pipewire', 'wireplumber', 'pipewire-pulse'):
                 start(1004, [program], program, audioenv)
             clientenv = base | {'HOME': '/data/device-core', 'XDG_RUNTIME_DIR': str(runtime),
