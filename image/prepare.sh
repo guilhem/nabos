@@ -131,7 +131,8 @@ build-packages|packages)
     [[ $(dpkg-query -W -f='${Version}' "linux-image-$kernel") == \
        "$(dpkg-query -W -f='${Version}' "linux-headers-$kernel")" ]] || { echo 'Kernel/header package version mismatch' >&2; exit 1; }
     for option in CONFIG_BCM2835_WDT=y CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y \
-      'CONFIG_SQUASHFS=[ym]' CONFIG_SQUASHFS_ZSTD=y; do
+      'CONFIG_SQUASHFS=[ym]' CONFIG_SQUASHFS_ZSTD=y \
+      'CONFIG_KEYBOARD_GPIO=[ym]' 'CONFIG_INPUT_EVDEV=[ym]'; do
       grep -qxE "$option" "/lib/modules/$kernel/build/.config" || { echo "Kernel lacks $option" >&2; exit 1; }
     done
     printf '%s\n' "$kernel" > /nabos-build/kernel-release
@@ -163,6 +164,7 @@ drivers)
     done
   done
   make -C "$src/sound" tagtagtag-mixerd
+  make -C "$src/sound" test
   install -Dm755 "$src/sound/tagtagtag-mixerd" "$stage/usr/local/sbin/tagtagtag-mixerd"
   install -Dm644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf.default"
   install -m644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf"

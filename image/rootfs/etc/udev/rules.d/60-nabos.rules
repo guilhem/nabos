@@ -5,3 +5,5 @@ SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"
 KERNEL=="ear[01]", GROUP="gpio", MODE="0660"
 # Final assignments keep Raspberry Pi OS's later i2c group rule from overriding this.
 SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="0660", TAG+="systemd"
+# Name the two volume contacts independently of input event numbering.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="tagtagtag-volume", SYMLINK+="input/tagtagtag-volume", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/dev/input/tagtagtag-volume", ENV{SYSTEMD_WANTS}+="tagtagtag-mixerd.service"

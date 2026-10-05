@@ -16,7 +16,7 @@ var driverSet = []struct {
 	modules       []string
 }{
 	{"ears", "tagtagtag-ears", []string{"tagtagtag-ears"}},
-	{"sound", "tagtagtag-sound", []string{"snd-soc-wm8960", "snd-soc-max9759", "snd-soc-volume-gpio"}},
+	{"sound", "tagtagtag-sound", []string{"snd-soc-wm8960", "snd-soc-max9759"}},
 }
 
 func kernelBuild(value string) (string, string, error) {

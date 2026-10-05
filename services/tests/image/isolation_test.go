@@ -211,7 +211,24 @@ case "$2" in
   /bin/sh) cat > "$STATE/lva-check" ;;
   *) exit 1 ;;
 esac`,
-				"modinfo": "set -eu\n[ \"$1 $2\" = '-F vermagic' ]\n[ -f \"$3\" ]\nprintf '%s SMP\n' \"$KERNEL\"",
+				"modinfo": `set -eu
+if [ "$1" = -b ]; then
+  [ "$2 $3 $4 $5 $7" = "$(dirname "$(cat "$STATE/copy")")/root -k $KERNEL -F gpio_keys" ]
+  case "$6" in
+    filename)
+      if [ "$KERNEL" = 6.12-rpi-v8 ]; then
+        echo "$2/lib/modules/$KERNEL/kernel/drivers/input/keyboard/gpio_keys.ko.xz"
+      else
+        echo '(builtin)'
+      fi ;;
+    vermagic) printf '%s SMP\n' "$KERNEL" ;;
+    *) exit 1 ;;
+  esac
+else
+  [ "$1 $2" = '-F vermagic' ]
+  [ -f "$3" ]
+  printf '%s SMP\n' "$KERNEL"
+fi`,
 				"qemu-arm-static": `set -eu
 [ "$1 $2 $3" = '-cpu arm1176 -L' ]
 shift 4
@@ -335,6 +352,9 @@ esac`,
 				}
 				if strings.Count(calls, "sha256sum -- "+original+"\n") != 1 || !strings.HasSuffix(calls, "sha256sum -- "+original) {
 					t.Errorf("original not hashed before and after verification:\n%s", calls)
+				}
+				if got := strings.Contains(calls, "-F vermagic gpio_keys"); got != (scenario.target == "zero2-arm64") {
+					t.Errorf("gpio_keys vermagic checked=%t, expected only for the loadable module fixture", got)
 				}
 				if _, err := os.Stat(work); !os.IsNotExist(err) {
 					t.Errorf("copy/sandbox workspace not removed: %s (%v)", work, err)

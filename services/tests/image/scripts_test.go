@@ -27,15 +27,18 @@ func TestKernelSupportsZstdBundles(t *testing.T) {
 		t.Fatal("kernel option loop missing")
 	}
 	check = strings.ReplaceAll("for option in "+check+"\ndone", "/lib/modules/$kernel/build/.config", "$NABOS_TEST_CONFIG")
+	const input = "CONFIG_KEYBOARD_GPIO=y\nCONFIG_INPUT_EVDEV=y\n"
 	for _, c := range []struct {
 		name, config string
 		valid        bool
 	}{
-		{"built-in", "CONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", true},
-		{"module", "CONFIG_SQUASHFS=m\nCONFIG_SQUASHFS_ZSTD=y\n", true},
-		{"no-squashfs", "# CONFIG_SQUASHFS is not set\nCONFIG_SQUASHFS_ZSTD=y\n", false},
-		{"no-zstd", "CONFIG_SQUASHFS=m\n# CONFIG_SQUASHFS_ZSTD is not set\n", false},
-		{"missing-zstd", "CONFIG_SQUASHFS=m\n", false},
+		{"built-in", input + "CONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", true},
+		{"module", "CONFIG_KEYBOARD_GPIO=m\nCONFIG_INPUT_EVDEV=m\nCONFIG_SQUASHFS=m\nCONFIG_SQUASHFS_ZSTD=y\n", true},
+		{"no-squashfs", input + "# CONFIG_SQUASHFS is not set\nCONFIG_SQUASHFS_ZSTD=y\n", false},
+		{"no-zstd", input + "CONFIG_SQUASHFS=m\n# CONFIG_SQUASHFS_ZSTD is not set\n", false},
+		{"missing-zstd", input + "CONFIG_SQUASHFS=m\n", false},
+		{"missing-gpio-keys", "CONFIG_INPUT_EVDEV=y\nCONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", false},
+		{"missing-evdev", "CONFIG_KEYBOARD_GPIO=y\nCONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			config := filepath.Join(t.TempDir(), "kernel.config")
