@@ -35,7 +35,8 @@ Les assets comprennent l'image de premier flash, le bundle RAUC signé, les mani
 
 - [ ] Pin externe final : dépôt indépendant, commit, archive immuable et SHA-256 ; fabrication depuis cette archive pour ARMv6 et ARM64, distincte de la révision NabOS. Aucune valeur provisoire publiée.
 - [ ] Replay hors résolution Internet : deux Cargo.lock, deux vendors et identités séparées ; refus d’une archive, d’un binaire, d’un verrou Cargo ou d’une architecture substitués.
-- [ ] Séparation des privilèges : seul nab-hardware reçoit CAP_SYS_RAWIO et gpio/video/kmem ; nabos reçoit CAP_NET_BIND_SERVICE et /data/nabos ; aucun paquet/configuration/unité/binaire de Mosquitto ou ancien service livré.
+- [ ] LED sur Zero W et Zero 2 W : couleurs, pulses, animations, Clear et maintenance, SIGTERM et SIGKILL/ExecStopPost, racine en lecture seule et audio simultané.
+- [ ] Séparation des privilèges : nab-hardware ne reçoit aucune capability et accède aux GPIO et aux cinq LED sysfs ; nabos reçoit CAP_NET_BIND_SERVICE et /data/nabos ; aucun paquet/configuration/unité/binaire de Mosquitto ou ancien service livré.
 - [ ] Image livrée : seulement les trois exécutables et leurs ressources/notices ; aucun checkout, outil Go/Cargo, cache ou vendor de fabrication.
 - [ ] Racine réellement en lecture seule, montages de boot-init et restrictions systemd effectives : premier démarrage puis redémarrage ; `/data/device-core/settings.json` et `/data/nabos/application.json` séparés. Activer SSH et LVA dès ce premier démarrage, vérifier home/cache/préférences sous `/var/lib/nabos/lva`.
 - [ ] device-core sans capability matérielle, PipeWire partagé ; droits NetworkManager/power/time/SSH/NTP/LVA accordés uniquement à son unité. Refus depuis nab-hardware, nabos et une session du même compte ; présence D-Bus admise uniquement depuis nab-hardware.

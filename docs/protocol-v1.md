@@ -22,14 +22,18 @@ systemd watchdog. It exports `io.github.guilhem.NabHardware1` on D-Bus.
 Calibration starts only after systemd acknowledges readiness; the D-Bus `Ready`
 property remains false while required hardware is initializing. Worker health
 gates watchdog notifications, and `ExecStopPost` invokes
-`/usr/bin/nab-hardware --stop-ears` to request motor outputs low after process exit.
+`/usr/bin/nab-hardware --stop-hardware` after process exit. The helper requests
+motor outputs low first, then clears all five LEDs and waits for the controller
+sync. Both stops are attempted; either error produces a nonzero exit status.
 See [ear lifecycle and supervision](hardware-dbus.md#ear-lifecycle-and-supervision)
 for recovery behavior and qualification limits.
 
-Hardware alone receives `CAP_SYS_RAWIO` and supplementary groups
-`gpio video kmem`. udev grants those groups `/dev/gpiochip*`, `/dev/vcio` and
-`/dev/mem`. Ears use `gpiocdev` directly, without `/dev/ear*` devices or an ear
-kernel module. `/dev/mem` access is root-equivalent.
+Hardware has only the supplementary `gpio` group and no capabilities.
+Ears use `gpiocdev` directly through `/dev/gpiochip*`, without `/dev/ear*` devices
+or an ear kernel module. LEDs use the five Linux multicolor devices at
+`/sys/class/leds/multi:indicator-0` through `multi:indicator-4`, with sysfs write
+access confined to hardware. No userspace LED DMA or `/dev/mem` access is needed.
+The image must expose writable LED attributes inside the confined service.
 udev assigns only `/dev/i2c-1` to the dedicated `nab-hardware` group with mode
 `0660`; other service accounts have no membership in that group. `i2c-dev` loads
 through `modules-load.d`, and the slot's Linux DTB enables bus 1. The udev
@@ -89,9 +93,22 @@ An explicit address applies to hardware and every Go device-core connection,
 including the dedicated audio owner, settings and maintenance. Connection
 failure never falls back to the system bus.
 
-Hardware retains `NABOS_GPIO_CHIP` (`/dev/gpiochip0`), `NABOS_BUTTON_GPIO` (`17`),
-`NABOS_WS2811_LIB` (`libws2811.so`), `NABOS_LED_BRIGHTNESS` (`200`) and
-`NABOS_LED_STRIP` (`grb`). `NABOS_LOG=debug` enables detailed logs.
+Hardware retains `NABOS_GPIO_CHIP` (`/dev/gpiochip0`), `NABOS_BUTTON_GPIO` (`17`)
+and `NABOS_LED_BRIGHTNESS` (`200`). `NABOS_LED_SYSFS` (`/sys/class/leds`) selects
+the LED class root, including temporary fixtures. The driver validates each
+`max_brightness` as 255 and maps RGB through its `multi_index`; wire GRB encoding
+belongs to the kernel driver. The overlay declares RGB components and labels,
+without selectable wire order. `NABOS_WS2811_LIB` and `NABOS_LED_STRIP`
+are removed. `NABOS_LOG=debug` enables detailed logs.
+
+LED Set/Pulse replies report asynchronous sysfs acceptance, with no atomic
+physical frame guarantee. Initialization and Clear write brightness zero to all
+five LEDs, then write `1\n` to the first LED's controller-wide `sync` attribute.
+The kernel waits for queued work and retransmits the complete desired frame,
+with a 100 ms bound per transfer and error propagation. Maintenance stays
+blocked after a failed Clear. Sync completion reports kernel completion,
+and requires separate electrical qualification. See
+[LED completion and shutdown](hardware-dbus.md#led-completion-and-shutdown).
 Device-core's source pin and settings contract are independent of NabOS's
 revision. Its image environment and access policy are described in the
 [build guide](build.md).

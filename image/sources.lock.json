@@ -50,10 +50,10 @@
       "sha256": "27d724979cad644c74d1c6787c39c3de6a9c577a54fbd2a2e29e94813c03255c"
     },
     "led": {
-      "repository": "jgarff/rpi_ws281x",
-      "commit": "22f2e35012704845d82e06d2fa2e10fbc810ecaa",
-      "url": "https://codeload.github.com/jgarff/rpi_ws281x/tar.gz/22f2e35012704845d82e06d2fa2e10fbc810ecaa",
-      "sha256": "d3f6ce3d443bcce7be7faa96bf6d5f8c5873e0071c6cab6ed45e2c55c75afba8"
+      "repository": "guilhem/bcm2835-ws2812",
+      "commit": "d6c515fe18ca5c74b9f41442fc5d569b9b61ed8e",
+      "url": "https://codeload.github.com/guilhem/bcm2835-ws2812/tar.gz/d6c515fe18ca5c74b9f41442fc5d569b9b61ed8e",
+      "sha256": "5b722aac9594a5cc2b7606d1dd3a2e6cbcbae2a8fc76a51fdce71a15225b1879"
     },
     "uboot": {
       "repository": "u-boot/u-boot",

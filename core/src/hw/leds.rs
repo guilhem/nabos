@@ -1,10 +1,12 @@
-//! Five WS2812 LEDs on GPIO 13 (PWM channel 1, DMA 12) through rpi_ws281x,
-//! loaded at runtime with dlopen (no link-time dependency). Software pulsing
-//! uses a 100 ms period and 10 steps.
+//! Five Linux multicolor LED class devices. Software pulsing uses a 100 ms
+//! period and 10 steps; ordinary writes accept work asynchronously. Only clear
+//! waits for the controller-wide sysfs sync barrier.
 
 use super::Cancel;
 use crate::Config;
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
@@ -26,6 +28,7 @@ enum Cmd {
         oneshot::Sender<Result<(), String>>,
     ),
     Pulse(usize, Rgb, Cancel, oneshot::Sender<Result<(), String>>),
+    Clear(oneshot::Sender<Result<(), String>>),
 }
 
 pub struct Leds {
@@ -40,14 +43,13 @@ impl Leds {
         let ok = Arc::new(AtomicBool::new(false));
         let available = ok.clone();
         let sim = cfg.simulate;
-        let lib = cfg.ws2811_lib.clone();
+        let root = cfg.led_sysfs.clone();
         let brightness = cfg.led_brightness;
-        let strip = strip_type(&cfg.led_strip);
         std::thread::spawn(move || {
-            let mut strip = if sim {
+            let mut backend = if sim {
                 None
             } else {
-                match Ws2811::open(&lib, brightness, strip) {
+                match Sysfs::open(&root, brightness) {
                     Ok(s) => Some(s),
                     Err(e) => {
                         error!("LEDs unavailable: {e}");
@@ -55,17 +57,22 @@ impl Leds {
                     }
                 }
             };
-            available.store(sim || strip.is_some(), Ordering::Relaxed);
+            available.store(sim || backend.is_some(), Ordering::Relaxed);
             let _ = ready_tx.send(());
-            run(rx, |frame| {
-                let result = if let Some(s) = strip.as_mut() {
-                    s.show(frame)
-                } else if sim {
+            run(rx, |frame, clear| {
+                let result = if sim {
                     Ok(())
+                } else if clear {
+                    stop_all(&root)
+                } else if let Some(s) = backend.as_mut() {
+                    s.show(frame)
                 } else {
                     Err("leds-unavailable".into())
                 };
-                available.store(result.is_ok(), Ordering::Relaxed);
+                available.store(
+                    result.is_ok() && (sim || backend.is_some()),
+                    Ordering::Relaxed,
+                );
                 result
             });
         });
@@ -92,8 +99,11 @@ impl Leds {
         rx.await.map_err(|_| "leds-stopped")?
     }
     pub async fn clear(&self) -> Result<(), String> {
-        self.set((0..COUNT).map(|i| (i, [0; 3])).collect(), Cancel::default())
-            .await
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Cmd::Clear(reply))
+            .map_err(|_| "leds-stopped")?;
+        rx.await.map_err(|_| "leds-stopped")?
     }
 }
 
@@ -103,7 +113,7 @@ struct Pulse {
     up: bool,
 }
 
-fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT]) -> Result<(), String>) {
+fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT], bool) -> Result<(), String>) {
     let mut frame = [0u32; COUNT];
     let mut pulses: [Option<Pulse>; COUNT] = Default::default();
     let mut next_pulse: Option<Instant> = None;
@@ -123,23 +133,21 @@ fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT]) -> Result<()
         let mut pending: Vec<Cmd> = cmd.into_iter().collect();
         pending.extend(rx.try_iter());
         let mut changed = false;
-        let mut replies = Vec::new();
+        let mut replies: Vec<(oneshot::Sender<Result<(), String>>, bool)> = Vec::new();
         for c in pending {
-            let (cancel, reply) = match &c {
-                Cmd::Set(_, c, r) | Cmd::Pulse(_, _, c, r) => (c, r),
-            };
-            let admitted = !reply.is_closed() && cancel.admit();
-            let reply = match c {
-                Cmd::Set(colors, _, reply) => {
+            let (reply, admitted) = match c {
+                Cmd::Set(colors, cancel, reply) => {
+                    let admitted = !reply.is_closed() && cancel.admit();
                     if admitted {
                         for (led, [r, g, b]) in colors {
                             pulses[led] = None;
                             frame[led] = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
                         }
                     }
-                    reply
+                    (reply, admitted)
                 }
-                Cmd::Pulse(led, [r, g, b], _, reply) => {
+                Cmd::Pulse(led, [r, g, b], cancel, reply) => {
+                    let admitted = !reply.is_closed() && cancel.admit();
                     if admitted {
                         frame[led] = 0;
                         pulses[led] = Some(Pulse {
@@ -149,7 +157,25 @@ fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT]) -> Result<()
                         });
                         next_pulse.get_or_insert_with(Instant::now);
                     }
-                    reply
+                    (reply, admitted)
+                }
+                Cmd::Clear(reply) => {
+                    frame = [0; COUNT];
+                    pulses = Default::default();
+                    next_pulse = None;
+                    // Keep the barrier at its position in the queue: a later
+                    // Set must not restore brightness before clear completes.
+                    let result = show(&frame, true);
+                    for (reply, admitted) in replies.drain(..) {
+                        let _ = reply.send(if admitted {
+                            result.clone()
+                        } else {
+                            Err("canceled".into())
+                        });
+                    }
+                    let _ = reply.send(result);
+                    changed = false;
+                    continue;
                 }
             };
             changed |= admitted;
@@ -180,7 +206,7 @@ fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT]) -> Result<()
             changed = true;
             next_pulse = next_pulse.map(|t| t + PULSING_RATE);
         }
-        let rendered = if changed { show(&frame) } else { Ok(()) };
+        let rendered = if changed { show(&frame, false) } else { Ok(()) };
         for (reply, admitted) in replies {
             let _ = reply.send(if admitted {
                 rendered.clone()
@@ -191,125 +217,103 @@ fn run(rx: mpsc::Receiver<Cmd>, mut show: impl FnMut(&[u32; COUNT]) -> Result<()
     }
 }
 
-fn strip_type(name: &str) -> c_int {
-    match name {
-        "rgb" => 0x0010_0800,
-        "rbg" => 0x0010_0008,
-        "gbr" => 0x0008_0010,
-        "brg" => 0x0000_1008,
-        "bgr" => 0x0000_0810,
-        _ => 0x0008_1000, // grb, rpi_ws281x GRB pixel order
-    }
+fn led_dir(root: &Path, index: usize) -> PathBuf {
+    root.join(format!("multi:indicator-{index}"))
 }
 
-// Layout of ws2811_t / ws2811_channel_t from rpi_ws281x ws2811.h.
-#[repr(C)]
-struct Channel {
-    gpionum: c_int,
-    invert: c_int,
-    count: c_int,
-    strip_type: c_int,
-    leds: *mut u32,
-    brightness: u8,
-    wshift: u8,
-    rshift: u8,
-    gshift: u8,
-    bshift: u8,
-    gamma: *mut u8,
+fn write(path: &Path, value: &str) -> Result<(), String> {
+    // No create: a missing kernel attribute must fail, including in fixtures.
+    OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(value.as_bytes()))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-#[repr(C)]
-struct Ws2811T {
-    render_wait_time: u64,
-    device: *mut c_void,
-    rpi_hw: *const c_void,
-    freq: u32,
-    dmanum: c_int,
-    channel: [Channel; 2],
-}
-
-type InitFn = unsafe extern "C" fn(*mut Ws2811T) -> c_int;
-type RenderFn = unsafe extern "C" fn(*mut Ws2811T) -> c_int;
-type StrFn = unsafe extern "C" fn(c_int) -> *const c_char;
-
-struct Ws2811 {
-    raw: Box<Ws2811T>,
-    render: RenderFn,
-    strerr: StrFn,
-    failures: u32,
-}
-
-unsafe fn sym<T>(lib: *mut c_void, name: &str) -> Result<T, String> {
-    let c = CString::new(name).unwrap();
-    let p = libc::dlsym(lib, c.as_ptr());
-    if p.is_null() {
-        return Err(format!("symbol {name} not found"));
-    }
-    Ok(std::mem::transmute_copy(&p))
-}
-
-impl Ws2811 {
-    fn open(lib: &str, brightness: u8, strip: c_int) -> Result<Ws2811, String> {
-        unsafe {
-            let name = CString::new(lib).map_err(|e| e.to_string())?;
-            let handle = libc::dlopen(name.as_ptr(), libc::RTLD_NOW);
-            if handle.is_null() {
-                let e = libc::dlerror();
-                return Err(if e.is_null() {
-                    format!("dlopen {lib} failed")
-                } else {
-                    CStr::from_ptr(e).to_string_lossy().into()
-                });
-            }
-            let init: InitFn = sym(handle, "ws2811_init")?;
-            let render: RenderFn = sym(handle, "ws2811_render")?;
-            let strerr: StrFn = sym(handle, "ws2811_get_return_t_str")?;
-            let mut raw: Box<Ws2811T> = Box::new(std::mem::zeroed());
-            raw.freq = 800_000;
-            raw.dmanum = 12;
-            raw.channel[1].gpionum = 13;
-            raw.channel[1].count = COUNT as c_int;
-            raw.channel[1].brightness = brightness;
-            raw.channel[1].strip_type = strip;
-            let rc = init(&mut *raw);
-            if rc != 0 {
-                return Err(format!(
-                    "ws2811_init: {}",
-                    CStr::from_ptr(strerr(rc)).to_string_lossy()
-                ));
-            }
-            Ok(Ws2811 {
-                raw,
-                render,
-                strerr,
-                failures: 0,
-            })
+/// Recovery and maintenance share the same shutdown barrier. Attempt every
+/// LED even after an error, then always sync the whole controller on LED zero.
+/// The kernel bounds each transfer to 100 ms and propagates transfer errors.
+pub fn stop_all(root: &str) -> Result<(), String> {
+    let root = Path::new(root);
+    let mut errors = Vec::new();
+    for index in 0..COUNT {
+        if let Err(e) = write(&led_dir(root, index).join("brightness"), "0\n") {
+            errors.push(e);
         }
+    }
+    if let Err(e) = write(&led_dir(root, 0).join("sync"), "1\n") {
+        errors.push(e);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+struct Sysfs {
+    root: PathBuf,
+    order: [[usize; 3]; COUNT],
+    brightness: u8,
+}
+
+impl Sysfs {
+    fn open(root: &str, brightness: u8) -> Result<Self, String> {
+        // Clear even if discovery later fails; never advertise availability
+        // until both this barrier and all native attributes have succeeded.
+        let cleared = stop_all(root);
+        let root = PathBuf::from(root);
+        let mut order = [[0; 3]; COUNT];
+        for (index, mapping) in order.iter_mut().enumerate() {
+            let dir = led_dir(&root, index);
+            let max = dir.join("max_brightness");
+            let value = fs::read_to_string(&max).map_err(|e| format!("{}: {e}", max.display()))?;
+            if value.trim().parse::<u16>() != Ok(255) {
+                return Err(format!("{}: expected 255", max.display()));
+            }
+            let path = dir.join("multi_index");
+            let value =
+                fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let names: Vec<_> = value.split_whitespace().collect();
+            let mut seen = [false; 3];
+            if names.len() != 3 {
+                return Err(format!("{}: expected red, green and blue", path.display()));
+            }
+            for (slot, name) in names.iter().enumerate() {
+                let channel = ["red", "green", "blue"]
+                    .iter()
+                    .position(|c| c == name)
+                    .filter(|c| !seen[*c])
+                    .ok_or_else(|| format!("{}: expected red, green and blue", path.display()))?;
+                seen[channel] = true;
+                mapping[slot] = channel;
+            }
+            let path = dir.join("multi_intensity");
+            OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        cleared?;
+        Ok(Self {
+            root,
+            order,
+            brightness,
+        })
     }
 
     fn show(&mut self, frame: &[u32; COUNT]) -> Result<(), String> {
-        unsafe {
-            let leds = self.raw.channel[1].leds;
-            if leds.is_null() {
-                return Err("LED buffer unavailable".into());
-            }
-            for (i, c) in frame.iter().enumerate() {
-                *leds.add(i) = *c;
-            }
-            let rc = (self.render)(&mut *self.raw);
-            if rc != 0 {
-                let reason = format!(
-                    "ws2811_render: {}",
-                    CStr::from_ptr((self.strerr)(rc)).to_string_lossy()
-                );
-                if self.failures < 5 {
-                    self.failures += 1;
-                    error!("{reason}");
-                }
-                return Err(reason);
-            }
-            Ok(())
+        for (index, color) in frame.iter().enumerate() {
+            let dir = led_dir(&self.root, index);
+            let rgb = [(color >> 16) as u8, (color >> 8) as u8, *color as u8];
+            let [a, b, c] = self.order[index].map(|channel| rgb[channel]);
+            write(&dir.join("multi_intensity"), &format!("{a} {b} {c}\n"))?;
+            // Clear used brightness zero. Every subsequent color restores the
+            // configured brightness; wire GRB encoding belongs to the kernel driver.
+            write(&dir.join("brightness"), &format!("{}\n", self.brightness))?;
         }
+        Ok(())
     }
 }
 
@@ -317,13 +321,336 @@ impl Ws2811 {
 mod tests {
     use super::*;
 
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "leds-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&root).unwrap();
+            for index in 0..COUNT {
+                let dir = led_dir(&root, index);
+                fs::create_dir(&dir).unwrap();
+                fs::write(dir.join("max_brightness"), "255\n").unwrap();
+                fs::write(
+                    dir.join("multi_index"),
+                    if index % 2 == 0 {
+                        "green blue red\n"
+                    } else {
+                        "blue red green\n"
+                    },
+                )
+                .unwrap();
+                fs::write(dir.join("brightness"), "200\n").unwrap();
+                fs::write(dir.join("multi_intensity"), "9 8 7\n").unwrap();
+            }
+            fs::write(led_dir(&root, 0).join("sync"), "0\n").unwrap();
+            Self(root)
+        }
+
+        fn path(&self, index: usize, attr: &str) -> PathBuf {
+            led_dir(&self.0, index).join(attr)
+        }
+
+        fn read(&self, index: usize, attr: &str) -> String {
+            fs::read_to_string(self.path(index, attr)).unwrap()
+        }
+
+        fn config(&self, simulate: bool) -> Config {
+            Config {
+                simulate,
+                gpio_chip: "/unused".into(),
+                button_gpio: 17,
+                led_sysfs: self.0.to_str().unwrap().into(),
+                led_brightness: 200,
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn sysfs_maps_each_led_and_restores_brightness_after_clear() {
+        let f = Fixture::new();
+        let leds = Leds::open(&f.config(false));
+        assert!(leds.available());
+        for index in 0..COUNT {
+            assert_eq!(f.read(index, "brightness"), "0\n");
+        }
+        assert_eq!(f.read(0, "sync"), "1\n");
+        // Ordinary writes must not run the completion barrier.
+        fs::write(f.path(0, "sync"), "pending\n").unwrap();
+        leds.set(
+            (0..COUNT).map(|i| (i, [11, 22, 33])).collect(),
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        for index in 0..COUNT {
+            assert_eq!(f.read(index, "brightness"), "200\n");
+            assert_eq!(
+                f.read(index, "multi_intensity"),
+                if index % 2 == 0 {
+                    "22 33 11\n"
+                } else {
+                    "33 11 22\n"
+                }
+            );
+        }
+        assert_eq!(f.read(0, "sync"), "pending\n");
+        leds.clear().await.unwrap();
+        assert_eq!(f.read(0, "sync"), "1\n");
+        leds.set(vec![(1, [255, 0, 8])], Cancel::default())
+            .await
+            .unwrap();
+        for index in 0..COUNT {
+            assert_eq!(f.read(index, "brightness"), "200\n");
+            assert_eq!(
+                f.read(index, "multi_intensity"),
+                if index == 1 { "8 255 0\n" } else { "0 0 0\n" }
+            );
+        }
+        // Simulation must not touch even a valid, writable sysfs fixture.
+        let simulated = Leds::open(&f.config(true));
+        simulated
+            .pulse(1, [255; 3], Cancel::default())
+            .await
+            .unwrap();
+        simulated.clear().await.unwrap();
+        assert_eq!(f.read(1, "multi_intensity"), "8 255 0\n");
+        assert_eq!(f.read(1, "brightness"), "200\n");
+    }
+
+    #[tokio::test]
+    async fn sysfs_pulse_cancellation_and_clear_failure_stop_future_writes() {
+        let f = Fixture::new();
+        let leds = Leds::open(&f.config(false));
+        leds.pulse(4, [200, 0, 100], Cancel::default())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while f.read(4, "multi_intensity") == "0 0 0\n" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // Set cancels an active pulse; canceled queued work cannot replace it.
+        leds.set(vec![(4, [5, 6, 7])], Cancel::default())
+            .await
+            .unwrap();
+        let cancel = Cancel::default();
+        cancel.cancel();
+        assert_eq!(
+            leds.pulse(4, [255; 3], cancel).await,
+            Err("canceled".into())
+        );
+        tokio::time::sleep(Duration::from_millis(230)).await;
+        assert_eq!(f.read(4, "multi_intensity"), "6 7 5\n");
+        leds.pulse(4, [200, 0, 100], Cancel::default())
+            .await
+            .unwrap();
+        fs::remove_file(f.path(1, "brightness")).unwrap();
+        fs::create_dir(f.path(1, "brightness")).unwrap();
+        fs::remove_file(f.path(0, "sync")).unwrap();
+        let error = leds.clear().await.unwrap_err();
+        assert!(error.contains("multi:indicator-1/brightness"));
+        assert!(error.contains("multi:indicator-0/sync"));
+        assert!(!leds.available());
+        assert!(
+            !f.path(0, "sync").exists(),
+            "missing attributes must not be created"
+        );
+        tokio::time::sleep(Duration::from_millis(230)).await;
+        for index in [0, 2, 3, 4] {
+            assert_eq!(f.read(index, "brightness"), "0\n", "all LEDs are attempted");
+        }
+        fs::remove_dir(f.path(1, "brightness")).unwrap();
+        fs::write(f.path(1, "brightness"), "200\n").unwrap();
+        fs::write(f.path(0, "sync"), "0\n").unwrap();
+        leds.clear().await.unwrap();
+        assert!(leds.available());
+        assert_eq!(f.read(0, "sync"), "1\n");
+        // A brightness error must still execute an otherwise valid sync.
+        fs::remove_file(f.path(3, "brightness")).unwrap();
+        fs::write(f.path(0, "sync"), "0\n").unwrap();
+        assert!(leds
+            .clear()
+            .await
+            .unwrap_err()
+            .contains("indicator-3/brightness"));
+        assert_eq!(f.read(0, "sync"), "1\n");
+    }
+
+    #[test]
+    fn sysfs_rejects_absent_and_malformed_native_attributes() {
+        for (attr, value) in [
+            ("multi_index", "red green"),
+            ("multi_index", "red red blue"),
+            ("multi_index", "red green white"),
+            ("multi_index", "red green blue white"),
+            ("max_brightness", "254"),
+            ("max_brightness", "invalid"),
+        ] {
+            let f = Fixture::new();
+            fs::write(f.path(2, attr), value).unwrap();
+            assert!(Sysfs::open(f.0.to_str().unwrap(), 200)
+                .err()
+                .unwrap()
+                .contains(attr));
+            assert!(!Leds::open(&f.config(false)).available());
+        }
+        for (index, attr) in [
+            (2, "max_brightness"),
+            (2, "multi_index"),
+            (2, "multi_intensity"),
+            (2, "brightness"),
+            (0, "sync"),
+        ] {
+            let f = Fixture::new();
+            fs::remove_file(f.path(index, attr)).unwrap();
+            assert!(Sysfs::open(f.0.to_str().unwrap(), 200).is_err());
+            assert!(!f.path(index, attr).exists());
+        }
+        let f = Fixture::new();
+        fs::remove_dir_all(led_dir(&f.0, 4)).unwrap();
+        assert!(Sysfs::open(f.0.to_str().unwrap(), 200).is_err());
+    }
+
+    #[tokio::test]
+    async fn sysfs_initial_sync_and_later_io_errors_keep_availability_false() {
+        let f = Fixture::new();
+        fs::remove_file(f.path(0, "sync")).unwrap();
+        let unavailable = Leds::open(&f.config(false));
+        assert!(!unavailable.available());
+        assert!(unavailable
+            .set(vec![(0, [255; 3])], Cancel::default())
+            .await
+            .is_err());
+        fs::write(f.path(0, "sync"), "0\n").unwrap();
+        let leds = Leds::open(&f.config(false));
+        assert!(leds.available());
+        fs::remove_file(f.path(2, "multi_intensity")).unwrap();
+        assert!(leds
+            .set(vec![(0, [255; 3])], Cancel::default())
+            .await
+            .is_err());
+        assert!(!leds.available());
+        assert!(!f.path(2, "multi_intensity").exists());
+    }
+
+    #[tokio::test]
+    async fn final_shutdown_attempts_ears_and_led_sync_despite_either_failure() {
+        for (ear_failure, led_failure) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let f = Fixture::new();
+            let (events, _) = tokio::sync::mpsc::unbounded_channel();
+            let hw = crate::hw::Hw {
+                leds: Leds::open(&f.config(false)),
+                ears: crate::hw::ears::Ears::open(
+                    !ear_failure,
+                    "/nonexistent-nabos-test-gpio",
+                    events,
+                ),
+                rfid: None,
+                button: false,
+                info: crate::hw::HwInfo {
+                    model: "fixture",
+                    simulated: false,
+                },
+            };
+            hw.leds
+                .set(vec![(0, [255; 3])], Cancel::default())
+                .await
+                .unwrap();
+            fs::write(f.path(0, "sync"), "0\n").unwrap();
+            if led_failure {
+                fs::remove_file(f.path(0, "sync")).unwrap();
+            }
+            let (ears, leds) = crate::shutdown(&hw).await;
+            assert_eq!(ears.is_err(), ear_failure);
+            assert_eq!(leds.is_err(), led_failure);
+            for index in 0..COUNT {
+                assert_eq!(f.read(index, "brightness"), "0\n");
+            }
+            if !led_failure {
+                assert_eq!(f.read(0, "sync"), "1\n");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sysfs_clear_waits_for_sync_before_reply_and_queued_set() {
+        use std::io::Read;
+        use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+
+        let f = Fixture::new();
+        let leds = Arc::new(Leds::open(&f.config(false)));
+        leds.set(vec![(0, [255; 3])], Cancel::default())
+            .await
+            .unwrap();
+        let path = f.path(0, "sync");
+        fs::remove_file(&path).unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // A FIFO pauses the fixture's sync write until a reader is admitted.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let l = leds.clone();
+        let clear = tokio::spawn(async move { l.clear().await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while (0..COUNT).any(|i| f.read(i, "brightness") != "0\n") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !clear.is_finished(),
+            "clear cannot reply before sync completes"
+        );
+        let l = leds.clone();
+        let set = tokio::spawn(async move { l.set(vec![(0, [1, 2, 3])], Cancel::default()).await });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !set.is_finished(),
+            "queued colors cannot bypass the barrier"
+        );
+        let mut reader = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .unwrap();
+        let mut value = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while value.len() < 2 {
+                let _ = reader.read_to_end(&mut value);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, b"1\n");
+        clear.await.unwrap().unwrap();
+        set.await.unwrap().unwrap();
+        assert_eq!(f.read(0, "brightness"), "200\n");
+        assert_eq!(f.read(0, "multi_intensity"), "2 3 1\n");
+    }
+
     #[tokio::test]
     async fn batch_is_one_frame_and_canceled_commands_never_render() {
         let (tx, rx) = mpsc::channel();
         let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let f = frames.clone();
         let worker = std::thread::spawn(move || {
-            run(rx, |fr| {
+            run(rx, |fr, _| {
                 f.lock().unwrap().push(*fr);
                 Ok(())
             })
@@ -355,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn failed_clear_propagates_the_render_error() {
         let (tx, rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || run(rx, |_| Err("render-failed".into())));
+        let worker = std::thread::spawn(move || run(rx, |_, _| Err("render-failed".into())));
         let leds = Leds {
             tx,
             ok: Arc::new(AtomicBool::new(true)),

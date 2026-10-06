@@ -25,7 +25,7 @@ setenv nabos_apply 'if load ${devtype} ${devnum}:${nabos_part} ${nabos_ovl_addr_
 setenv nabos_overlays 'fdt addr ${fdt_addr_r}; fdt resize 0x10000; setenv nabos_ovl_ok 1; setenv nabos_ovl tagtagtag-sound; run nabos_apply; if test ${nabos_ovl_ok} = 0; then echo "nabos: overlay failed, using the plain DTB"; load ${devtype} ${devnum}:${nabos_part} ${fdt_addr_r} /boot/dtb/${nabos_dtb}; fi'
 
 # The firmware fills /system/linux,revision only in its own DTB, and U-Boot's
-# board fixups do not copy it; rpi_ws281x and /proc/cpuinfo need it.
+# board fixups do not copy it; /proc/cpuinfo needs it.
 setenv nabos_fixup 'fdt addr ${fdt_addr_r}; fdt resize 0x1000; if test -n "${board_revision}"; then fdt get value nabos_rev /system linux,revision || fdt mknode / system; fdt set /system linux,revision <${board_revision}>; fdt get value nabos_rev /system linux,revision; echo "nabos: board revision ${nabos_rev}"; fi'
 
 # Kernel and DTB always come from the same root filesystem as userspace.

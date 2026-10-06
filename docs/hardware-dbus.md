@@ -41,6 +41,37 @@ ear movements and indivisible RFID writes finish before control can be reclaimed
 Commands are not replayed after reconnection. Long operations and cleanup have
 bounded waits; a timeout never proves that physical work has stopped.
 
+## LED completion and shutdown
+
+The five LEDs are Linux `led_classdev_mc` devices under
+`/sys/class/leds/multi:indicator-0` through `multi:indicator-4`.
+`NABOS_LED_SYSFS` overrides the class root for test fixtures.
+Each device must expose `max_brightness` of 255 and a `multi_index` containing
+exactly `red`, `green` and `blue`. Hardware reads each LED's component order
+before writing `multi_intensity`; it never assumes that order is RGB.
+`NABOS_LED_BRIGHTNESS` defaults to 200. Wire GRB encoding belongs to the kernel
+driver; `NABOS_WS2811_LIB` and `NABOS_LED_STRIP` are removed. The overlay declares
+RGB components and labels, without selectable wire order.
+
+`SetLeds` and `PulseLed` acknowledge successful sysfs writes, which accept work
+asynchronously. A batch is one logical worker update; the five native attribute
+writes do not promise an atomic physical frame. Pulsing remains in the worker
+with 100 ms steps, and Set cancels pulsing on the specified LED.
+
+Clear stops all pulses and writes `0\n` to all five `brightness` attributes,
+attempting every LED even if an earlier write fails. It then writes `1\n` to
+`multi:indicator-0/sync`. This is a barrier for the entire controller: the kernel
+waits for queued LED work, retransmits the complete desired frame, bounds each
+transfer to 100 ms and returns transfer errors. Clear must succeed before
+maintenance can acknowledge quiescence. Initialization also clears and syncs
+before advertising LEDs available; I/O errors mark them unavailable. Subsequent
+color updates restore the configured brightness after clear.
+
+A successful sync confirms completion reported by the kernel; it does not
+prove the electrical LED state. Qualification still requires observation and
+measurements on hardware under the actual read-only systemd service.
+Simulation performs no physical sysfs reads or writes.
+
 ## Ear lifecycle and supervision
 
 The Rust process drives the ears through GPIO character devices (`gpiocdev`);
@@ -59,11 +90,18 @@ root and `ProtectSystem=strict`.
 `SIGTERM` cuts ear drive while allowing an admitted indivisible NFC write to
 finish within 5 seconds. The watchdog uses `SIGKILL` with
 `KillMode=control-group`; after process exit, systemd runs
-`/usr/bin/nab-hardware --stop-ears` with `TimeoutStopSec=6s` and restarts the
-service. This helper requests motor GPIO outputs low directly, without D-Bus,
-LED or NFC initialization. Closing GPIO file descriptors alone does not
+`/usr/bin/nab-hardware --stop-hardware` with `TimeoutStopSec=6s` and restarts the
+service. This helper first requests motor GPIO outputs low directly, then
+clears all five LED brightness attributes and waits for the controller sync.
+It attempts both devices and exits unsuccessfully if either fails, without
+D-Bus or NFC initialization. Closing GPIO file descriptors alone does not
 guarantee that motors stop. A software timeout or helper return code is not
-proof of the electrical output state.
+proof of the electrical output state. The former `--stop-ears` option is removed.
+Normal service exit also requests urgent motor stop and attempts both ear
+shutdown and LED Clear/sync, including after a D-Bus startup or runtime error.
+Either cleanup error makes the process exit unsuccessfully. A device-core
+connection failure before LED worker creation uses the direct LED stop helper;
+simulation still performs no physical writes.
 
 Physical qualification under the actual read-only systemd service is still
 required: all 17 positions in both directions, concurrent motion under load,
