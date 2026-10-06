@@ -13,7 +13,7 @@
 //	make O=$NABOS_UBOOT_SANDBOX CONFIG_PYLIBFDT= u-boot tools
 //
 // NABOS_SOURCES (default /tmp/nabos-sources) holds the unpacked locked
-// sources (uboot, sound, ears); NABOS_VENDOR_DTBS the vendor DTBs.
+// sources (uboot, sound); NABOS_VENDOR_DTBS the vendor DTBs.
 // image/test.sh supplies NABOS_IMAGE_BOOT, NABOS_IMAGE_ENV, NABOS_IMAGE_TARGET
 // and NABOS_IMAGE_OVERLAYS to exercise the shipped files from its disposable copy.
 package image

@@ -42,7 +42,7 @@ func TestVolumeOverlay(t *testing.T) {
 		resolved := filepath.Join(tmp, "fixture-sound.dtb")
 		run(t, baseDTS, "dtc", "-@", "-I", "dts", "-O", "dtb", "-o", base, "-")
 		run(t, "", "fdtoverlay", "-i", base, "-o", resolved, overlay)
-		checkVolumeTree(t, resolved)
+		checkVolumeTree(t, base, resolved)
 	}
 	for _, target := range []string{"zero-armv6", "zero2-arm64"} {
 		t.Run(target, func(t *testing.T) {
@@ -55,12 +55,12 @@ func TestVolumeOverlay(t *testing.T) {
 			}
 			tree := filepath.Join(t.TempDir(), "sound.dtb")
 			run(t, "", "fdtoverlay", "-i", base, "-o", tree, overlay)
-			checkVolumeTree(t, tree)
+			checkVolumeTree(t, base, tree)
 		})
 	}
 }
 
-func checkVolumeTree(t *testing.T, tree string) {
+func checkVolumeTree(t *testing.T, base, tree string) {
 	t.Helper()
 	get := func(kind, node, property string) string {
 		return strings.TrimSpace(run(t, "", "fdtget", "-t", kind, tree, node, property))
@@ -122,6 +122,8 @@ func checkVolumeTree(t *testing.T, tree string) {
 	want("x", keys[0], "pinctrl-0", strings.Join(volumePins, " "))
 	want("s", keys[0], "pinctrl-names", "default")
 	sound := get("s", "/__symbols__", "sound")
+	// Overlays must preserve the existing card phandle and its base-tree references.
+	want("x", sound, "phandle", strings.TrimSpace(run(t, "", "fdtget", "-t", "x", base, sound, "phandle")))
 	i2s := get("s", "/__symbols__", "i2s")
 	i2c := get("s", "/__symbols__", "i2c1")
 	codec := get("s", "/__symbols__", "wm8960")

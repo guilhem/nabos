@@ -90,7 +90,7 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 		copyFile(f.t, path, filepath.Join(tree, "boot/overlays", overlay+".dtbo"))
 	}
 	if brokenOverlay {
-		write(f.t, filepath.Join(tree, "boot/overlays/tagtagtag-ears.dtbo"), "garbage")
+		write(f.t, filepath.Join(tree, "boot/overlays/tagtagtag-sound.dtbo"), "garbage")
 	}
 	return tree
 }
@@ -262,7 +262,7 @@ func newBootFixture(t *testing.T) *bootFixture {
 	}
 	run(t, baseDTS, dtc, "-@", "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "base.dtb"), "-")
 	run(t, controlDTS, dtc, "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "control.dtb"), "-")
-	for name, repo := range map[string]string{"tagtagtag-sound": "sound", "tagtagtag-ears": "ears"} {
+	for name, repo := range map[string]string{"tagtagtag-sound": "sound"} {
 		if overlays := os.Getenv("NABOS_IMAGE_OVERLAYS"); overlays != "" {
 			f.overlays[name] = filepath.Join(overlays, name+".dtbo")
 			continue
@@ -271,10 +271,8 @@ func newBootFixture(t *testing.T) *bootFixture {
 		if real := find(filepath.Join(sources, repo), name+"-overlay.dts"); len(real) > 0 {
 			// The pinned driver overlays, preprocessed like image/prepare.sh does.
 			dts = run(t, "", "cpp", "-nostdinc", "-undef", "-D__DTS__", "-x", "assembler-with-cpp", "-P", real[0])
-		} else if name == "tagtagtag-sound" {
-			dts = fmt.Sprintf(miniOverlay, "i2s")
 		} else {
-			dts = fmt.Sprintf(miniOverlay, "gpio")
+			dts = fmt.Sprintf(miniOverlay, "i2s")
 		}
 		out := filepath.Join(f.tmp, name+".dtbo")
 		run(t, dts, dtc, "-@", "-I", "dts", "-O", "dtb", "-o", out, "-")
@@ -419,7 +417,10 @@ func testBootScript(t *testing.T, target string) {
 		if lines[0] != "nabos: trying slot A, 2 attempts left after this one" {
 			t.Errorf("first line %q", lines[0])
 		}
-		containsAll(t, lines, "nabos: overlay tagtagtag-sound applied", "nabos: overlay tagtagtag-ears applied")
+		containsAll(t, lines, "nabos: overlay tagtagtag-sound applied")
+		if strings.Contains(output, "tagtagtag-ears") {
+			t.Error("obsolete ears overlay loaded")
+		}
 		containsAll(t, strings.Fields(booting(t, lines, "A")), "root=/dev/mmcblk0p2", "rauc.slot=A", "ro",
 			"init=/usr/lib/nabos/boot-init", "watchdog.open_timeout=300", "panic=10")
 		containsAll(t, lower(lines), "nabos: board revision 0x009000c1")

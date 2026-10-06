@@ -148,20 +148,15 @@ build-packages|packages)
 drivers)
   kernel=$(cat /nabos-build/kernel-release)
   mkdir -p "$stage/usr/lib/modules/$kernel/updates/nabos" "$stage/boot/firmware/overlays"
-  for driver in ears sound; do
-    directory=$src/$driver
-    [[ -d $directory ]] || exit 1
-    if [[ -f /nabos-build/image/patches/$driver.patch ]]; then
-      patch --directory="$directory" -p1 < "/nabos-build/image/patches/$driver.patch"
-    fi
-    make -C "/lib/modules/$kernel/build" M="$directory" -j2 modules
-    find "$directory" -maxdepth 1 -name '*.ko' -exec install -m644 '{}' "$stage/usr/lib/modules/$kernel/updates/nabos/" \;
-    for overlay in "$directory"/*-overlay.dts; do
-      [[ -f $overlay ]] || continue
-      # Kernel headers are unavailable to dtc's parser; preprocess DTS first.
-      cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I "/lib/modules/$kernel/build/include" "$overlay" |
-        dtc -@ -I dts -O dtb -o "$stage/boot/firmware/overlays/$(basename "${overlay%-overlay.dts}").dtbo"
-    done
+  directory=$src/sound
+  [[ -d $directory ]] || exit 1
+  make -C "/lib/modules/$kernel/build" M="$directory" -j2 modules
+  find "$directory" -maxdepth 1 -name '*.ko' -exec install -m644 '{}' "$stage/usr/lib/modules/$kernel/updates/nabos/" \;
+  for overlay in "$directory"/*-overlay.dts; do
+    [[ -f $overlay ]] || continue
+    # Kernel headers are unavailable to dtc's parser; preprocess DTS first.
+    cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I "/lib/modules/$kernel/build/include" "$overlay" |
+      dtc -@ -I dts -O dtb -o "$stage/boot/firmware/overlays/$(basename "${overlay%-overlay.dts}").dtbo"
   done
   make -C "$src/sound" tagtagtag-mixerd
   make -C "$src/sound" test

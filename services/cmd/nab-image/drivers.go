@@ -15,7 +15,6 @@ var driverSet = []struct {
 	name, overlay string
 	modules       []string
 }{
-	{"ears", "tagtagtag-ears", []string{"tagtagtag-ears"}},
 	{"sound", "tagtagtag-sound", []string{"snd-soc-wm8960", "snd-soc-max9759"}},
 }
 
@@ -46,11 +45,11 @@ func runCmd(name string, args ...string) error {
 	return cmd.Run()
 }
 
-// drivers verifies the locked driver archives, applies the ears patch and builds
+// drivers verifies the locked driver archives and builds
 // each DTBO (which must keep external fixups) and optionally the modules.
 func drivers(lockPath string, args []string) error {
 	fs := flag.NewFlagSet("drivers", flag.ContinueOnError)
-	archives := fs.String("archives", "", "directory containing the locked ears/sound tar.gz files")
+	archives := fs.String("archives", "", "directory containing the locked sound tar.gz file")
 	kernelArg := fs.String("kernel", "", "KERNELRELEASE or its headers build directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -81,15 +80,6 @@ func drivers(lockPath string, args []string) error {
 		source, err := unpack(archive, filepath.Join(work, d.name))
 		if err != nil {
 			return err
-		}
-		if d.name == "ears" {
-			patch, err := filepath.Abs(filepath.Join(filepath.Dir(lockPath), "patches", "ears.patch"))
-			if err != nil {
-				return err
-			}
-			if err := runCmd("patch", "--batch", "--fuzz=0", "-d", source, "-p1", "-i", patch); err != nil {
-				return err
-			}
 		}
 		if err := runCmd("make", "-C", source, d.overlay+".dtbo"); err != nil {
 			return err

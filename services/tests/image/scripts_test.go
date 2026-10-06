@@ -549,7 +549,7 @@ func TestHealth(t *testing.T) {
 	})
 }
 
-func TestUserspaceRFIDImageContract(t *testing.T) {
+func TestUserspaceHardwareImageContract(t *testing.T) {
 	if got := read(t, filepath.Join(rootfsDir, "etc/modules-load.d/nabos.conf")); got != "i2c-dev\n" {
 		t.Errorf("unexpected static I2C module configuration: %q", got)
 	}
@@ -557,29 +557,33 @@ func TestUserspaceRFIDImageContract(t *testing.T) {
 		t.Error("the Linux slot DTB must enable I2C bus 1 independently of reader overlays")
 	}
 	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
-	if !strings.Contains(prepare, "for driver in ears sound; do") {
-		t.Error("only ears and sound should be built as kernel drivers")
+	if !strings.Contains(prepare, "directory=$src/sound\n") || strings.Contains(prepare, "for driver in ") {
+		t.Error("only sound should be built as a kernel driver")
 	}
 	var lock struct{ Sources map[string]json.RawMessage }
 	if err := json.Unmarshal([]byte(read(t, filepath.Join(imageDir, "sources.lock.json"))), &lock); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"cr14", "nfc", "st25r391x"} {
+	for _, name := range []string{"ears", "cr14", "nfc", "st25r391x"} {
 		if _, exists := lock.Sources[name]; exists {
 			t.Errorf("obsolete kernel source pin remains: %s", name)
 		}
-		for _, file := range []string{"prepare.sh", "../services/cmd/nab-image/drivers.go"} {
+		for _, file := range []string{"prepare.sh", "boot/boot.cmd", "../services/cmd/nab-image/drivers.go"} {
 			if strings.Contains(read(t, filepath.Join(imageDir, file)), name) {
 				t.Errorf("obsolete kernel driver remains in %s: %s", file, name)
 			}
 		}
 	}
+	udev := read(t, filepath.Join(rootfsDir, "etc/udev/rules.d/60-nabos.rules"))
+	if strings.Contains(udev, `KERNEL=="ear`) {
+		t.Error("obsolete ears device access rule remains")
+	}
 	for _, file := range []string{
-		"patches/cr14.patch", "patches/nfc.patch",
+		"patches/ears.patch", "patches/cr14.patch", "patches/nfc.patch",
 		"rootfs/usr/lib/nabos/rfid-probe", "rootfs/usr/lib/systemd/system/nabos-rfid.service",
 	} {
 		if _, err := os.Lstat(filepath.Join(imageDir, file)); !os.IsNotExist(err) {
-			t.Errorf("obsolete reader integration remains: %s", file)
+			t.Errorf("obsolete kernel hardware integration remains: %s", file)
 		}
 	}
 	for _, file := range []string{"usr/lib/nabos/image-setup", "usr/lib/systemd/system/nab-hardware.service"} {

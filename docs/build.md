@@ -55,15 +55,15 @@ Les lecteurs RFID/NFC utilisent les crates Rust externes `guilhem/cr14` et
 `guilhem/st25r391x`, issues de leurs branches `codex/i2c-userspace`. Leurs commits
 Git sont fixés par `rev` dans `core/Cargo.toml` et résolus dans `core/Cargo.lock` ;
 `cargo vendor` les archive avec les entrées de `nab-hardware`. Ils n'ont aucune
-archive de source distincte dans `image/sources.lock.json`. Seuls les pilotes
-oreilles et audio sont compilés comme modules noyau ; les modules et overlays
-CR14/ST25R391x et le service de probe `nabos-rfid` sont supprimés.
+archive de source distincte dans `image/sources.lock.json`. Les oreilles utilisent
+`gpiocdev` dans le même processus Rust. Seul le son WM8960 conserve ses modules
+et son overlay noyau ; les anciens pilotes et overlays oreilles/CR14/ST25R391x
+et le service de probe `nabos-rfid` sont supprimés.
 
 Les sources audio viennent du fork `guilhem/wm8960` (branche `nabos-gpio-keys`).
 Son commit et son empreinte sont fixés dans `image/sources.lock.json` ; aucun
 patch audio local n'est appliqué pendant la fabrication. Le fork fournit aussi
-le mixer, son unité systemd et sa règle udev. Les oreilles conservent leur source
-upstream `pguyot/tagtagtag-ears` et le patch local `image/patches/ears.patch`.
+le mixer, son unité systemd et sa règle udev.
 
 Les workflows réutilisables `go.yml`, `rust.yml`, `device-core.yml` et `uboot.yml` ont chacun leur matrice de plateformes `[zero-armv6, zero2-arm64]` : huit jobs indépendants, en parallèle des tests. `actions/setup-go` gère les modules et objets Go avec son cache intégré ; `actions-rust-lang/setup-rust-toolchain` installe Rust et gère le cache Cargo et sysroot ; U-Boot utilise ccache. Les caches sont séparés par cible et chaîne de compilation. Le job d'image attend leurs succès, récupère les archives de la même exécution et vérifie leur cible, leur révision et la version de nabos avant installation. Le manifeste `build-<cible>.json` distingue la révision NabOS, la révision et l’empreinte d’archive device-core et l’empreinte de son binaire. Pour device-core, l’identité de source externe, le SHA-256 de son archive, le verrou Cargo extrait de cette source, l’empreinte du binaire et son architecture ELF sont aussi vérifiés avant installation.
 
@@ -77,7 +77,7 @@ Le job `image-test` conserve les objets Go des tests dans `build/cache/image-tes
 
 `image/base-cache.sh` conserve dans `build/cache/base/<cible>/` une archive creuse de la base préparée : paquets runtime, noyau, pilotes, mixer, bibliothèque LED et ressources vocales, avec les paquets et wheels nécessaires au replay. La base est démontée avant archivage, sans les binaires NabOS, le certificat RAUC ni les fichiers de version de la fabrication. Une restauration vérifie son identité et le SHA-256 de l'archive, puis produit une copie indépendante. Une absence ou une corruption provoque une reconstruction.
 
-La clé dépend de la cible, des sources verrouillées, des patches, des scripts de préparation, des sources de `nab-image` et de `services/go.mod`, ainsi que de la date UTC : APT est résolu de nouveau chaque jour et lors de ces changements. La CI fixe cette date au début du job pour les builds qui traversent minuit. `NABOS_BASE_CACHE=0 bash image/build.sh ...` force une fabrication sans ce cache ; `--replay` utilise toujours les entrées archivées fournies. Les réglages, binaires applicatifs, versions et signatures sont ajoutés après restauration, puis l'image complète est testée.
+La clé dépend de la cible, des sources verrouillées, des scripts de préparation, des sources de `nab-image` et de `services/go.mod`, ainsi que de la date UTC : APT est résolu de nouveau chaque jour et lors de ces changements. La CI fixe cette date au début du job pour les builds qui traversent minuit. `NABOS_BASE_CACHE=0 bash image/build.sh ...` force une fabrication sans ce cache ; `--replay` utilise toujours les entrées archivées fournies. Les réglages, binaires applicatifs, versions et signatures sont ajoutés après restauration, puis l'image complète est testée.
 
 La fabrication sans cache sépare compilation, livraison et tests :
 
@@ -108,7 +108,7 @@ make package-go TARGET=zero-armv6 VERSION=dev-local
 
 Les sorties sont dans `build/<composant>/<cible>/` (`build/device-core-build/<cible>/` pour device-core) et les archives dans `build/components/`. Les cibles `package-rust`, `package-device-core` et `package-uboot` suivent la même convention. `OUT=/chemin/sortie` change le répertoire de sortie ; `INPUTS=/chemin/entrees-archivees` active le replay sans téléchargement des dépendances. La compilation Go utilise `CGO_ENABLED=0`, `GOOS=linux` et `GOARCH=arm GOARM=6` ou `GOARCH=arm64`.
 
-Chaque image archive les `.deb` ajoutés/remplacés avec SHA-256 et inventaire. Les sources des pilotes, les dépendances Cargo/Go, le sysroot Rust, les paquets du compilateur U-Boot et les wheels Python ARM64 sont aussi archivés. Les tests utilisent des bus D-Bus privés, sans toucher au bus système de l’hôte. Les entrées Rust sont séparées dans `inputs/nab-hardware/` et `inputs/device-core/` : chaque binaire possède son propre `Cargo.lock`, `cargo-vendor/` et `cargo-vendor.toml`, et device-core conserve aussi son archive de source et `source-identity.json`. Les sysroots et caches de compilation sont séparés par composant et architecture ; les paquets sysroot verrouillés peuvent être partagés dans l’archive de replay. Les verrous Cargo, Go et sysroot sont vérifiés lors d’une reconstruction. Les caches de téléchargement restent une optimisation : une disparition des anciens paquets des miroirs exige de mettre à jour le verrou ou de fournir les entrées archivées. Le cache de base préparée conserve ensemble l’image de base et les archives APT ; son identité comprend l’architecture, la date et tous les scripts, patchs et verrous de préparation. Un cache APT isolé ne doit pas être restauré : son manifeste activerait le mode replay sans prouver l’identité de la base.
+Chaque image archive les `.deb` ajoutés/remplacés avec SHA-256 et inventaire. Les sources des pilotes, les dépendances Cargo/Go, le sysroot Rust, les paquets du compilateur U-Boot et les wheels Python ARM64 sont aussi archivés. Les tests utilisent des bus D-Bus privés, sans toucher au bus système de l’hôte. Les entrées Rust sont séparées dans `inputs/nab-hardware/` et `inputs/device-core/` : chaque binaire possède son propre `Cargo.lock`, `cargo-vendor/` et `cargo-vendor.toml`, et device-core conserve aussi son archive de source et `source-identity.json`. Les sysroots et caches de compilation sont séparés par composant et architecture ; les paquets sysroot verrouillés peuvent être partagés dans l’archive de replay. Les verrous Cargo, Go et sysroot sont vérifiés lors d’une reconstruction. Les caches de téléchargement restent une optimisation : une disparition des anciens paquets des miroirs exige de mettre à jour le verrou ou de fournir les entrées archivées. Le cache de base préparée conserve ensemble l’image de base et les archives APT ; son identité comprend l’architecture, la date et tous les scripts et verrous de préparation. Un cache APT isolé ne doit pas être restauré : son manifeste activerait le mode replay sans prouver l’identité de la base.
 
 Le fichier `cargo-vendor.toml` conserve la configuration complète produite par `cargo vendor`, y compris les remplacements des sources Git CR14/ST25R391x et de crates.io. Le replay recopie ce fichier et le fournit à Cargo avec `--config`, puis remplace uniquement `source.vendored-sources.directory` par le chemin du nouveau répertoire de fabrication. Les compilations utilisent `--locked --offline` ; les sources Git proviennent ainsi du vendor archivé et ne dépendent pas d’un ancien cache Git dans `CARGO_HOME`.
 
@@ -144,7 +144,7 @@ Le système racine est monté en lecture seule ; identité, connexion réseau, r
 
 SSH utilise le service OpenSSH fourni par Raspberry Pi OS, conditionné par un fichier `/data/device-core/ssh/authorized_keys` non vide et des données persistantes disponibles. L’interface authentifiée délègue à device-core, qui valide les clés avec `ssh-keygen`, écrit ce fichier atomiquement et demande uniquement `start` ou `stop` sur `ssh.service` via Polkit. Les clés hôtes sont créées dans `/data/system/ssh/etc/ssh` au premier démarrage du service ; la configuration OpenSSH reste dans le slot pour recevoir les mises à jour. Le compte `nabos` a un shell, conserve son mot de passe verrouillé et dispose de sudo sans mot de passe. Gérer ses clés permet donc d'accorder un accès administrateur au système. Le flag voix est `/data/device-core/voice-enabled` ; les préférences et téléchargements LVA restent dans `/var/lib/nabos/lva`, dont le montage persistant existant provient de `/data/system`.
 
-`nab-hardware.service` possède seulement le matériel et publie [NabHardware1](hardware-dbus.md), avec `Type=dbus` et `CAP_SYS_RAWIO`. Les groupes `gpio video kmem` sont propres à cette unité, pas au compte commun. `nabos.service` porte les états, médias et chorégraphies en Go, sert HTTP sur 80 avec `CAP_NET_BIND_SERVICE`, et utilise `PrivateDevices=yes`, `/data/nabos` et `/run/nabos`. Le matériel n’a aucune exception d’écriture vers les données applicatives. Aucun paquet ou service Mosquitto n’est livré ; son installation sur l’hôte sert uniquement aux fixtures Home Assistant.
+`nab-hardware.service` possède seulement le matériel et publie [NabHardware1](hardware-dbus.md), avec `Type=notify`, `NotifyAccess=main` et `CAP_SYS_RAWIO`. Les groupes `gpio video kmem` sont propres à cette unité, pas au compte commun. `nabos.service` porte les états, médias et chorégraphies en Go, sert HTTP sur 80 avec `CAP_NET_BIND_SERVICE`, et utilise `PrivateDevices=yes`, `/data/nabos` et `/run/nabos`. Le matériel n’a aucune exception d’écriture vers les données applicatives. Aucun paquet ou service Mosquitto n’est livré ; son installation sur l’hôte sert uniquement aux fixtures Home Assistant.
 
 Le profil DTB Linux du slot active `i2c1` sur GPIO 2/3, partagé avec le codec
 audio, et `/etc/modules-load.d/nabos.conf` charge `i2c-dev` au démarrage.
@@ -175,6 +175,56 @@ PipeWire et WirePlumber utilisent la session persistante `user@1004` de `nab-aud
 Le contrôle de santé exige les trois unités actives, `Manager.Ready` par D-Bus au chemin `/io/github/guilhem/DeviceCore1`, `NabHardware1.Ready` au chemin `/io/github/guilhem/NabHardware1`, `/healthz` de nabos et les périphériques audio réels. Il ne dépend jamais du HTTP de device-core, désactivé par défaut.
 
 À la sortie réussie de `nabos-health.service`, systemd déclenche `nabos-board-led-off.service` via `OnSuccess`, sans délai fixe. Cette unité éteint uniquement la LED ACT du Raspberry Pi si elle existe et si `/run/nabos-boot-health` contient `good A` ou `good B`, écrit après confirmation RAUC. Cette action cosmétique est indépendante du contrôle de santé : son échec ne remet pas en cause la confirmation du slot. Les LED du lapin restent pilotées par `nab-hardware`.
+
+### Qualification des oreilles userspace
+
+Les oreilles sont intégrées en Rust dans `nab-hardware` avec `gpiocdev`, via
+`/dev/gpiochip*` et le groupe `gpio` déjà attribué à l’unité. L’image ne télécharge
+ni ne compile `tagtagtag-ears`, ne livre plus son patch, son module ou son DTBO,
+et U-Boot ne charge que l’overlay du son. Aucune règle `/dev/ear*` ni nouveau
+paquet n’est nécessaire. Les modules WM8960 et la bibliothèque LED
+`rpi_ws281x` sont conservés.
+
+L’unité requiert `dbus.socket` et `dev-i2c\x2d1.device`, et démarre après tmpfiles,
+le mixer, device-core et ces deux unités. Son watchdog de 1 seconde utilise
+`SIGKILL` et `KillMode=control-group`. La calibration ne démarre qu’après
+confirmation de l’activation du watchdog : la notification de démarrage systemd
+est distincte de la propriété D-Bus `Ready`, qui reste fausse avec les oreilles
+`initializing` jusqu’à la réussite de leur initialisation. Le nom D-Bus reste
+`io.github.guilhem.NabHardware1`, sans directive systemd `BusName=`.
+
+Sur `SIGTERM`, les moteurs sont coupés ; une écriture NFC indivisible déjà admise
+peut encore se terminer, dans une limite de 5 secondes. Après la sortie du
+processus, `ExecStopPost=/usr/bin/nab-hardware --stop-ears` demande directement
+les GPIO moteurs à l’état bas, sans initialiser D-Bus, les LED ou le NFC.
+`TimeoutStopSec=6s` borne l’arrêt systemd et `Restart=always` relance le service.
+La fermeture des FD GPIO ne garantit pas un état électrique bas ; ni le délai
+du watchdog ni le succès du helper ne constituent à eux seuls une mesure de
+l’arrêt des moteurs. `HOME`, le répertoire courant et les temporaires restent
+dans `/run/nab-hardware`, sous `ProtectSystem=strict`, sans écriture applicative
+sur la racine en lecture seule.
+
+Les tests locaux et les assertions d’image vérifient la suppression de l’ancien
+pilote et le contrat de supervision. La simulation ne prouve ni le mouvement,
+ni la calibration, ni l’état électrique après arrêt. La qualification restante
+sur Zero ARMv6 et Zero 2 ARM64 doit utiliser l’image réelle, sa racine en lecture
+seule, les montages de `boot-init`, le compte et le confinement effectifs du
+service :
+
+- Exercer les 17 positions dans les deux sens, chaque oreille puis les deux
+  simultanément, au repos et sous charge ; vérifier la calibration, les
+  positions physiques et les réglages de temporisation sur les appareils.
+- Interrompre le processus par `SIGKILL`, `SIGABRT` et `SIGSTOP`, bloquer un worker
+  et tuer le processus pendant la calibration ; vérifier le déclenchement du
+  watchdog, le helper et le redémarrage. Vérifier aussi `SIGTERM` pendant une
+  écriture NFC admise, avec la coupure des oreilles et la fin bornée de l’écriture.
+- Mesurer les sorties moteurs après fermeture des FD puis après le helper,
+  y compris après plusieurs arrêts et redémarrages consécutifs ; vérifier que
+  chaque reprise repasse par `initializing` et `Ready=false` avant calibration.
+
+Recueillir les journaux volatils avant l’arrêt, ou préparer leur collecte sur
+`/data`. Ces essais physiques restent à réaliser ; les contrôles de sources,
+les tests Go et une simulation U-Boot ne les valident pas.
 
 ## Validation locale
 

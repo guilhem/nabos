@@ -17,16 +17,6 @@ func TestPreparedBaseCache(t *testing.T) {
 	}
 	files := []string{"image/base-cache.sh", "image/build.sh", "image/prepare.sh", "image/sources.lock.json", "image/lva-requirements.lock",
 		"image/build-config/99nabos-build", "image/build-config/policy-rc.d", "services/go.mod"}
-	patches, err := filepath.Glob(filepath.Join(imageDir, "patches", "*.patch"))
-	if err != nil || len(patches) == 0 {
-		t.Fatalf("patch fixtures: %v, %v", patches, err)
-	}
-	if err := os.Mkdir(filepath.Join(checkout, "image", "patches"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, patch := range patches {
-		files = append(files, filepath.Join("image", "patches", filepath.Base(patch)))
-	}
 	helperSources, err := filepath.Glob(filepath.Join(imageDir, "..", "services", "cmd", "nab-image", "*.go"))
 	if err != nil || len(helperSources) == 0 {
 		t.Fatalf("nab-image fixtures: %v, %v", helperSources, err)
@@ -150,7 +140,7 @@ func TestPreparedBaseCache(t *testing.T) {
 					t.Fatalf("cache miss used the archive: exit %d\n%s%s", r.code, r.stdout, r.stderr)
 				}
 			}
-			for _, change := range []string{"epoch", "image/prepare.sh", "image/build-config/policy-rc.d", "services/cmd/nab-image/main.go", "services/go.mod", "image/sources.lock.json", "image/patches/ears.patch"} {
+			for _, change := range []string{"epoch", "image/prepare.sh", "image/build-config/policy-rc.d", "services/cmd/nab-image/main.go", "services/go.mod", "image/sources.lock.json"} {
 				t.Run(change, func(t *testing.T) {
 					if change == "epoch" {
 						t.Setenv("NABOS_BASE_CACHE_EPOCH", "2026-10-01")

@@ -19,10 +19,10 @@ test -n "${BOOT_A_LEFT}" || setenv BOOT_A_LEFT 3
 test -n "${BOOT_B_LEFT}" || setenv BOOT_B_LEFT 0
 
 # Hardware overlays, applied before Linux starts. A failed apply leaves the
-# blob unusable, so reload the plain DTB: the system then boots without sound
-# or ears, fails its health check and rolls back instead of not booting at all.
+# blob unusable, so reload the plain DTB: the system then boots without sound,
+# fails its health check and rolls back instead of not booting at all.
 setenv nabos_apply 'if load ${devtype} ${devnum}:${nabos_part} ${nabos_ovl_addr_r} /boot/overlays/${nabos_ovl}.dtbo && fdt apply ${nabos_ovl_addr_r}; then echo "nabos: overlay ${nabos_ovl} applied"; else setenv nabos_ovl_ok 0; fi'
-setenv nabos_overlays 'fdt addr ${fdt_addr_r}; fdt resize 0x10000; setenv nabos_ovl_ok 1; setenv nabos_ovl tagtagtag-sound; run nabos_apply; setenv nabos_ovl tagtagtag-ears; run nabos_apply; if test ${nabos_ovl_ok} = 0; then echo "nabos: overlay failed, using the plain DTB"; load ${devtype} ${devnum}:${nabos_part} ${fdt_addr_r} /boot/dtb/${nabos_dtb}; fi'
+setenv nabos_overlays 'fdt addr ${fdt_addr_r}; fdt resize 0x10000; setenv nabos_ovl_ok 1; setenv nabos_ovl tagtagtag-sound; run nabos_apply; if test ${nabos_ovl_ok} = 0; then echo "nabos: overlay failed, using the plain DTB"; load ${devtype} ${devnum}:${nabos_part} ${fdt_addr_r} /boot/dtb/${nabos_dtb}; fi'
 
 # The firmware fills /system/linux,revision only in its own DTB, and U-Boot's
 # board fixups do not copy it; rpi_ws281x and /proc/cpuinfo need it.

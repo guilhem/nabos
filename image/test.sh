@@ -118,19 +118,27 @@ assert unit['Service']['RuntimeDirectory'] == 'nabos'
 assert unit['Service']['WorkingDirectory'] == '/run/nabos'
 hardware_unit = configparser.ConfigParser(strict=False)
 hardware_unit.read('/usr/lib/systemd/system/nab-hardware.service')
-assert hardware_unit['Service']['Type'] == 'dbus'
-assert hardware_unit['Service']['BusName'] == 'io.github.guilhem.NabHardware1'
+assert hardware_unit['Service']['Type'] == 'notify'
+assert 'BusName' not in hardware_unit['Service']
+for key, value in {'NotifyAccess': 'main', 'WatchdogSec': '1s',
+                   'WatchdogSignal': 'SIGKILL', 'KillMode': 'control-group',
+                   'ExecStopPost': '/usr/bin/nab-hardware --stop-ears',
+                   'TimeoutStopSec': '6s', 'Restart': 'always', 'RestartSec': '2',
+                   'RuntimeDirectory': 'nab-hardware',
+                   'WorkingDirectory': '/run/nab-hardware'}.items():
+    assert hardware_unit['Service'][key] == value, key
+assert 'HOME=/run/nab-hardware' in hardware_unit['Service']['Environment']
 assert hardware_unit['Service']['AmbientCapabilities'] == 'CAP_SYS_RAWIO'
 assert hardware_unit['Service']['CapabilityBoundingSet'] == 'CAP_SYS_RAWIO'
 assert hardware_unit['Service']['SupplementaryGroups'] == 'gpio video kmem'
 assert 'ReadWritePaths' not in hardware_unit['Service']
 for dependency in ('Requires', 'After'):
-    assert r'dev-i2c\x2d1.device' in hardware_unit['Unit'][dependency].split()
+    for name in ('dbus.socket', r'dev-i2c\x2d1.device'):
+        assert name in hardware_unit['Unit'][dependency].split(), (dependency, name)
 assert 'nabos-rfid.service' not in hardware_unit['Unit']['After']
 assert Path('/etc/modules-load.d/nabos.conf').read_text().splitlines() == ['i2c-dev']
 udev = Path('/etc/udev/rules.d/60-nabos.rules').read_text().splitlines()
 assert 'SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="0660", TAG+="systemd"' in udev
-assert 'KERNEL=="ear[01]", GROUP="gpio", MODE="0660"' in udev
 volume_rules = [dict((key, (op, value)) for key, op, value in re.findall(
     r'([\w{}]+)\s*(==|!=|\+=|:=|=)\s*"([^"]*)"', line))
     for line in Path('/usr/lib/udev/rules.d/60-tagtagtag-volume.rules').read_text().splitlines()
@@ -154,7 +162,9 @@ assert os.access('/usr/local/sbin/tagtagtag-mixerd', os.X_OK)
 for name in ('mixer.conf', 'mixer.conf.default'):
     assert Path('/var/lib/tagtagtag-sound', name).is_file(), name
 assert not any(Path('/lib/modules').rglob('snd-soc-volume-gpio.ko*'))
-for name in ('cr14', 'st25r391x'):
+assert 'SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"' in udev
+assert not any('KERNEL=="ear' in line for line in udev)
+for name in ('tagtagtag-ears', 'ears', 'cr14', 'st25r391x'):
     assert not any(Path('/lib/modules').rglob(name + '.ko*')), name
     for directory in ('/boot/overlays', '/boot/firmware/overlays'):
         assert not Path(directory, name + '.dtbo').exists(), name
@@ -473,7 +483,7 @@ cmp "$boot/$dtb" "$pristine"
 for node in /soc/serial@7e201000 /soc/fb /soc/mailbox@7e00b840 /soc/usb@7e980000 /cam1_regulator /cam_dummy_reg; do
   [[ $(fdtget "$root/boot/dtb/$dtb" "$node" status) == disabled ]] || { echo "Profile not applied: $node" >&2; exit 1; }
 done
-# Sound and ears overlays resolve their targets through these symbols.
+# The sound overlay resolves its targets through these symbols.
 fdtget "$root/boot/dtb/$dtb" /__symbols__ i2s /__symbols__ i2c1 /__symbols__ gpio /__symbols__ sound >/dev/null
 i2c1=$(fdtget "$root/boot/dtb/$dtb" /__symbols__ i2c1)
 [[ $(fdtget "$root/boot/dtb/$dtb" "$i2c1" status) == okay ]] ||

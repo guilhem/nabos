@@ -17,10 +17,19 @@ on build/test hosts serves only Home Assistant fixtures.
 
 ## Units and permissions
 
-`nab-hardware.service` is `Type=dbus`, with
-`BusName=io.github.guilhem.NabHardware1`. It alone receives `CAP_SYS_RAWIO` and
-supplementary groups `gpio video kmem`. udev grants those groups the ear,
-GPIO, `/dev/vcio` and `/dev/mem` devices. `/dev/mem` access is root-equivalent.
+`nab-hardware.service` is `Type=notify`, with `NotifyAccess=main` and a one-second
+systemd watchdog. It exports `io.github.guilhem.NabHardware1` on D-Bus.
+Calibration starts only after systemd acknowledges readiness; the D-Bus `Ready`
+property remains false while required hardware is initializing. Worker health
+gates watchdog notifications, and `ExecStopPost` invokes
+`/usr/bin/nab-hardware --stop-ears` to request motor outputs low after process exit.
+See [ear lifecycle and supervision](hardware-dbus.md#ear-lifecycle-and-supervision)
+for recovery behavior and qualification limits.
+
+Hardware alone receives `CAP_SYS_RAWIO` and supplementary groups
+`gpio video kmem`. udev grants those groups `/dev/gpiochip*`, `/dev/vcio` and
+`/dev/mem`. Ears use `gpiocdev` directly, without `/dev/ear*` devices or an ear
+kernel module. `/dev/mem` access is root-equivalent.
 udev assigns only `/dev/i2c-1` to the dedicated `nab-hardware` group with mode
 `0660`; other service accounts have no membership in that group. `i2c-dev` loads
 through `modules-load.d`, and the slot's Linux DTB enables bus 1. The udev

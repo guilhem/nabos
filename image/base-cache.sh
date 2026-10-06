@@ -9,7 +9,7 @@ identity=$(
   cd "$repo"
   { printf '%s\n' "$target" "${NABOS_BASE_CACHE_EPOCH:-$(date -u +%F)}"
     sha256sum image/base-cache.sh image/build.sh image/prepare.sh image/sources.lock.json \
-      image/lva-requirements.lock image/patches/*.patch image/build-config/* \
+      image/lva-requirements.lock image/build-config/* \
       services/go.mod services/cmd/nab-image/*.go
   } | sha256sum | cut -d' ' -f1
 )

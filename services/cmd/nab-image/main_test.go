@@ -21,14 +21,14 @@ type roundTrip func(*http.Request) (*http.Response, error)
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestKernelDriverSet(t *testing.T) {
-	if len(driverSet) != 2 || driverSet[0].name != "ears" || driverSet[1].name != "sound" {
-		t.Fatalf("only ears and sound require kernel builds: %v", driverSet)
+	if len(driverSet) != 1 || driverSet[0].name != "sound" {
+		t.Fatalf("only sound requires a kernel build: %v", driverSet)
 	}
 	lock, err := readLock("../../../image/sources.lock.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"cr14", "nfc"} {
+	for _, name := range []string{"ears", "cr14", "nfc"} {
 		if _, exists := lock.Sources[name]; exists {
 			t.Errorf("obsolete kernel source pin: %s", name)
 		}
@@ -85,23 +85,23 @@ func TestLVAOnlyForARM64(t *testing.T) {
 	write := func(name string) string {
 		return `"` + name + `": {"url": "https://example.org/` + name + `", "sha256": "` + hash + `"}`
 	}
-	os.WriteFile(lock, []byte(`{"targets": {"zero-armv6": {}, "zero2-arm64": {}}, "sources": {`+write("ears")+", "+write("lva")+"}}"), 0o644)
+	os.WriteFile(lock, []byte(`{"targets": {"zero-armv6": {}, "zero2-arm64": {}}, "sources": {`+write("sound")+", "+write("lva")+"}}"), 0o644)
 	var fetched []string
 	client := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
 		fetched = append(fetched, r.URL.Path)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data))}, nil
 	})}
 	inputs, src := filepath.Join(dir, "inputs"), filepath.Join(dir, "src")
-	if err := fetch(client, lock, "zero-armv6", inputs, true); err != nil || strings.Join(fetched, " ") != "/ears" {
+	if err := fetch(client, lock, "zero-armv6", inputs, true); err != nil || strings.Join(fetched, " ") != "/sound" {
 		t.Fatalf("ARMv6 fetched %q: %v", fetched, err)
 	}
 	if err := unpackSources(lock, inputs, src); err != nil {
 		t.Fatal(err)
 	}
-	if entries, _ := os.ReadDir(src); len(entries) != 1 || entries[0].Name() != "ears" {
+	if entries, _ := os.ReadDir(src); len(entries) != 1 || entries[0].Name() != "sound" {
 		t.Fatalf("ARMv6 sources %v", entries)
 	}
-	if err := fetch(client, lock, "zero2-arm64", inputs, true); err != nil || strings.Join(fetched, " ") != "/ears /lva" {
+	if err := fetch(client, lock, "zero2-arm64", inputs, true); err != nil || strings.Join(fetched, " ") != "/sound /lva" {
 		t.Fatalf("ARM64 fetched %q: %v", fetched, err)
 	}
 }
