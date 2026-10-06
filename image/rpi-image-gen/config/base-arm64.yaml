@@ -1,0 +1,10 @@
+artefact:
+  version: prototype
+  context: nabos-base-arm64
+  target_name: rootfs.tar.xz
+
+deploy:
+  compression: none
+
+layer:
+  base: nabos-base-arm64

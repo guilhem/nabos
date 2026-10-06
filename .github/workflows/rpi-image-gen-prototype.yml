@@ -1,0 +1,34 @@
+name: rpi-image-gen prototype
+on:
+  push:
+    branches: [codex/rpi-image-gen-prototype]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rpi-image-gen-prototype-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  base-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Fetch pinned builder and check configuration
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-yaml python3-debian python3-jsonschema dpkg-dev
+          bash image/rpi-image-gen/build.sh check
+      - name: Install builder dependencies
+        run: |
+          sudo chmod o+x /home/runner
+          sudo build/rpi-image-gen/upstream/install_deps.sh
+      - name: Generate and verify the ARM64 package base
+        run: bash image/rpi-image-gen/build.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nabos-rpi-image-gen-base-arm64
+          path: dist/rpi-image-gen/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
