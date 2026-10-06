@@ -146,6 +146,11 @@ in
   boot.loader.systemd-boot.enable = false;
   boot.loader.external = { enable = true; installHook = pkgs.writeShellScript "nabos-image-bootloader" "exit 0"; };
   boot.initrd.systemd.enable = true;
+  # Neither Zero board has a TPM; the RPi kernel lacks tpm-crb.
+  boot.initrd.systemd.tpm2.enable = false;
+  # SD controllers are built in; omit default PC storage/USB drivers.
+  boot.initrd.includeDefaultModules = false;
+  boot.initrd.availableKernelModules = [ "mmc_block" ];
   # U-Boot supplies root= for the selected slot, never root=fstab or a fixed p2.
   boot.initrd.systemd.root = null;
   boot.initrd.checkJournalingFS = false;

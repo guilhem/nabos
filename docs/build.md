@@ -4,7 +4,9 @@
 entrées Nixpkgs et nixos-hardware ; `nix/` décrit les paquets, le système et son
 payload. Aucun constructeur Raspberry Pi OS ni rpi-image-gen n’est maintenu.
 Le passage d’une ancienne image à NixOS demande un **nouveau flash SD** :
-sauvegarder les données avant de reflasher. Aucune migration OTA n’est qualifiée.
+sauvegarder les données avant de reflasher. Les identifiants RAUC
+`nabos-nixos-zero-armv6` et `nabos-nixos-zero2-arm64` empêchent les anciennes
+images d’accepter ces bundles. Aucune migration OTA n’est qualifiée.
 
 ## Construire et vérifier
 

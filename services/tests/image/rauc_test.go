@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -118,8 +119,18 @@ func TestGeneratedCardLayout(t *testing.T) {
 
 func TestSignedCompleteBundle(t *testing.T) {
 	imageTools(t, "rauc", "openssl", "mksquashfs", "unsquashfs")
+	var lock struct {
+		Targets map[string]struct{ Compatible string }
+	}
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(imageDir, "sources.lock.json"))), &lock); err != nil {
+		t.Fatal(err)
+	}
 	for _, target := range []string{"zero-armv6", "zero2-arm64"} {
 		t.Run(target, func(t *testing.T) {
+			compatible := lock.Targets[target].Compatible
+			if compatible == "" || compatible == "nabos-"+target {
+				t.Fatal("NixOS bundles must use a new RAUC identity to require reflash")
+			}
 			tmp := t.TempDir()
 			for _, dir := range []string{"images"} {
 				if err := os.Mkdir(filepath.Join(tmp, dir), 0o755); err != nil {
@@ -137,7 +148,7 @@ func TestSignedCompleteBundle(t *testing.T) {
 			}
 			cert, key := filepath.Join(tmp, "cert.pem"), filepath.Join(tmp, "key.pem")
 			run(t, "", "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=NabOS bundle test/", "-keyout", key, "-out", cert)
-			bundle := raBundle(t, tmp, "complete", "nabos-"+target, filepath.Join(tmp, "images/rootfs.ext4"), filepath.Join(tmp, "images/boot.vfat"), key, cert)
+			bundle := raBundle(t, tmp, "complete", compatible, filepath.Join(tmp, "images/rootfs.ext4"), filepath.Join(tmp, "images/boot.vfat"), key, cert)
 			if r := execute(t, "", nil, "rauc", "info", "--keyring="+cert, bundle); r.code != 0 {
 				t.Fatal(r.stderr)
 			}
@@ -145,7 +156,7 @@ func TestSignedCompleteBundle(t *testing.T) {
 				t.Fatalf("bundle compression: %s", stat)
 			}
 			manifest := run(t, "", "unsquashfs", "-cat", bundle, "manifest.raucm")
-			if !strings.Contains(manifest, "format=verity") || strings.Index(manifest, "[image.rootfs]") >= strings.Index(manifest, "[image.bootloader]") {
+			if !strings.Contains(manifest, "compatible="+compatible+"\n") || !strings.Contains(manifest, "format=verity") || strings.Index(manifest, "[image.rootfs]") >= strings.Index(manifest, "[image.bootloader]") {
 				t.Fatalf("format or image order: %s", manifest)
 			}
 			for _, name := range []string{"rootfs.ext4", "boot.vfat"} {

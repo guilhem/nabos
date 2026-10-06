@@ -3,6 +3,7 @@
 set -euo pipefail
 [[ $# == 6 ]] || { echo 'Usage: bash image/test.sh TARGET SD_IMAGE ROOTFS BOOT BUNDLE CERTIFICATE' >&2; exit 2; }
 target=$1 disk=$2 rootfs=$3 boot=$4 bundle=$5 certificate=$6
+repo=$(cd "$(dirname "$0")/.." && pwd)
 [[ $target == zero-armv6 || $target == zero2-arm64 ]] || exit 2
 before=$(sha256sum "$disk" "$rootfs" "$boot")
 work=$(mktemp -d)
@@ -44,8 +45,9 @@ for path in /rauc /rauc/ca.cert.pem; do
   mode=0600; [[ $path != /rauc ]] || mode=0700
   grep -Eq "Mode:[[:space:]]+$mode" <<< "$stat"
 done
+compatible=$(jq -er --arg target "$target" '.targets[$target].compatible' "$repo/image/sources.lock.json")
 rauc info --keyring="$certificate" --output-format=json "$bundle" |
-  jq -e --arg compatible "nabos-$target" --arg version "${EXPECTED_VERSION:-}" \
+  jq -e --arg compatible "$compatible" --arg version "${EXPECTED_VERSION:-}" \
     --arg rootfs "$(sha256sum "$rootfs" | cut -d' ' -f1)" \
     --arg boot "$(sha256sum "$boot" | cut -d' ' -f1)" \
     '.compatible == $compatible and ($version == "" or .version == $version) and

@@ -9,13 +9,13 @@
       "goarm": "6",
       "dtb": "bcm2708-rpi-zero-w.dtb",
       "uboot_defconfig": "rpi_0_w_defconfig",
-      "compatible": "nabos-zero-armv6"
+      "compatible": "nabos-nixos-zero-armv6"
     },
     "zero2-arm64": {
       "goarm": "",
       "dtb": "bcm2710-rpi-zero-2-w.dtb",
       "uboot_defconfig": "rpi_arm64_defconfig",
-      "compatible": "nabos-zero2-arm64"
+      "compatible": "nabos-nixos-zero2-arm64"
     }
   },
   "sources": {

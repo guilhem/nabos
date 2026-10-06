@@ -64,7 +64,8 @@ genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" \
   --inputpath "$work/images" --outputpath "$work/images" --tmppath "$work/genimage-tmp"
 cp --reflink=auto "$work/images/rootfs.ext4" "$work/bundle/"
 cp --reflink=auto "$work/images/boot.vfat" "$work/bundle/"
-sed -e "s/@COMPATIBLE@/nabos-$target/g" -e "s/@VERSION@/$version/g" \
+compatible=$(jq -er --arg target "$target" '.targets[$target].compatible' "$repo/image/sources.lock.json")
+sed -e "s/@COMPATIBLE@/$compatible/g" -e "s/@VERSION@/$version/g" \
   "$repo/image/manifest.raucm.in" > "$work/bundle/manifest.raucm"
 rm -f "$out/nabos-$target.raucb"
 rauc bundle --mksquashfs-args='-comp zstd -Xcompression-level 15' \

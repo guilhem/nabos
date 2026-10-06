@@ -108,7 +108,7 @@ region-start=4M
 region-size=512M
 install-same=false
 `
-	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-rauc-integration")
+	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-nixos-rauc-integration")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", loop+"p2")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", loop+"p3")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0", loop)
@@ -148,10 +148,10 @@ install-same=false
 	bootC := filepath.Join(dir, "boot-c.vfat")
 	raFile(t, bootC, 256*MiB)
 	raBoot(t, bootC, "return")
-	bundleB := raBundle(t, dir, "b", "nabos-rauc-integration", rootB, bootB, key, cert)
-	bundleA := raBundle(t, dir, "a", "nabos-rauc-integration", rootA, bootC, key, cert)
+	bundleB := raBundle(t, dir, "b", "nabos-nixos-rauc-integration", rootB, bootB, key, cert)
+	bundleA := raBundle(t, dir, "a", "nabos-nixos-rauc-integration", rootA, bootC, key, cert)
 	badCompatible := raBundle(t, dir, "wrong", "wrong-compatible", rootB, bootB, key, cert)
-	untrusted := raBundle(t, dir, "untrusted", "nabos-rauc-integration", rootB, bootB, badKey, badCert)
+	untrusted := raBundle(t, dir, "untrusted", "nabos-nixos-rauc-integration", rootB, bootB, badKey, badCert)
 
 	bus := filepath.Join(dir, "bus")
 	busLog := filepath.Join(dir, "bus.log")
@@ -215,6 +215,16 @@ install-same=false
 		t.Fatal("genimage did not prefill both boot copies")
 	}
 	assertEnv("A B", "A")
+	// The same trusted bundle must be rejected by the pre-NixOS identity.
+	write(t, conf, strings.ReplaceAll(config, "nabos-nixos-rauc-integration", "nabos-rauc-integration"))
+	stopLegacy := startService("A")
+	beforeLegacy := raFileHash(t, disk)
+	install(bundleB, false)
+	if after := raFileHash(t, disk); after != beforeLegacy {
+		t.Fatal("legacy identity accepted a NixOS bundle or changed the disk")
+	}
+	stopLegacy()
+	write(t, conf, config)
 	stopA := startService("A")
 	install(bundleB, true)
 	raOrder(t, read(t, serviceLog), "rootfs.1", "bootloader.0")
