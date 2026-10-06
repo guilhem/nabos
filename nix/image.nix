@@ -46,6 +46,7 @@ pkgs.runCommand "nabos-nixos-${target}-${version}" {
 } ''
   mkdir -p $out boot
   cp --reflink=auto --sparse=always ${rootfs} $out/rootfs.ext4
+  chmod u+w $out/rootfs.ext4
   test $(stat -c %s $out/rootfs.ext4) -le $((6 * 1024 * 1024 * 1024))
   truncate -s 6G $out/rootfs.ext4
   resize2fs $out/rootfs.ext4

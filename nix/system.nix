@@ -25,7 +25,7 @@ let
     chmod 0711 $out/var/lib/nabos
   '';
   persist = pkgs.writeShellScript "nabos-initrd-persist" ''
-    export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.gnugrep ]}
+    export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.gnugrep pkgs.findutils ]}
     export NABOS_BOOT_INIT=${bootLibrary}
     export NABOS_STATE_SEEDS=${stateSeeds}
     ${builtins.readFile ./runtime/initrd-persist.sh}
@@ -216,6 +216,9 @@ in
   services.timesyncd.enable = true;
   services.journald.settings.Journal = { Storage = "volatile"; RuntimeMaxUse = "16M"; };
   hardware.bluetooth.enable = false;
+  hardware.firmware = [ pkgs.raspberrypiWirelessFirmware ];
+  nixpkgs.config.allowUnfreePredicate = package:
+    lib.getName package == "raspberrypi-wireless-firmware";
   services.dbus = { enable = true; packages = [ dbusPolicies ]; };
   security.polkit.enable = true;
   services.udev = {
@@ -243,7 +246,7 @@ in
   };
   services.openssh = {
     enable = true;
-    authorizedKeysFiles = [ "none" ];
+    authorizedKeysFiles = mkForce [ "none" ];
     authorizedKeysCommand = "${pkgs.coreutils}/bin/cat /data/device-core/ssh/authorized_keys";
     authorizedKeysCommandUser = "device-core";
     hostKeys = map (type: { inherit type; path = "/data/system/ssh/etc/ssh/ssh_host_${type}_key"; }) [ "ed25519" "rsa" "ecdsa" ];
@@ -274,7 +277,15 @@ in
     nabos-health.wantedBy = [ "multi-user.target" ];
     tagtagtag-mixerd = {
       wantedBy = [ "multi-user.target" ];
-      serviceConfig = { WorkingDirectory = "/var/lib/tagtagtag-sound"; ProtectSystem = "strict"; ReadWritePaths = [ "/var/lib/tagtagtag-sound" ]; };
+      serviceConfig = {
+        # Foreground mode lets systemd own the process; no PID file is needed.
+        Type = "simple";
+        ExecStart = [ "" "${packages.sound}/bin/tagtagtag-mixerd" ];
+        PIDFile = "";
+        WorkingDirectory = "/var/lib/tagtagtag-sound";
+        ProtectSystem = "strict";
+        ReadWritePaths = [ "/var/lib/tagtagtag-sound" ];
+      };
     };
     "user@1004" = { after = [ "systemd-tmpfiles-setup.service" ]; serviceConfig.NoNewPrivileges = true; };
     linux-voice-assistant = mkIf hasVoice {

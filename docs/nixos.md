@@ -101,8 +101,10 @@ Ni `watch-store`, ni publication globale de `/nix/store` n’est utilisée.
 Voir les références du [client Cachix](https://docs.cachix.org/pushing) et de
 [cachix-action](https://github.com/cachix/cachix-action).
 
-Les écritures sont réservées aux exécutions manuelles du workflow sur `main`,
-avec la variable GitHub `CACHIX_CACHE=nabos` et le secret `CACHIX_AUTH_TOKEN`.
+Les écritures sont réservées aux exécutions manuelles : mode `build` sur `main`,
+ou mode `benchmark` sur la branche choisie. Ce dernier publie ses closures pour
+mesurer la reprise avant merge, avec la variable GitHub `CACHIX_CACHE=nabos` et
+le secret `CACHIX_AUTH_TOKEN`.
 Le token est transmis uniquement à l’étape de publication. Aucun job de PR,
 y compris les forks, ne reçoit ce secret. L’absence du token ou une valeur de
 cache incorrecte fait échouer la publication et empêche de lancer la reprise.
@@ -115,11 +117,9 @@ configurations, avec les imports dépendant d’une construction interdits.
 Les constructions complètes se lancent manuellement sur toute branche du dépôt, mode `build`,
 avec `ubuntu-24.04` pour ARMv6 et `ubuntu-24.04-arm` pour ARM64.
 Une branche de prototype peut donc produire ses artefacts avant merge ; hors
-`main`, l’étape de publication Cachix est ignorée et aucun token n’est transmis.
-La disponibilité initiale d’un nouveau workflow pour `workflow_dispatch` reste
-à vérifier dans GitHub après sa publication sur la branche.
+`main`, le mode `build` ignore la publication Cachix et ne reçoit aucun token.
 
-Le mode manuel `benchmark`, réservé à `main` pour amorcer le cache, construit
+Le mode manuel `benchmark`, qui amorce explicitement le cache, construit
 **seulement les closures système/U-Boot** :
 
 | Phase | Entrées et environnement |
@@ -194,6 +194,8 @@ versions augmente l’occupation ; les toolchains de compilation croisée ne son
 pas publiées par défaut. Leur ajout doit répondre à des recompilations coûteuses
 observées dans `build.log`, avec une mesure de leur coût compressé. Aucune
 compatibilité avec une enveloppe de 5 Go n’est annoncée avant ces mesures réelles.
+Le job final `report` refait cette mesure après toutes les publications et livre
+`cache-union.json`, même si des objets nécessaires ont été évincés.
 
 ## Limites de qualification
 

@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Build SD images on any branch, or benchmark cached closures on main'
+        description: 'Build SD images, or publish and benchmark cached closures on fresh runners'
         type: choice
         options: [build, benchmark]
         default: build
@@ -64,7 +64,7 @@ jobs:
                 in p.payload.drvPath'
           done
   seed:
-    # Any branch can build manually; only main may publish to the cache.
+    # Only a manual run can build or publish; PR jobs never receive the token.
     if: github.event_name == 'workflow_dispatch'
     needs: check
     strategy:
@@ -90,7 +90,6 @@ jobs:
         run: |
           [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]
           if [[ "$MODE" == benchmark ]]; then
-            test "$GITHUB_REF" = refs/heads/main
             test "${#VERSION}" -le 59 # Leave room for .next.
           fi
           if [[ -n "$NIXPKGS_REV" ]]; then
@@ -123,7 +122,7 @@ jobs:
           printf 'directory=%s\nroots=%s\n' "$directory" "$roots" >> "$GITHUB_OUTPUT"
           python3 image/nix-cache-report.py "$roots" --output "$directory/cache-before-push.json"
       - name: Publish only system and U-Boot runtime closures
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || inputs.mode == 'benchmark'
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHE: ${{ vars.CACHIX_CACHE }}
@@ -145,7 +144,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
   warm:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'benchmark' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'benchmark'
     needs: seed
     strategy:
       fail-fast: false
@@ -209,3 +208,25 @@ jobs:
           compression-level: 0
           if-no-files-found: warn
           retention-days: 7
+  report:
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'benchmark'
+    needs: [seed, warm]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: nixos-benchmark-*
+          path: measurements
+      - name: Recheck the union after all pushes to detect missing or evicted paths
+        run: |
+          mapfile -t reports < <(find measurements -name cache-after-push.json -print)
+          test "${#reports[@]}" -gt 0
+          python3 image/nix-cache-report.py --merge "${reports[@]}" \
+            --require-published --output dist/nixos/cache-union.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: nixos-cache-union
+          path: dist/nixos/cache-union.json
+          if-no-files-found: warn
