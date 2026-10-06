@@ -22,7 +22,6 @@ git -C "$upstream" diff --exit-code HEAD
 "$upstream/rpi-image-gen" metadata --lint "$prototype/layer/nabos-base-arm64.yaml"
 "$upstream/rpi-image-gen" config "$prototype/config/base-arm64.yaml"
 [[ $mode == build ]] || exit 0
-export XZ_OPT='-T0 -6'
 /usr/bin/time -v -o "$out/build-resources.txt"   "$upstream/rpi-image-gen" build -f -S "$prototype" -c base-arm64.yaml -B "$work"
 archive=$work/nabos-base-arm64/rootfs.tar.xz
 test -s "$archive"

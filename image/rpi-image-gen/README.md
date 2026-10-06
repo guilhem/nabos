@@ -14,8 +14,9 @@ U-Boot, the MBR A/B layout or a signed RAUC bundle. Production builds remain sep
 ## Run
 
 Use a native ARM64 Debian/Ubuntu host with user namespaces and at least 8 GiB of
-free working space. The upstream supported hosts are Debian Bookworm/Trixie ARM64;
-the prototype workflow exercises Ubuntu 24.04 ARM64, also used by upstream CI.
+free space in both the workspace and `/var/tmp`. The upstream supported hosts are
+Debian Bookworm/Trixie ARM64; the prototype workflow exercises Ubuntu 24.04 ARM64,
+also used by upstream CI.
 
 ```bash
 bash image/rpi-image-gen/build.sh check
@@ -27,7 +28,8 @@ The first command needs Python 3 with PyYAML, python-debian and jsonschema, plus
 dpkg-dev. On Ubuntu these are `python3-yaml python3-debian python3-jsonschema dpkg-dev`.
 The pinned builder is downloaded into the ignored `build/rpi-image-gen/upstream`.
 The build runs as the ordinary user; upstream uses its own namespace tooling.
-Temporary files stay under `build/rpi-image-gen/tmp`, rather than the system `/tmp`.
+The CLI uses `build/rpi-image-gen/tmp` for its temporary files. Upstream
+mmdebstrap builds the rootfs under `/var/tmp`, which needs separate free space.
 
 The dedicated **rpi-image-gen prototype** workflow runs on this prototype branch
 and can also be started manually. It uploads `nabos-rpi-image-gen-base-arm64` for

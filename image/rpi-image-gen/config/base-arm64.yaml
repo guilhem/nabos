@@ -1,3 +1,6 @@
+env:
+  XZ_OPT: "-T0 -6"
+
 artefact:
   version: prototype
   context: nabos-base-arm64
