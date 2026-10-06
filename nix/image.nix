@@ -1,0 +1,68 @@
+{ pkgs, system, packages, target, version }:
+let
+  inherit (pkgs) lib;
+  config = system.config;
+  arm64 = target == "zero2-arm64";
+  dtb = if arm64 then "bcm2710-rpi-zero-2-w.dtb" else "bcm2708-rpi-zero-w.dtb";
+  kernel = config.boot.kernelPackages.kernel;
+  originalBoot = builtins.readFile ../image/boot/boot.cmd;
+  replacements = [
+    { from = "setenv bootargs \"root=";
+      to = "if load \${devtype} \${devnum}:\${nabos_part} \${pxefile_addr_r} /boot/init; then env import -t \${pxefile_addr_r} \${filesize} nabos_init nabos_kernel_params; else echo \"nabos: missing slot init\"; exit; fi; setenv bootargs \"\${nabos_kernel_params} root="; }
+    { from = "init=/usr/lib/nabos/boot-init"; to = "init=\${nabos_init}"; }
+    { from = "/boot/dtb/\${nabos_dtb}; then run nabos_overlays";
+      to = "/boot/dtb/\${nabos_dtb} && load \${devtype} \${devnum}:\${nabos_part} \${ramdisk_addr_r} /boot/initrd; then setenv nabos_initrd_size \${filesize}; run nabos_overlays"; }
+    { from = "booti \${kernel_addr_r} - \${fdt_addr_r}";
+      to = "booti \${kernel_addr_r} \${ramdisk_addr_r}:\${nabos_initrd_size} \${fdt_addr_r}"; }
+    { from = "bootz \${kernel_addr_r} - \${fdt_addr_r}";
+      to = "bootz \${kernel_addr_r} \${ramdisk_addr_r}:\${nabos_initrd_size} \${fdt_addr_r}"; }
+  ];
+  bootScript = assert lib.all (r: lib.hasInfix r.from originalBoot) replacements;
+    pkgs.writeText "nabos-nixos-boot.cmd"
+      (builtins.replaceStrings (map (r: r.from) replacements) (map (r: r.to) replacements) originalBoot);
+  rootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-ext4-fs.nix") {
+    storePaths = [ config.system.build.toplevel ];
+    volumeLabel = "nabos-root";
+    populateImageCommands = ''
+      mkdir -p files/{boot/dtb,boot/overlays,etc/nixos,data,var,tmp,run,proc,sys,dev,bin,usr/bin}
+      ln -s ${config.system.build.toplevel}/init files/init
+      ln -s ${system.pkgs.bash}/bin/sh files/bin/sh
+      ln -s ${system.pkgs.coreutils}/bin/env files/usr/bin/env
+      cp ${kernel}/${kernel.target} files/boot/kernel
+      cp ${config.system.build.initialRamdisk}/initrd files/boot/initrd
+      dtbfile=$(find ${config.hardware.deviceTree.package} -name '${dtb}' -print)
+      test -f "$dtbfile"
+      cp "$dtbfile" files/boot/dtb/${dtb}
+      cp ${packages.sound}/overlays/tagtagtag-sound.dtbo files/boot/overlays/
+      printf 'nabos_init=%s\nnabos_kernel_params=%s\n' \
+        '${config.system.build.toplevel}/init' '${lib.concatStringsSep " " config.boot.kernelParams}' > files/boot/init
+      chmod 1777 files/tmp
+    '';
+  };
+in
+pkgs.runCommand "nabos-nixos-${target}-${version}" {
+  nativeBuildInputs = with pkgs; [ e2fsprogs dosfstools mtools ubootTools jq ];
+  passthru = { inherit rootfs bootScript; systemClosure = config.system.build.toplevel; };
+} ''
+  mkdir -p $out boot
+  cp --reflink=auto --sparse=always ${rootfs} $out/rootfs.ext4
+  test $(stat -c %s $out/rootfs.ext4) -le $((6 * 1024 * 1024 * 1024))
+  truncate -s 6G $out/rootfs.ext4
+  resize2fs $out/rootfs.ext4
+  cp ${pkgs.raspberrypifw}/share/raspberrypi/boot/{bootcode.bin,start*.elf,fixup*.dat,LICENCE.broadcom} boot/
+  find ${kernel}/dtbs -name '*.dtb' -exec cp '{}' boot/ \;
+  cp ${packages.uboot}/u-boot.bin boot/
+  cp ${../image/boot/config.txt} boot/config.txt
+  sed -e 's/@TARGET@/${target}/g' -e 's/@DTB@/${dtb}/g' ${../image/boot/boot.env.in} > boot/boot.env
+  mkimage -A arm -T script -C none -n 'NabOS NixOS RAUC A/B' -d ${bootScript} boot/boot.scr
+  truncate -s 256M $out/boot.vfat
+  mkfs.vfat -F32 -n NABOSBOOT $out/boot.vfat
+  mcopy -i $out/boot.vfat -s boot/* ::
+  mkenvimage -r -s 0x10000 -o $out/uboot.env ${../image/boot/uboot.env}
+  cp ${bootScript} $out/boot.cmd
+  cp ${config.system.build.toplevel}/kernel-params $out/kernel-params
+  printf '%s\n' ${config.system.build.toplevel} ${packages.uboot} > $out/cache-roots
+  jq -n --arg target '${target}' --arg version '${version}' --arg kernel '${kernel.modDirVersion}' \
+    --arg system '${config.system.build.toplevel}' --arg initrd '${config.system.build.initialRamdisk}' \
+    '{target:$target,version:$version,kernel:$kernel,system:$system,initrd:$initrd,hardware_validated:false}' > $out/build.json
+''

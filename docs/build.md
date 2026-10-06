@@ -1,5 +1,8 @@
 # Construire les images NabOS
 
+Une voie [prototype NixOS + Cachix](nixos.md) est disponible pour les deux cibles,
+avec nouveau flash SD et mesures séparées ; le constructeur décrit ici reste disponible.
+
 Les deux cibles partent des images **officielles datées** de Raspberry Pi OS Lite Trixie. `image/sources.lock.json` fixe les URL, empreintes SHA-256 et révisions des pilotes, de U-Boot, de la bibliothèque LED, de Linux Voice Assistant et du dépôt indépendant `device-core`. Le champ `sources.device_core` doit contenir un commit de 40 caractères, son archive GitHub immuable et son SHA-256 ; un pin provisoire ou une branche bloque la fabrication. `genimage` assemble le disque ; RAUC signe le système préparé. Ni pi-gen, ni conteneur applicatif ne sont nécessaires sur le lapin.
 
 | Cible | Hôte Ubuntu 24.04 | Système cible |
