@@ -25,7 +25,9 @@ bash image/rpi-image-gen/build.sh
 ```
 
 The first command needs Python 3 with PyYAML, python-debian and jsonschema, plus
-dpkg-dev. On Ubuntu these are `python3-yaml python3-debian python3-jsonschema dpkg-dev`.
+dpkg-dev. Verification also needs device-tree-compiler and kmod on the host. On
+Ubuntu these are `python3-yaml python3-debian python3-jsonschema dpkg-dev
+device-tree-compiler kmod`.
 The pinned builder is downloaded into the ignored `build/rpi-image-gen/upstream`.
 The build runs as the ordinary user; upstream uses its own namespace tooling.
 The CLI uses `build/rpi-image-gen/tmp` for its temporary files. Upstream
@@ -40,8 +42,18 @@ seven days. It neither publishes releases nor changes the production workflow.
 `dist/rpi-image-gen/` contains the rootfs archive, actual installed package versions,
 the resolved builder configuration, source revisions, checksums and build resource
 measurements. Checks inspect the actual archive: ARM64/all packages, required system
-components, kernel modules and the Zero 2 W DTB, absence of development packages,
-and absence of shared machine identities or generated SSH host keys.
+components, actual kernel/module/DTB payloads against their package digests, ARM64
+kernel and module formats, matching module vermagic and a parsed Zero 2 W DTB.
+The verifier rejects development packages, shared machine identities, SSH host
+keys and systemd random seeds. These are static content checks, not boot tests.
+
+To inspect an existing archive and exercise missing, empty, corrupt or linked
+payloads, prohibited packages and shared random seeds:
+
+```bash
+bash image/rpi-image-gen/verify.sh dist/rpi-image-gen/rootfs.tar.xz build/rpi-image-gen/verification
+python3 image/rpi-image-gen/test_verify.py dist/rpi-image-gen/rootfs.tar.xz
+```
 
 The builder revision is pinned, but APT repositories are rolling. The package
 manifest records one build's resolution; this does not establish byte-for-byte

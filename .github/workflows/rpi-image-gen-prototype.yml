@@ -17,7 +17,7 @@ jobs:
       - name: Fetch pinned builder and check configuration
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-yaml python3-debian python3-jsonschema dpkg-dev
+          sudo apt-get install -y --no-install-recommends python3-yaml python3-debian python3-jsonschema dpkg-dev device-tree-compiler kmod
           bash image/rpi-image-gen/build.sh check
       - name: Install builder dependencies
         run: |
@@ -25,6 +25,8 @@ jobs:
           sudo build/rpi-image-gen/upstream/install_deps.sh
       - name: Generate and verify the ARM64 package base
         run: bash image/rpi-image-gen/build.sh
+      - name: Exercise verifier failure cases
+        run: python3 image/rpi-image-gen/test_verify.py dist/rpi-image-gen/rootfs.tar.xz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nabos-rpi-image-gen-base-arm64

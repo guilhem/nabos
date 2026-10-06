@@ -25,27 +25,7 @@ git -C "$upstream" diff --exit-code HEAD
 [[ $mode == build ]] || exit 0
 /usr/bin/time -v -o "$out/build-resources.txt"   "$upstream/rpi-image-gen" build -f -S "$prototype" -c base-arm64.yaml -B "$work"
 archive=$work/nabos-base-arm64/rootfs.tar.xz
-test -s "$archive"
-# Inspect the generated archive without unpacking it or changing its ownership.
-tar -xOf "$archive" ./var/lib/dpkg/status > "$out/status"
-dpkg-query --admindir="$out" -W -f='${Package}\t${Version}\t${Architecture}\t${Status}\n' > "$out/packages.tsv"
-awk -F '\t' '$4 != "install ok installed" || ($3 != "arm64" && $3 != "all") { print "Invalid package: " $0; bad=1 } END { exit bad }' "$out/packages.tsv"
-for package in linux-image-rpi-v8 raspi-firmware systemd network-manager pipewire wireplumber rauc; do
-  awk -F '\t' -v package="$package" '$1 == package { found=1 } END { exit !found }' "$out/packages.tsv"
-done
-if awk -F '\t' '$1 ~ /^((gcc|g\+\+|cpp)(-[0-9]+)?|make|build-essential|dpkg-dev|linux-headers-.*)$/ { found=1 } END { exit !found }' "$out/packages.tsv"; then
-  echo 'Development packages leaked into the runtime base' >&2
-  exit 1
-fi
-tar -tf "$archive" > "$out/archive-files.txt"
-grep -Eq '^\./(usr/)?lib/modules/[^/]+-rpi-v8/' "$out/archive-files.txt"
-grep -Eq '^\./(usr/)?lib/modules/[^/]+-rpi-v8/dtb/broadcom/bcm2710-rpi-zero-2-w.dtb$' "$out/archive-files.txt"
-tar -xOf "$archive" ./usr/share/nabos-prototype/scope
-[[ -z $(tar -xOf "$archive" ./etc/machine-id) ]]
-if grep -Eq '^\./etc/ssh/ssh_host_' "$out/archive-files.txt"; then
-  echo 'Generated SSH host keys leaked into the base' >&2
-  exit 1
-fi
+bash "$prototype/verify.sh" "$archive" "$out"
 cp "$archive" "$out/rootfs.tar.xz"
 cp "$work/nabos-base-arm64/config.yaml" "$out/resolved-config.yaml"
 printf '{"scope":"base-generation-prototype","target":"zero2-arm64","rpi_image_gen_revision":"%s","nabos_revision":"%s","hardware_validated":false}\n'   "$revision" "$(git -C "$repo" rev-parse HEAD)" > "$out/build-info.json"
