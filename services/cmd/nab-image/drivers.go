@@ -15,7 +15,7 @@ var driverSet = []struct {
 	name, overlay string
 	modules       []string
 }{
-	{"sound", "tagtagtag-sound", []string{"snd-soc-wm8960", "snd-soc-max9759", "snd-soc-volume-gpio"}},
+	{"sound", "tagtagtag-sound", []string{"snd-soc-wm8960", "snd-soc-max9759"}},
 	{"led", "bcm2835-ws2812", []string{"bcm2835-ws2812"}},
 }
 
@@ -46,7 +46,7 @@ func runCmd(name string, args ...string) error {
 	return cmd.Run()
 }
 
-// drivers applies the locked patches to the locked driver archives, builds
+// drivers verifies the locked driver archives and builds
 // each DTBO (which must keep external fixups) and optionally the modules.
 func drivers(lockPath string, args []string) error {
 	fs := flag.NewFlagSet("drivers", flag.ContinueOnError)
@@ -62,7 +62,6 @@ func drivers(lockPath string, args []string) error {
 	if err != nil {
 		return err
 	}
-	image := filepath.Dir(lockPath)
 	kernel, release := "", ""
 	if *kernelArg != "" {
 		if kernel, release, err = kernelBuild(*kernelArg); err != nil {
@@ -81,17 +80,6 @@ func drivers(lockPath string, args []string) error {
 		}
 		source, err := unpack(archive, filepath.Join(work, d.name))
 		if err != nil {
-			return err
-		}
-		patch, err := filepath.Abs(filepath.Join(image, "patches", d.name+".patch"))
-		if err != nil {
-			return err
-		}
-		if _, err := os.Stat(patch); err == nil {
-			if err := runCmd("patch", "--batch", "--fuzz=0", "-d", source, "-p1", "-i", patch); err != nil {
-				return err
-			}
-		} else if !os.IsNotExist(err) {
 			return err
 		}
 		if err := runCmd("make", "-C", source, d.overlay+".dtbo"); err != nil {

@@ -31,7 +31,7 @@ const usage = `usage:
   nab-image verify-device-core LOCK DIR TARGET REV verify external component identity
   nab-image extract ARCHIVE.tar[.xz] DIR           extract component or replay inputs
   nab-image drivers LOCK --archives DIR [--kernel KERNEL]
-                                                   patch and build driver overlays (and modules)`
+                                                   verify and build driver overlays (and modules)`
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

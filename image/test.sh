@@ -62,7 +62,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-for tool in sudo losetup udevadm mount mountpoint umount modinfo make setsid fdtget unshare ip; do
+for tool in sudo losetup udevadm mount mountpoint umount modinfo make setsid fdtoverlay fdtget unshare ip; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
 command -v "$GO" >/dev/null || { echo "Missing Go tool: $GO" >&2; exit 1; }
@@ -101,6 +101,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -145,6 +146,29 @@ assert 'nabos-rfid.service' not in hardware_unit['Unit']['After']
 assert Path('/etc/modules-load.d/nabos.conf').read_text().splitlines() == ['i2c-dev', 'bcm2835-ws2812']
 udev = Path('/etc/udev/rules.d/60-nabos.rules').read_text().splitlines()
 assert 'SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="0660", TAG+="systemd"' in udev
+volume_rules = [dict((key, (op, value)) for key, op, value in re.findall(
+    r'([\w{}]+)\s*(==|!=|\+=|:=|=)\s*"([^"]*)"', line))
+    for line in Path('/usr/lib/udev/rules.d/60-tagtagtag-volume.rules').read_text().splitlines()
+    if not line.lstrip().startswith('#')]
+volume_rules = [rule for rule in volume_rules if rule.get('ATTRS{name}') == ('==', 'tagtagtag-volume')]
+assert len(volume_rules) == 1, volume_rules
+volume_rule = volume_rules[0]
+for key, expected in {
+    'SUBSYSTEM': ('==', 'input'), 'KERNEL': ('==', 'event*'),
+    'SYMLINK': ('+=', 'input/tagtagtag-volume'), 'TAG': ('+=', 'systemd'),
+    'ENV{SYSTEMD_ALIAS}': ('=', '/dev/input/tagtagtag-volume'),
+    'ENV{SYSTEMD_WANTS}': ('+=', 'tagtagtag-mixerd.service'),
+}.items():
+    assert volume_rule.get(key) == expected, (key, volume_rule)
+mixer = configparser.ConfigParser(strict=False)
+mixer.read('/usr/lib/systemd/system/tagtagtag-mixerd.service')
+for dependency in ('BindsTo', 'After'):
+    assert r'dev-input-tagtagtag\x2dvolume.device' in mixer['Unit'][dependency].split(), dependency
+assert mixer['Service']['ExecStart'].split()[0] == '/usr/local/sbin/tagtagtag-mixerd'
+assert os.access('/usr/local/sbin/tagtagtag-mixerd', os.X_OK)
+for name in ('mixer.conf', 'mixer.conf.default'):
+    assert Path('/var/lib/tagtagtag-sound', name).is_file(), name
+assert not any(Path('/lib/modules').rglob('snd-soc-volume-gpio.ko*'))
 assert 'SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"' in udev
 assert not any('KERNEL=="ear' in line or 'KERNEL=="mem"' in line or 'KERNEL=="vcio"' in line for line in udev)
 assert any('SUBSYSTEM=="leds"' in line and 'SYSTEMD_ALIAS' in line for line in udev)
@@ -451,6 +475,13 @@ for module in "${modules[@]}"; do
   vermagic=$(modinfo -F vermagic "$module")
   [[ $vermagic == "$kernel "* ]] || { echo "Kernel mismatch: $module: $vermagic" >&2; exit 1; }
 done
+# Resolve gpio_keys against the image's module indexes, never the host kernel.
+# Built-in kernels need no vermagic; loadable modules must match this release.
+gpio_keys=$(modinfo -b "$root" -k "$kernel" -F filename gpio_keys)
+if [[ $gpio_keys != '(builtin)' ]]; then
+  vermagic=$(modinfo -b "$root" -k "$kernel" -F vermagic gpio_keys)
+  [[ $vermagic == "$kernel "* ]] || { echo "Kernel mismatch: gpio_keys: $vermagic" >&2; exit 1; }
+fi
 # Linux gets the hardware profile (image/nabos-overlay.dts); the firmware and
 # U-Boot keep the kernel package's pristine DTB, with its UART and watchdog.
 dtb=$(sed -n 's/^nabos_dtb=//p' "$boot/boot.env")

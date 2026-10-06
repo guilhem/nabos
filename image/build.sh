@@ -32,7 +32,7 @@ done
 [[ $target == zero-armv6 || $target == zero2-arm64 ]] || exit 2
 [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,63}$ ]] || { echo 'Invalid version' >&2; exit 2; }
 # python3 is required by the upstream U-Boot build; NabOS host helpers use Go.
-for tool in sudo python3 curl xz tar sfdisk losetup e2fsck resize2fs genimage mkfs.vfat mkfs.ext4 mcopy mkimage mkenvimage rauc openssl patch jq; do
+for tool in sudo python3 curl xz tar sfdisk losetup e2fsck resize2fs genimage mkfs.vfat mkfs.ext4 mcopy mkimage mkenvimage rauc openssl jq; do
   command -v "$tool" >/dev/null || { echo "Missing host tool: $tool" >&2; exit 1; }
 done
 command -v "$GO" >/dev/null || { echo "Missing Go tool: $GO" >&2; exit 1; }

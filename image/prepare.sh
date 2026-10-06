@@ -132,6 +132,7 @@ build-packages|packages)
        "$(dpkg-query -W -f='${Version}' "linux-headers-$kernel")" ]] || { echo 'Kernel/header package version mismatch' >&2; exit 1; }
     for option in CONFIG_BCM2835_WDT=y CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y \
       'CONFIG_SQUASHFS=[ym]' CONFIG_SQUASHFS_ZSTD=y \
+      'CONFIG_KEYBOARD_GPIO=[ym]' 'CONFIG_INPUT_EVDEV=[ym]' \
       'CONFIG_LEDS_CLASS_MULTICOLOR=[ym]' 'CONFIG_DMA_BCM2835=[ym]'; do
       grep -qxE "$option" "/lib/modules/$kernel/build/.config" || { echo "Kernel lacks $option" >&2; exit 1; }
     done
@@ -151,9 +152,6 @@ drivers)
   for driver in sound led; do
     directory=$src/$driver
     [[ -d $directory ]] || exit 1
-    if [[ -f /nabos-build/image/patches/$driver.patch ]]; then
-      patch --batch --fuzz=0 --directory="$directory" -p1 < "/nabos-build/image/patches/$driver.patch"
-    fi
     make -C "/lib/modules/$kernel/build" M="$directory" -j2 modules
     find "$directory" -maxdepth 1 -name '*.ko' -exec install -m644 '{}' "$stage/usr/lib/modules/$kernel/updates/nabos/" \;
     for overlay in "$directory"/*-overlay.dts; do
@@ -164,10 +162,12 @@ drivers)
   done
   install -Dm644 "$src/led/LICENSE" "$stage/usr/share/doc/bcm2835-ws2812/copyright"
   make -C "$src/sound" tagtagtag-mixerd
+  make -C "$src/sound" test
   install -Dm755 "$src/sound/tagtagtag-mixerd" "$stage/usr/local/sbin/tagtagtag-mixerd"
   install -Dm644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf.default"
   install -m644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf"
   install -Dm644 "$src/sound/tagtagtag-mixerd.service" "$stage/usr/lib/systemd/system/tagtagtag-mixerd.service"
+  install -Dm644 "$src/sound/60-tagtagtag-volume.rules" "$stage/usr/lib/udev/rules.d/60-tagtagtag-volume.rules"
   ;;
 wheels)
   if [[ $target == zero2-arm64 ]]; then
