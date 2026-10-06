@@ -24,6 +24,11 @@ bash image/nix-build.sh zero2-arm64 dev-nixos --development
 `151fa4e8ddfdd8dd25d945ad94ed54a13de9f6e4` et nixos-hardware à
 `31cc5f4d9b9ba601071e8b8504601b9b176e2756` pour ce premier prototype.
 Le fichier livré avec chaque construction est la référence pour ses entrées.
+Sur ARMv6, `libpcap` désactive la capture RDMA, inutilisée par le lapin : le
+générateur Python de `rdma-core` échoue en configuration croisée avec ce pin.
+La capture des interfaces réseau ordinaires reste disponible. ARM64 conserve
+le paquet Nixpkgs standard.
+
 Nix produit le payload `rootfs.ext4`, `boot.vfat`, `uboot.env`, `boot.cmd`,
 `build.json` et `cache-roots`. L’assembleur signe le bundle **hors du store Nix**,
 prépare la partition de données puis génère et compresse le disque SD.

@@ -140,10 +140,19 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     pname = "device-core";
     version = sourceVersion "device_core";
     src = source "device_core";
+    # Fence the fixture's disconnect at the broker before asserting its UID is gone.
+    patches = [ ./device-core-tests.patch ];
+    postPatch = ''
+      # The decoder fixture deliberately clears PATH; its interpreter must be absolute.
+      substituteInPlace tests/audio.rs --replace-fail '#!/usr/bin/python3' \
+        '#!${pkgs.buildPackages.python3}/bin/python3'
+    '';
     cargoLock.lockFile = ./device-core.Cargo.lock;
     doCheck = native;
     nativeBuildInputs = [ pkgs.makeWrapper ];
-    nativeCheckInputs = [ dbusForTests pkgs.buildPackages.coreutils ];
+    nativeCheckInputs = [ dbusForTests ] ++ (with pkgs.buildPackages; [
+      coreutils python3 openssh openssl rauc squashfsTools
+    ]);
     postInstall = ''
       wrapProgram "$out/bin/device-core" \
         --prefix PATH : ${lib.makeBinPath [ pkgs.alsa-utils pkgs.mpg123 pkgs.wireplumber pkgs.openssh pkgs.rauc ]} \

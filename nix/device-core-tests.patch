@@ -1,0 +1,21 @@
+diff --git a/src/network/tests.rs b/src/network/tests.rs
+--- a/src/network/tests.rs
++++ b/src/network/tests.rs
+@@ -2120,6 +2120,17 @@ async fn private_bus_presence_authenticates_sender_uid_and_keeps_original_timestamp
+                 unsafe { libc::geteuid() }
+             );
+             client.close().await.unwrap();
++            // Closing the socket does not await the broker removing its name.
++            let broker = zbus::fdo::DBusProxy::new(&core.bus).await.unwrap();
++            tokio::time::timeout(Duration::from_secs(2), async {
++                while broker
++                    .name_has_owner(sender.as_str().try_into().unwrap())
++                    .await
++                    .unwrap()
++                {
++                    tokio::task::yield_now().await;
++                }
++            }).await.expect("broker did not observe client disconnection");
+             assert!(
+                 crate::auth::sender_uid(&core.bus, &sender).await.is_err(),
+                 "a disconnected connection has no authenticated UID"
