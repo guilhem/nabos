@@ -32,6 +32,13 @@ let
       cp ${config.system.build.initialRamdisk}/initrd files/boot/initrd
       dtbfile=$(find ${config.hardware.deviceTree.package} -name '${dtb}' -print)
       test -f "$dtbfile"
+      # Nixpkgs skips overlays without a matching compatible property.
+      node=$(${pkgs.dtc}/bin/fdtget "$dtbfile" /__symbols__ i2c1)
+      test "$(${pkgs.dtc}/bin/fdtget "$dtbfile" "$node" status)" = okay
+      for symbol in uart0 fb vchiq usb cam1_reg cam_dummy_reg; do
+        node=$(${pkgs.dtc}/bin/fdtget "$dtbfile" /__symbols__ "$symbol")
+        test "$(${pkgs.dtc}/bin/fdtget "$dtbfile" "$node" status)" = disabled
+      done
       cp "$dtbfile" files/boot/dtb/${dtb}
       cp ${packages.sound}/overlays/tagtagtag-sound.dtbo files/boot/overlays/
       printf 'nabos_init=%s\nnabos_kernel_params=%s\n' \

@@ -27,7 +27,9 @@ Le fichier livré avec chaque construction est la référence pour ses entrées.
 Sur ARMv6, `libpcap` désactive la capture RDMA, inutilisée par le lapin : le
 générateur Python de `rdma-core` échoue en configuration croisée avec ce pin.
 La capture des interfaces réseau ordinaires reste disponible. ARM64 conserve
-le paquet Nixpkgs standard.
+le paquet Nixpkgs standard. La documentation développeur d’ORC est également
+désactivée sur ARMv6 : sa génération tente d’exécuter un outil ARM sur le
+constructeur x86. La bibliothèque audio reste disponible.
 
 Nix produit le payload `rootfs.ext4`, `boot.vfat`, `uboot.env`, `boot.cmd`,
 `build.json` et `cache-roots`. L’assembleur signe le bundle **hors du store Nix**,

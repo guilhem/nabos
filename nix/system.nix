@@ -119,10 +119,11 @@ in
     { assertion = builtins.elem nabosTarget [ "zero-armv6" "zero2-arm64" ]; message = "Unknown NabOS target"; }
     { assertion = nabosTarget != "zero-armv6" || packages.lva == null; message = "LVA is ARM64-only"; }
   ];
-  # Zero W uses ordinary network interfaces; RDMA's Python generator cannot
-  # cross-configure with this pin. Keep ARM64 on the official package defaults.
+  # Omit unused RDMA capture and documentation that fail ARMv6 cross builds.
+  # Keep ARM64 on the official package defaults.
   nixpkgs.overlays = lib.optional (nabosTarget == "zero-armv6") (_final: previous: {
     libpcap = previous.libpcap.override { withRdma = false; };
+    orc = previous.orc.override { buildDevDoc = false; };
   });
   system.stateVersion = "26.05";
   system.nixos.label = "nabos-${nabosVersion}";

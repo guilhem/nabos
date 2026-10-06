@@ -30,6 +30,7 @@ let
     pname = "tagtagtag-${name}";
     version = sourceVersion name;
     src = source name;
+    patches = lib.optional (name == "sound") ./tagtagtag-mixer.patch;
     nativeBuildInputs = kernel.moduleBuildDependencies ++ [
       pkgs.buildPackages.dtc pkgs.buildPackages.kmod
     ];

@@ -1,6 +1,10 @@
 /dts-v1/;
 /plugin/;
 
+/ {
+    compatible = "raspberrypi,model-zero-w", "raspberrypi,model-zero-2-w";
+};
+
 /*
  * Linux-only hardware profile. image/prepare.sh merges it at build time into
  * the slot's vendor DTB, which U-Boot loads for Linux; the firmware partition
