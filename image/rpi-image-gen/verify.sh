@@ -30,40 +30,45 @@ import sys
 import tarfile
 import tempfile
 
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
 with tarfile.open(sys.argv[1]) as archive, tempfile.TemporaryDirectory() as temporary:
     kernels = [entry for entry in archive if re.fullmatch(r"\./boot/vmlinuz-.+-rpi-v8", entry.name)]
-    assert len(kernels) == 1, "Expected one Raspberry Pi v8 kernel image"
+    require(len(kernels) == 1, "Expected one Raspberry Pi v8 kernel image")
     kernel = kernels[0].name.removeprefix("./boot/vmlinuz-")
     modules = [entry for entry in archive if re.fullmatch(
         rf"\./usr/lib/modules/{re.escape(kernel)}/kernel/.+\.ko(?:\.xz)?", entry.name)]
-    assert modules, "Missing kernel module payload"
+    require(modules, "Missing kernel module payload")
     dtb = f"./usr/lib/modules/{kernel}/dtb/broadcom/bcm2710-rpi-zero-2-w.dtb"
     hashes = archive.extractfile(f"./var/lib/dpkg/info/linux-image-{kernel}.md5sums").read().decode()
     hashes = dict(line.split(maxsplit=1)[::-1] for line in hashes.splitlines())
     payloads = {}
     for name in (kernels[0].name, modules[0].name, dtb):
         entry = archive.getmember(name)
-        assert entry.isfile() and entry.size > 0, f"Not a regular nonempty payload: {name}"
+        require(entry.isfile() and entry.size > 0, f"Not a regular nonempty payload: {name}")
         data = archive.extractfile(entry).read()
-        assert hashlib.md5(data).hexdigest() == hashes[name.removeprefix("./")], f"Package digest mismatch: {name}"
+        require(hashlib.md5(data).hexdigest() == hashes[name.removeprefix("./")], f"Package digest mismatch: {name}")
         payloads[name] = data
     image = payloads[kernels[0].name]
     if image.startswith(b"\x1f\x8b"):
         image = gzip.decompress(image)
-    assert len(image) >= 64 and image[56:60] == b"ARM\x64", "Invalid ARM64 kernel image"
+    require(len(image) >= 64 and image[56:60] == b"ARM\x64", "Invalid ARM64 kernel image")
     module = payloads[modules[0].name]
     if modules[0].name.endswith(".xz"):
         module = lzma.decompress(module)
-    assert module[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<HH", module, 16) == (1, 183), "Invalid ARM64 module"
+    require(module[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<HH", module, 16) == (1, 183), "Invalid ARM64 module")
     module_path = Path(temporary, "module.ko")
     module_path.write_bytes(module)
     vermagic = subprocess.check_output(["modinfo", "-F", "vermagic", str(module_path)], text=True)
-    assert vermagic.startswith(kernel + " "), "Kernel/module release mismatch"
+    require(vermagic.startswith(kernel + " "), "Kernel/module release mismatch")
     dtb_path = Path(temporary, "device.dtb")
     dtb_path.write_bytes(payloads[dtb])
     subprocess.run(["dtc", "-q", "-I", "dtb", "-O", "dts", "-o", "/dev/null", str(dtb_path)], check=True)
     compatible = subprocess.check_output(["fdtget", str(dtb_path), "/", "compatible"], text=True)
-    assert "raspberrypi,model-zero-2-w" in compatible.split(), "Unexpected DTB board"
+    require("raspberrypi,model-zero-2-w" in compatible.split(), "Unexpected DTB board")
     print(f"Verified kernel, module and Zero 2 W DTB payloads: {kernel}")
 PY_PAYLOAD
 tar -xOf "$archive" ./usr/share/nabos-prototype/scope

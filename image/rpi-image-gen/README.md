@@ -48,7 +48,8 @@ The verifier rejects development packages, shared machine identities, SSH host
 keys and systemd random seeds. These are static content checks, not boot tests.
 
 To inspect an existing archive and exercise missing, empty, corrupt or linked
-payloads, prohibited packages and shared random seeds:
+payloads, prohibited packages and shared random seeds in both ordinary and
+optimized Python modes:
 
 ```bash
 bash image/rpi-image-gen/verify.sh dist/rpi-image-gen/rootfs.tar.xz build/rpi-image-gen/verification

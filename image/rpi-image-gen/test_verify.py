@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the verifier against payloads from a real generated archive."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tarfile
@@ -37,9 +38,12 @@ with tempfile.TemporaryDirectory() as temporary:
                     import io
                     entry.size = len(data)
                     archive.addfile(entry, io.BytesIO(data))
-        result = subprocess.run(["bash", str(verifier), str(archive_path), str(directory / "reports")],
-                                capture_output=True, text=True)
-        assert (result.returncode == 0) == succeeds, f"{label}:\n{result.stdout}\n{result.stderr}"
+        for optimize in ("", "1"):
+            result = subprocess.run(["bash", str(verifier), str(archive_path), str(directory / "reports")],
+                                    env=os.environ | {"PYTHONOPTIMIZE": optimize},
+                                    capture_output=True, text=True)
+            if (result.returncode == 0) != succeeds:
+                raise RuntimeError(f"{label}, PYTHONOPTIMIZE={optimize!r}:\n{result.stdout}\n{result.stderr}")
         print(f"PASS: {label}")
 
     check("real package payloads, including runtime gcc-base", succeeds=True)
