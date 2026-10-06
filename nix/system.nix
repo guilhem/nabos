@@ -162,6 +162,10 @@ in
       LEDS_CLASS_MULTICOLOR = module; DMA_BCM2835 = yes;
       OVERLAY_FS_METACOPY = yes; OVERLAY_FS_REDIRECT_DIR = yes;
       SQUASHFS = module; SQUASHFS_ZSTD = yes; EROFS_FS = module; OVERLAY_FS = module;
+    } // lib.optionalAttrs (nabosTarget == "zero-armv6") {
+      # These drivers use 64-bit division helpers unavailable in the ARMv6 kernel.
+      # The Zero W uses BCM2835 I2C and has no RP1 peripheral controller.
+      PWM_RP1 = no; VIDEO_RP1_CFE_DOWNSTREAM = no; I2C_DESIGNWARE_CORE = no;
     };
   }];
   boot.extraModulePackages = [ packages.sound packages.led ];
