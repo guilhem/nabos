@@ -16,50 +16,38 @@ import (
 	"time"
 )
 
-func TestKernelSupportsZstdBundles(t *testing.T) {
-	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
-	_, check, ok := strings.Cut(prepare, "    for option in ")
-	if !ok {
-		t.Fatal("kernel option checks missing")
-	}
-	check, _, ok = strings.Cut(check, "\n    done")
-	if !ok {
-		t.Fatal("kernel option loop missing")
-	}
-	check = strings.ReplaceAll("for option in "+check+"\ndone", "/lib/modules/$kernel/build/.config", "$NABOS_TEST_CONFIG")
-	const input = "CONFIG_KEYBOARD_GPIO=y\nCONFIG_INPUT_EVDEV=y\n"
-	for _, c := range []struct {
-		name, config string
-		valid        bool
-	}{
-		{"built-in", input + "CONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", true},
-		{"module", "CONFIG_KEYBOARD_GPIO=m\nCONFIG_INPUT_EVDEV=m\nCONFIG_SQUASHFS=m\nCONFIG_SQUASHFS_ZSTD=y\n", true},
-		{"no-squashfs", input + "# CONFIG_SQUASHFS is not set\nCONFIG_SQUASHFS_ZSTD=y\n", false},
-		{"no-zstd", input + "CONFIG_SQUASHFS=m\n# CONFIG_SQUASHFS_ZSTD is not set\n", false},
-		{"missing-zstd", input + "CONFIG_SQUASHFS=m\n", false},
-		{"missing-gpio-keys", "CONFIG_INPUT_EVDEV=y\nCONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", false},
-		{"missing-evdev", "CONFIG_KEYBOARD_GPIO=y\nCONFIG_SQUASHFS=y\nCONFIG_SQUASHFS_ZSTD=y\n", false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			config := filepath.Join(t.TempDir(), "kernel.config")
-			write(t, config, "CONFIG_BCM2835_WDT=y\nCONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y\nCONFIG_LEDS_CLASS_MULTICOLOR=m\nCONFIG_DMA_BCM2835=y\n"+c.config)
-			r := execute(t, "", []string{"NABOS_TEST_CONFIG=" + config}, "bash", "-eu", "-c", check)
-			if (r.code == 0) != c.valid {
-				t.Fatalf("kernel support: exit %d: %s", r.code, r.stderr)
-			}
-		})
+func TestKernelSupportsApplianceHardwareAndBundles(t *testing.T) {
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	for _, option := range []string{"BCM2835_WDT = yes", "WATCHDOG_HANDLE_BOOT_ENABLED = yes", "KEYBOARD_GPIO = module", "INPUT_EVDEV = module", "SQUASHFS = module", "SQUASHFS_ZSTD = yes", "LEDS_CLASS_MULTICOLOR = module", "DMA_BCM2835 = yes"} {
+		if !strings.Contains(config, option+";") {
+			t.Errorf("kernel lacks %s", option)
+		}
 	}
 }
 
 func TestReleaseUpload(t *testing.T) {
 	workflow := read(t, filepath.Join(repo, ".github/workflows/images.yml"))
-	// Exercise the final upload step with real checksums and a fake GitHub CLI.
-	const marker = "        run: |\n"
-	start := strings.LastIndex(workflow, marker)
+	// Exercise only the release job's upload block, even when later jobs have scripts.
+	start := strings.LastIndex(workflow, "\n  release:\n")
 	if start < 0 {
+		t.Fatal("release job missing")
+	}
+	_, block, ok := strings.Cut(workflow[start:], "        run: |\n")
+	if !ok {
 		t.Fatal("release upload step missing")
 	}
-	script := workflow[start+len(marker):]
+	var script string
+	for _, line := range strings.Split(block, "\n") {
+		if strings.TrimSpace(line) == "" {
+			script += "\n"
+			continue
+		}
+		command, ok := strings.CutPrefix(line, "          ")
+		if !ok {
+			break
+		}
+		script += command + "\n"
+	}
 	for _, scenario := range []struct {
 		name, fail, want string
 		existing         bool
@@ -80,9 +68,13 @@ func TestReleaseUpload(t *testing.T) {
 			var sums string
 			for _, target := range []string{"zero-armv6", "zero2-arm64"} {
 				asset := "nabos-" + target + ".raucb"
-				write(t, filepath.Join("dist", asset), target)
+				dir := filepath.Join("dist", "nabos-"+target)
+				if err := os.Mkdir(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				write(t, filepath.Join(dir, asset), target)
 				sum := fmt.Sprintf("%x  ./%s\n", sha256.Sum256([]byte(target)), asset)
-				write(t, filepath.Join("dist", "SHA256SUMS-"+target), sum)
+				write(t, filepath.Join(dir, "SHA256SUMS-"+target), sum)
 				sums += sum
 			}
 			fake := newFakes(t, tmp, map[string]string{"gh": `
@@ -97,7 +89,7 @@ esac`})
 			env := fake.env("GITHUB_REF_NAME=v0.1.0", "GITHUB_REPOSITORY=guilhem/nabos",
 				fmt.Sprintf("EXISTING_MANIFEST=%t", scenario.existing), "FAIL_COMMAND="+scenario.fail)
 			if scenario.name == "corrupt" {
-				write(t, "dist/nabos-zero2-arm64.raucb", "corrupted")
+				write(t, "dist/nabos-zero2-arm64/nabos-zero2-arm64.raucb", "corrupted")
 			}
 			r := execute(t, "", env, "bash", "-e", "-o", "pipefail", "-c", script)
 			calls := fake.calls(t)
@@ -110,10 +102,15 @@ esac`})
 			}
 			if scenario.name == "first" || scenario.name == "rerun" {
 				if r.code != 0 ||
-					strings.Contains(calls[len(calls)-2], " ./SHA256SUMS ") ||
+					slices.ContainsFunc(strings.Fields(calls[len(calls)-2]), func(arg string) bool { return filepath.Base(arg) == "SHA256SUMS" }) ||
 					!strings.HasSuffix(calls[len(calls)-1], "--clobber SHA256SUMS") ||
 					read(t, "dist/SHA256SUMS") != sums {
 					t.Fatalf("upload failed or manifest published too early: %v\n%s", calls, r.stderr)
+				}
+				for _, target := range []string{"zero-armv6", "zero2-arm64"} {
+					if !slices.ContainsFunc(strings.Fields(calls[len(calls)-2]), func(arg string) bool { return filepath.Base(arg) == "nabos-"+target+".raucb" }) {
+						t.Errorf("target %s omitted from upload: %v", target, calls)
+					}
 				}
 			} else if r.code == 0 {
 				t.Fatalf("failed artifacts were published: %v\n%s", calls, r.stderr)
@@ -123,20 +120,13 @@ esac`})
 }
 
 var (
-	bootInit = filepath.Join(rootfsDir, "usr/lib/nabos/boot-init")
-	health   = filepath.Join(rootfsDir, "usr/lib/nabos/health")
-	persist  = []string{"/etc/NetworkManager/system-connections", "/var/lib/NetworkManager",
-		"/var/lib/systemd/timesync", "/var/lib/tagtagtag-sound", "/var/lib/nabos"}
+	persistLib = filepath.Join(repo, "nix/runtime/persist.sh")
+	health     = filepath.Join(rootfsDir, "usr/lib/nabos/health")
+	persist    = []string{"/etc/NetworkManager/system-connections", "/var/lib/NetworkManager",
+		"/var/lib/systemd/timesync", "/var/lib/tagtagtag-sound", "/var/lib/nabos", "/var/lib/systemd/linger"}
 )
 
-func TestBootInitRefusesToRunOutsidePID1(t *testing.T) {
-	r := execute(t, "", nil, "sh", bootInit)
-	if r.code != 1 || !strings.Contains(r.stderr, "must run as PID 1") {
-		t.Errorf("exit %d: %s", r.code, r.stderr)
-	}
-}
-
-func TestBootInitGrowsOnlyTheDataPartitionOnA16GBCard(t *testing.T) {
+func TestPersistGrowsOnlyTheDataPartitionOnA16GBCard(t *testing.T) {
 	tmp := t.TempDir()
 	card := filepath.Join(tmp, "mmcblk0")
 	write(t, card, "")
@@ -182,9 +172,9 @@ func TestBootInitGrowsOnlyTheDataPartitionOnA16GBCard(t *testing.T) {
 	}
 	before := partitions()
 	kmsg := filepath.Join(tmp, "kmsg")
-	env := []string{"NABOS_BOOT_INIT_LIB=1", "NABOS_DISK=" + card, "NABOS_SYSFS=" + filepath.Join(tmp, "sys"), "NABOS_KMSG=" + kmsg}
+	env := []string{"NABOS_DISK=" + card, "NABOS_SYSFS=" + filepath.Join(tmp, "sys"), "NABOS_KMSG=" + kmsg}
 	grow := func() {
-		if r := execute(t, "", env, "sh", "-c", ". "+bootInit+"; grow_partition"); r.code != 0 {
+		if r := execute(t, "", env, "sh", "-c", ". "+persistLib+"; grow_partition"); r.code != 0 {
 			t.Fatalf("grow_partition: exit %d: %s", r.code, r.stderr)
 		}
 	}
@@ -212,6 +202,56 @@ func TestBootInitGrowsOnlyTheDataPartitionOnA16GBCard(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sysfs(), after) {
 		t.Error("second run changed the partition table")
+	}
+}
+
+func TestPersistRetriesFailedGrowth(t *testing.T) {
+	for _, fail := range []string{"sfdisk", "partx", "resize2fs", ""} {
+		t.Run("failure="+fail, func(t *testing.T) {
+			tmp := t.TempDir()
+			fake := newFakes(t, tmp, map[string]string{
+				"sfdisk": `[ "$FAIL" != sfdisk ]`, "partx": `[ "$FAIL" != partx ]`, "resize2fs": `[ "$FAIL" != resize2fs ]`,
+			})
+			marker := filepath.Join(tmp, "grown")
+			script := `. "$NABOS_PERSIST_LIB"; free_after_data() { echo 65536; }; GROWN="$MARKER"; grow_data`
+			r := execute(t, "", fake.env("NABOS_PERSIST_LIB="+persistLib, "NABOS_KMSG="+filepath.Join(tmp, "kmsg"), "MARKER="+marker, "FAIL="+fail), "sh", "-c", script)
+			if r.code != 0 {
+				t.Fatal(r.stderr)
+			}
+			_, err := os.Stat(marker)
+			if (err == nil) != (fail == "") {
+				t.Fatalf("growth marker after %q: %v", fail, err)
+			}
+			if fail != "" && !strings.Contains(read(t, filepath.Join(tmp, "kmsg")), "retrying on next boot") {
+				t.Error("failed growth must be retried")
+			}
+		})
+	}
+}
+
+func TestPersistRepairsDataBeforeMounting(t *testing.T) {
+	for _, c := range []struct {
+		initial, repair                    int
+		mountFails, wantMount, wantSuccess bool
+	}{
+		{0, 0, false, true, true}, {1, 0, false, true, true},
+		{4, 0, false, true, true}, {8, 4, false, false, false}, {0, 0, true, true, false},
+	} {
+		t.Run(fmt.Sprint(c), func(t *testing.T) {
+			tmp := t.TempDir()
+			fake := newFakes(t, tmp, map[string]string{
+				"e2fsck": fmt.Sprintf(`if [ "$1" = -p ]; then exit %d; else exit %d; fi`, c.initial, c.repair),
+				"mount":  fmt.Sprintf("exit %d", map[bool]int{true: 1, false: 0}[c.mountFails]),
+			})
+			r := execute(t, "", fake.env("NABOS_PERSIST_LIB="+persistLib, "NABOS_KMSG="+filepath.Join(tmp, "kmsg")), "sh", "-c", `. "$NABOS_PERSIST_LIB"; mount_data`)
+			if (r.code == 0) != c.wantSuccess {
+				t.Fatalf("mount_data exit %d: %s", r.code, r.stderr)
+			}
+			calls := fake.calls(t)
+			if slices.Contains(calls, "e2fsck -fy /dev/mmcblk0p4") != (c.initial >= 4) || slices.Contains(calls, "mount -t ext4 -o noatime /dev/mmcblk0p4 /data") != c.wantMount {
+				t.Fatalf("repair/mount ordering: %v", calls)
+			}
+		})
 	}
 }
 
@@ -247,9 +287,9 @@ type healthCase struct {
 	stuck               bool // never healthy: stop the check after a few seconds
 }
 
-// mounts returns findmnt answers for a correct boot-init run; "" removes an entry.
+// mounts returns findmnt answers for a persistent NixOS boot; "" removes an entry.
 func mounts(changes map[string]string) map[string]string {
-	table := map[string]string{"/data": "/dev/mmcblk0p4 ext4", "/etc/machine-id": "/dev/mmcblk0p4[/system/machine-id]"}
+	table := map[string]string{"/": "/dev/mmcblk0p2 ext4", "/:options": "ro,relatime", "/etc:options": "ro,relatime", "/data": "/dev/mmcblk0p4 ext4", "/etc/machine-id": "/dev/mmcblk0p4[/system/machine-id]"}
 	for _, p := range persist {
 		table[p] = "/dev/mmcblk0p4[/system" + p + "]"
 	}
@@ -280,6 +320,9 @@ func checkHealth(t *testing.T, c healthCase) (string, []string, string) {
 	def(&c.sources, wm8960Monitor+wm8960Capture)
 	if c.mounts == nil {
 		c.mounts = mounts(nil)
+		if c.slot == "B" {
+			c.mounts["/"] = "/dev/mmcblk0p3 ext4"
+		}
 	}
 	tmp := t.TempDir()
 	marker := filepath.Join(tmp, "nabos-boot-health")
@@ -310,13 +353,13 @@ esac`, !c.deviceUnready, !c.hardwareUnready),
 		"runuser": `[ "$1 $2 $3" = "-u nab-audio --" ] || exit 1; shift 3; exec "$@"`,
 		"pactl":   `[ "$XDG_RUNTIME_DIR $LC_ALL $1" = "/run/user/1004 C list" ] && cat ` + tmp + "/$2",
 		// findmnt -n -o COLUMNS --mountpoint PATH
-		"findmnt":     `eval "p=\$$#"; case $p in ` + cases + "*) exit 1;; esac",
+		"findmnt":     `eval "p=\$$#"; [ "$3" != OPTIONS ] || p="$p:options"; case $p in ` + cases + "*) exit 1;; esac",
 		"rauc":        fmt.Sprintf("exit %d", map[bool]int{false: 0, true: 1}[c.raucFails]),
 		"blkid":       "echo " + c.otherFS,
 		"fw_printenv": fmt.Sprintf("case $2 in BOOT_%s_LEFT) echo %s;; *) echo %s;; esac", c.slot, c.own, c.other),
 	})
 	cmdline := filepath.Join(tmp, "cmdline")
-	write(t, cmdline, "root=/dev/mmcblk0p2 ro rauc.slot="+c.slot+" quiet\n")
+	write(t, cmdline, "ro rauc.slot="+c.slot+" quiet\n")
 	limit := 30 * time.Second
 	if c.stuck {
 		limit = 6 * time.Second
@@ -326,7 +369,7 @@ esac`, !c.deviceUnready, !c.hardwareUnready),
 	cmd := exec.CommandContext(ctx, "sh", health)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = append(os.Environ(), fake.env("NABOS_CMDLINE="+cmdline, "NABOS_HEALTH_TIMEOUT=2",
-		"NABOS_HEALTH_INTERVAL=1", "NABOS_BOOT_INIT="+bootInit, "NABOS_BOOT_HEALTH="+marker)...)
+		"NABOS_HEALTH_INTERVAL=1", "NABOS_PERSIST_LIB="+persistLib, "NABOS_BOOT_HEALTH="+marker)...)
 	out, _ := cmd.Output()
 	if ctx.Err() != nil && !c.stuck {
 		t.Fatal("health check timed out")
@@ -449,12 +492,23 @@ func TestHealth(t *testing.T) {
 			t.Errorf("marker %q", marker)
 		}
 	})
-	check("persist list matches boot-init", func(t *testing.T) {
-		m := regexp.MustCompile(`(?m)^PERSIST="([^"]+)"`).FindStringSubmatch(read(t, bootInit))
+	check("persist list matches initrd helper", func(t *testing.T) {
+		m := regexp.MustCompile(`(?m)^PERSIST="([^"]+)"`).FindStringSubmatch(read(t, persistLib))
 		if m == nil || !slices.Equal(strings.Fields(m[1]), persist) {
-			t.Errorf("boot-init PERSIST %q", m)
+			t.Errorf("persist helper PERSIST %q", m)
 		}
 	})
+	for _, changes := range []map[string]string{
+		{"/": "/dev/mmcblk0p3 ext4"}, {"/": "/dev/mmcblk0p2 tmpfs"},
+		{"/:options": "rw,relatime"}, {"/etc:options": "rw,relatime"},
+		{"/": ""}, {"/etc:options": ""},
+	} {
+		check(fmt.Sprintf("invalid root or etc %v", changes), func(t *testing.T) {
+			_, calls, _ := checkHealth(t, healthCase{mounts: mounts(changes)})
+			confirmed(t, calls, false)
+			rebooted(t, calls, true)
+		})
+	}
 	check("volatile data is never confirmed", func(t *testing.T) {
 		_, calls, marker := checkHealth(t, healthCase{mounts: mounts(map[string]string{"/data": "tmpfs tmpfs"})})
 		confirmed(t, calls, false)
@@ -462,7 +516,7 @@ func TestHealth(t *testing.T) {
 			t.Errorf("stale marker %q", marker)
 		}
 	})
-	for _, path := range []string{"/etc/machine-id", "/var/lib/nabos", "/etc/NetworkManager/system-connections"} {
+	for _, path := range append([]string{"/etc/machine-id"}, persist...) {
 		check("missing bind "+path+" is never confirmed", func(t *testing.T) {
 			_, calls, _ := checkHealth(t, healthCase{mounts: mounts(map[string]string{path: ""})})
 			confirmed(t, calls, false)
@@ -537,7 +591,7 @@ func TestHealth(t *testing.T) {
 		write(t, cmdline, "root=/dev/mmcblk0p2\n")
 		marker := filepath.Join(tmp, "nabos-boot-health")
 		write(t, marker, "good A\n")
-		if r := execute(t, "", fake.env("NABOS_CMDLINE="+cmdline, "NABOS_BOOT_INIT="+bootInit, "NABOS_BOOT_HEALTH="+marker), "sh", health); r.code != 0 {
+		if r := execute(t, "", fake.env("NABOS_CMDLINE="+cmdline, "NABOS_PERSIST_LIB="+persistLib, "NABOS_BOOT_HEALTH="+marker), "sh", health); r.code != 0 {
 			t.Fatalf("exit %d: %s", r.code, r.stderr)
 		}
 		if calls := fake.calls(t); len(calls) != 0 {
@@ -550,18 +604,14 @@ func TestHealth(t *testing.T) {
 }
 
 func TestUserspaceHardwareImageContract(t *testing.T) {
-	if got := read(t, filepath.Join(rootfsDir, "etc/modules-load.d/nabos.conf")); got != "i2c-dev\nbcm2835-ws2812\n" {
-		t.Errorf("unexpected hardware module configuration: %q", got)
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	for _, required := range []string{`boot.kernelModules = [ "i2c-dev" "bcm2835-ws2812" ];`, "boot.extraModulePackages = [ packages.sound packages.led ];", `dtboFile = "${packages.led}/overlays/bcm2835-ws2812.dtbo";`} {
+		if !strings.Contains(config, required) {
+			t.Errorf("missing hardware integration: %s", required)
+		}
 	}
 	if !strings.Contains(read(t, filepath.Join(imageDir, "nabos-overlay.dts")), `&i2c1 { status = "okay"; };`) {
-		t.Error("the Linux slot DTB must enable I2C bus 1 independently of reader overlays")
-	}
-	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
-	if !strings.Contains(prepare, "for driver in sound led; do") || strings.Contains(prepare, "libws2811") {
-		t.Error("sound and native LED modules must replace the raw-memory LED library")
-	}
-	if !strings.Contains(prepare, "/boot/overlays/bcm2835-ws2812.dtbo") {
-		t.Error("the LED overlay must be merged into the Linux slot DTB")
+		t.Error("slot DTB must enable I2C bus 1")
 	}
 	var lock struct{ Sources map[string]json.RawMessage }
 	if err := json.Unmarshal([]byte(read(t, filepath.Join(imageDir, "sources.lock.json"))), &lock); err != nil {
@@ -571,29 +621,19 @@ func TestUserspaceHardwareImageContract(t *testing.T) {
 		if _, exists := lock.Sources[name]; exists {
 			t.Errorf("obsolete kernel source pin remains: %s", name)
 		}
-		for _, file := range []string{"prepare.sh", "boot/boot.cmd", "../services/cmd/nab-image/drivers.go"} {
-			if strings.Contains(read(t, filepath.Join(imageDir, file)), name) {
-				t.Errorf("obsolete kernel driver remains in %s: %s", file, name)
-			}
-		}
 	}
 	udev := read(t, filepath.Join(rootfsDir, "etc/udev/rules.d/60-nabos.rules"))
 	for _, obsolete := range []string{`KERNEL=="ear`, `KERNEL=="mem"`, `KERNEL=="vcio"`} {
 		if strings.Contains(udev, obsolete) {
-			t.Errorf("obsolete raw hardware access rule remains: %s", obsolete)
+			t.Errorf("obsolete raw hardware access remains: %s", obsolete)
 		}
 	}
-	for _, file := range []string{
-		"patches/ears.patch", "patches/cr14.patch", "patches/nfc.patch",
-		"rootfs/usr/lib/nabos/rfid-probe", "rootfs/usr/lib/systemd/system/nabos-rfid.service",
-	} {
+	for _, file := range []string{"patches/ears.patch", "patches/cr14.patch", "patches/nfc.patch", "rootfs/usr/lib/nabos/rfid-probe", "rootfs/usr/lib/systemd/system/nabos-rfid.service"} {
 		if _, err := os.Lstat(filepath.Join(imageDir, file)); !os.IsNotExist(err) {
-			t.Errorf("obsolete kernel hardware integration remains: %s", file)
+			t.Errorf("obsolete integration remains: %s", file)
 		}
 	}
-	for _, file := range []string{"usr/lib/nabos/image-setup", "usr/lib/systemd/system/nab-hardware.service"} {
-		if strings.Contains(read(t, filepath.Join(rootfsDir, file)), "nabos-rfid") {
-			t.Errorf("obsolete reader startup remains: %s", file)
-		}
+	if strings.Contains(read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/nab-hardware.service")), "nabos-rfid") {
+		t.Error("obsolete reader startup remains")
 	}
 }

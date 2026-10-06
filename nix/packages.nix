@@ -1,4 +1,4 @@
-{ pkgs, target, version ? "dev-nixos", kernelPackages }:
+{ pkgs, target, version ? "dev-local", kernelPackages }:
 let
   inherit (pkgs) lib;
   lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
@@ -116,6 +116,8 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
       export GOFLAGS="$GOFLAGS -overlay=$TMPDIR/go-test-overlay.json"
     '';
     postInstall = ''
+      install -Dm644 ${../LICENSE} "$out/share/doc/nabos/LICENSE"
+      install -m644 ${../NOTICE} "$out/share/doc/nabos/NOTICE"
       wrapProgram "$out/bin/nabos" \
         --set-default NABOS_SOUNDS_DIRS "${assets}/share/nabos/sounds:/data/nabos/media/sounds" \
         --set-default NABOS_CHOREOGRAPHIES_DIRS "${assets}/share/nabos/choreographies:/data/nabos/media/choreographies"
@@ -135,6 +137,10 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     };
     doCheck = native;
     nativeCheckInputs = [ dbusForTests pkgs.buildPackages.coreutils ];
+    postInstall = ''
+      install -Dm644 ${../LICENSE} "$out/share/doc/nab-hardware/LICENSE"
+      install -m644 ${../NOTICE} "$out/share/doc/nab-hardware/NOTICE"
+    '';
   };
 
   device-core = pkgs.rustPlatform.buildRustPackage {
@@ -155,6 +161,8 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
       coreutils python3 openssh openssl rauc squashfsTools
     ]);
     postInstall = ''
+      install -Dm644 LICENSE "$out/share/doc/device-core/LICENSE"
+      install -m644 NOTICE "$out/share/doc/device-core/NOTICE"
       wrapProgram "$out/bin/device-core" \
         --prefix PATH : ${lib.makeBinPath [ pkgs.alsa-utils pkgs.mpg123 pkgs.wireplumber pkgs.openssh pkgs.rauc ]} \
         --set-default DEVICE_CORE_AUDIO_ROOTS "${assets}/share/nabos/sounds:/data/nabos/media/sounds"
@@ -199,6 +207,36 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     postInstall = ''
       install -Dm644 .config "$out/share/nabos/uboot.config"
       install -m644 u-boot.elf.txt "$out/share/nabos/uboot.elf.txt"
+    '';
+  };
+
+  # Host-native hush execution tests use the same locked U-Boot source.
+  uboot-sandbox = pkgs.buildPackages.buildUBoot {
+    version = lock.tools.uboot;
+    src = source "uboot";
+    defconfig = "sandbox_defconfig";
+    extraConfig = ''
+      # CONFIG_SANDBOX_SDL is not set
+      # CONFIG_TOOLS_MKEFICAPSULE is not set
+      # CONFIG_UNIT_TEST is not set
+      # CONFIG_EFI_CAPSULE_AUTHENTICATE is not set
+      # CONFIG_EFI_CAPSULE_ON_DISK is not set
+      # CONFIG_CMD_UPL is not set
+      # CONFIG_UPL is not set
+    '';
+    postConfigure = "make olddefconfig";
+    extraMakeFlags = [ "CONFIG_PYLIBFDT=" ];
+    buildPhase = ''
+      runHook preBuild
+      make "''${makeFlags[@]}" "''${makeFlagsArray[@]}" -j"$NIX_BUILD_CORES" u-boot tools
+      runHook postBuild
+    '';
+    filesToInstall = [ "u-boot" "tools/mkimage" "tools/mkenvimage" ];
+    installDir = "$out/bin";
+    postInstall = ''
+      ln -s ${pkgs.buildPackages.dtc}/bin/dtc "$out/bin/dtc"
+      cd "$out"
+      sha256sum bin/u-boot bin/dtc bin/mkimage bin/mkenvimage > SHA256SUMS
     '';
   };
 

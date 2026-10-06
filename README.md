@@ -4,20 +4,20 @@ Logiciel libre pour les Nabaztag équipés d'une carte **TagTagTag 2019/2021** o
 
 [![Images](https://github.com/guilhem/nabos/actions/workflows/images.yml/badge.svg)](https://github.com/guilhem/nabos/actions/workflows/images.yml)
 
-NabOS utilise **Raspberry Pi OS Lite Trixie + RAUC**, avec PipeWire et des API D-Bus typées. `nab-hardware` garde uniquement le matériel en Rust. `nabos` possède en Go les états, la file média, les chorégraphies, l’interface et les applications. Le dépôt indépendant `device-core` fournit les services Linux en Rust : réseau, audio, configuration système, horloge, SSH, voix et mises à jour. Les réglages système vivent dans `/data/device-core/settings.json`, les réglages applicatifs dans `/data/nabos/application.json`. MQTT sert uniquement à Home Assistant via son broker configuré ; aucun broker local n’est installé.
+NabOS utilise **NixOS + RAUC**, avec PipeWire et des API D-Bus typées. `nab-hardware` garde uniquement le matériel en Rust. `nabos` possède en Go les états, la file média, les chorégraphies, l’interface et les applications. Le dépôt indépendant `device-core` fournit les services Linux en Rust : réseau, audio, configuration système, horloge, SSH, voix et mises à jour. Les réglages système vivent dans `/data/device-core/settings.json`, les réglages applicatifs dans `/data/nabos/application.json`. MQTT sert uniquement à Home Assistant via son broker configuré ; aucun broker local n’est installé.
 
-Les outils de fabrication et les tests propres à NabOS sont aussi en Go. Linux Voice Assistant conserve ses dépendances Python.
+Nix réalise les paquets et le système ; les scripts d’image assemblent et vérifient les artefacts. Linux Voice Assistant conserve ses dépendances Python.
 
-La qualification du démarrage, des pilotes et du rollback sur les deux matériels est requise avant diffusion en release stable. Les constructions de développement et les tests de simulation ne constituent pas cette qualification.
+La qualification NixOS du démarrage, des pilotes et du rollback sur les deux matériels est requise avant diffusion en release stable. Les constructions de développement, les simulations et les essais d’anciennes images Raspberry Pi OS ne constituent pas cette qualification.
 
 ## Installation
 
 1. Télécharger l'image `.img.xz` correspondant au matériel dans une [release qualifiée](https://github.com/guilhem/nabos/releases) : `zero-armv6` pour le Zero original, `zero2-arm64` pour le Zero 2.
-2. Vérifier `SHA256SUMS`, puis flasher une carte microSD de **16 Go minimum**.
+2. Vérifier `SHA256SUMS-zero-armv6` ou `SHA256SUMS-zero2-arm64` selon la cible, puis flasher une carte microSD de **16 Go minimum**.
 3. Démarrer le lapin, rejoindre son point d'accès Nabaztag et ouvrir `http://10.41.0.1`. Appuyer sur le bouton quand le formulaire le demande, puis configurer le Wi-Fi.
 4. Ouvrir `http://nabaztag.local` et terminer la configuration de l'administration avec le bouton du lapin.
 
-L'installation se fait par flash d'une carte SD. L'administration locale utilise HTTP sur le réseau de confiance.
+Le passage d’une ancienne image à NixOS demande un nouveau flash SD, après sauvegarde des données. L'administration locale utilise HTTP sur le réseau de confiance.
 
 ### Connexion SSH
 
@@ -39,7 +39,7 @@ L'automatique attend le créneau réglable (03:00–05:00 par défaut, dans le f
 
 RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis le contrôle de santé confirme le nouveau système. Les données et réglages sont conservés. Après un rollback, la version fautive est exclue de l'automatique ; un réessai manuel reste possible. Une coupure au résultat indéterminé suspend l'automatique jusqu'à une reprise manuelle. Firmware Raspberry Pi et U-Boot sont livrés dans les deux copies FAT mises à jour par RAUC.
 
-Cette extraction utilise de nouveaux contrats et fichiers de configuration. Aucune migration des anciens réglages ni rétrocompatibilité des anciennes API n’est fournie. Le système racine reste en lecture seule ; le home et les préférences LVA restent sous `/var/lib/nabos`, lié à `/data/system` au démarrage.
+NixOS utilise les contrats et fichiers de configuration séparés de device-core et nabos. Aucune migration des anciens réglages ni rétrocompatibilité des anciennes API n’est fournie. Le système racine reste en lecture seule ; le home et les préférences LVA restent sous `/var/lib/nabos`, lié à `/data/system` au démarrage.
 
 ## Composants
 
@@ -74,7 +74,11 @@ Home Assistant expose les annonces comme boutons, utilisables depuis LVA. LVA et
 
 ## Développement
 
-La [documentation de fabrication](docs/build.md) décrit les commandes locales, les runners GitHub standards, les dépendances archivées, les secrets de signature et le partitionnement. Le mainteneur crée la release avec son statut et son changelog ; la CI y ajoute les artefacts. La [fiche de qualification](docs/release-checklist.md) accompagne le passage en stable.
+La [documentation de fabrication](docs/build.md) est le guide unique NixOS : commandes locales, entrées verrouillées, Cachix, signature, tests d’artefacts et partitionnement. La CI construit les deux cibles sur PR, push et release ; le mainteneur crée la release avec son statut et son changelog. La publication des artefacts attend les constructions et leurs tests sur les deux cibles. La [fiche de qualification](docs/release-checklist.md) accompagne le passage en stable.
+
+```sh
+make image TARGET=zero-armv6 VERSION=dev-local DEVELOPMENT=1
+```
 
 ```sh
 cargo test --locked --manifest-path core/Cargo.toml
@@ -84,4 +88,4 @@ cargo test --locked --manifest-path core/Cargo.toml
 
 Les simulations utilisent un bus D-Bus privé explicite (`NABOS_DEVICE_BUS_ADDRESS`) ; Mosquitto et ses clients servent uniquement aux fixtures Home Assistant. `DEVICE_CORE_BIN` désigne le binaire externe de simulation (voir le guide de fabrication). Les règles de contribution sont dans [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Le projet est distribué sous GPL-3.0-only ; les attributions des éléments réutilisés sont dans [NOTICE](NOTICE). Les firmwares binaires nécessaires au Raspberry Pi restent une exception fournie par Raspberry Pi OS.
+Le projet est distribué sous GPL-3.0-only ; les attributions des éléments réutilisés sont dans [NOTICE](NOTICE). Les firmwares binaires nécessaires au Raspberry Pi conservent leurs propres conditions de distribution.

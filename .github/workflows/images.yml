@@ -2,50 +2,121 @@ name: Images
 on:
   push:
     branches: [main]
-    paths:
-      - 'core/**'
-      - 'services/**'
-      - 'image/**'
-      - 'tools/**'
-      - 'assets/**'
-      - 'LICENSE'
-      - 'NOTICE'
-      - 'Makefile'
-      - '.github/workflows/**'
   pull_request:
-    paths:
-      - 'core/**'
-      - 'services/**'
-      - 'image/**'
-      - 'tools/**'
-      - 'assets/**'
-      - 'LICENSE'
-      - 'NOTICE'
-      - 'Makefile'
-      - '.github/workflows/**'
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Build SD images, or benchmark runtime closures on fresh runners'
+        type: choice
+        options: [build, benchmark]
+        default: build
+      version:
+        description: 'Development version (benchmark version phase appends .next)'
+        type: string
+        default: dev-nixos
+      nixpkgs_rev:
+        description: 'Optional explicit 40-character Nixpkgs commit for the benchmark update phase'
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
-  group: images-${{ github.ref }}
-  cancel-in-progress: true
+  group: images-${{ github.event_name }}-${{ github.ref }}-${{ inputs.mode || 'build' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+env:
+  TMPDIR: ${{ github.workspace }}/build/nix-tmp
 jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      production: ${{ steps.version.outputs.production }}
+      development: ${{ steps.version.outputs.development }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate release version and explicit benchmark inputs before building
+        id: version
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+          MODE: ${{ inputs.mode }}
+          NIXPKGS_REV: ${{ inputs.nixpkgs_rev }}
+          RELEASE_ACTION: ${{ github.event.action }}
+        run: |
+          VERSION="dev-${GITHUB_SHA:0:12}"
+          production=false
+          development=true
+          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+            test "$RELEASE_ACTION" = published
+            [[ "$GITHUB_REF" == "refs/tags/$GITHUB_REF_NAME" ]]
+            python3 - <<'PYTAG'
+          import os, re
+          tag = os.environ['GITHUB_REF_NAME']
+          match = re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', tag)
+          assert match, f'published release requires a v-prefixed SemVer tag: {tag}'
+          assert all(not part.isdigit() or part == '0' or not part.startswith('0')
+                     for part in (match[4] or '').split('.')), 'numeric prerelease identifiers cannot have leading zeros'
+          PYTAG
+            VERSION="$GITHUB_REF_NAME"
+            production=true
+            development=false
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            VERSION="$MANUAL_VERSION"
+            if [[ "$MODE" == benchmark ]]; then
+              test "${#VERSION}" -le 59 # Leave room for .next.
+            fi
+            if [[ -n "$NIXPKGS_REV" ]]; then
+              test "$MODE" = benchmark
+              [[ "$NIXPKGS_REV" =~ ^[0-9a-f]{40}$ ]]
+              current=$(python3 -c 'import json; lock=json.load(open("flake.lock")); print(lock["nodes"][lock["nodes"]["root"]["inputs"]["nixpkgs"]]["locked"]["rev"])')
+              test "$NIXPKGS_REV" != "$current"
+            fi
+          fi
+          [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]
+          printf 'version=%s\nproduction=%s\ndevelopment=%s\n' "$VERSION" "$production" "$development" >> "$GITHUB_OUTPUT"
+      - run: mkdir -p "$TMPDIR"
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            extra-substituters = https://nabos.cachix.org
+            extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
+            allow-import-from-derivation = false
+      - name: Parse, evaluate both configurations without builds, check metrics parser
+        run: |
+          python3 image/cache-report.py --self-test
+          bash -n image/build.sh image/test.sh image/test-artifact.sh image/test-runtime.sh image/benchmark.sh
+          while IFS= read -r file; do nix-instantiate --parse "$file" >/dev/null; done < <(find nix -name '*.nix' -print)
+          nix-instantiate --parse flake.nix >/dev/null
+          nix --extra-experimental-features 'nix-command flakes' flake check \
+            --no-build --all-systems --no-update-lock-file
+          export NABOS_FLAKE="git+file://$PWD"
+          for target in zero-armv6 zero2-arm64; do
+            export NABOS_TARGET="$target"
+            if [[ "$target" == zero-armv6 ]]; then
+              export NABOS_BUILD_SYSTEM=x86_64-linux
+            else
+              export NABOS_BUILD_SYSTEM=aarch64-linux
+            fi
+            nix --extra-experimental-features 'nix-command flakes' eval --impure --raw \
+              --option allow-import-from-derivation false --expr '
+                let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE");
+                    p = f.lib.mkImage {
+                      buildSystem = builtins.getEnv "NABOS_BUILD_SYSTEM";
+                      target = builtins.getEnv "NABOS_TARGET";
+                      version = "dev-nixos";
+                    };
+                in p.payload.drvPath'
+          done
   test:
+    needs: check
     uses: ./.github/workflows/tests.yml
-  go:
-    uses: ./.github/workflows/go.yml
-  rust:
-    uses: ./.github/workflows/rust.yml
-  device-core:
-    uses: ./.github/workflows/device-core.yml
-  uboot:
-    uses: ./.github/workflows/uboot.yml
-  uboot-sandbox:
-    uses: ./.github/workflows/uboot-sandbox.yml
   build:
-    needs: [test, go, rust, device-core, uboot]
+    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'build'
+    needs: [check, test]
     strategy:
       fail-fast: false
       matrix:
@@ -56,35 +127,26 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.27.1'
-          cache-dependency-path: services/go.sum
-      - name: Build dependencies
-        run: bash image/host-deps.sh
-      - name: Prepared base identity
-        id: base-cache
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          NABOS_BASE_CACHE_EPOCH=$(date -u +%F)
-          export NABOS_BASE_CACHE_EPOCH
-          key=$(bash image/base-cache.sh key "$TARGET")
-          printf 'NABOS_BASE_CACHE_EPOCH=%s\n' "$NABOS_BASE_CACHE_EPOCH" >> "$GITHUB_ENV"
-          printf 'key=%s\n' "$key" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+          persist-credentials: false
+      - run: mkdir -p "$TMPDIR"
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
-          path: build/cache/base/${{ matrix.target }}
-          key: prepared-base-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-cache.outputs.key }}
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+          extra_nix_config: |
+            extra-substituters = https://nabos.cachix.org
+            extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'))
         with:
-          pattern: '*-${{ matrix.target }}'
-          path: build/components
-          merge-multiple: true
-      - name: Prepare signing material
-        if: startsWith(github.ref, 'refs/tags/v')
+          name: nabos
+          skipPush: true
+      - name: Prepare production signing material
+        if: github.repository == 'guilhem/nabos' && github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'
         env:
           SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
           SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
@@ -94,35 +156,48 @@ jobs:
           test -n "$SIGNING_CERT"
           printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/rauc-key.pem"
           printf '%s\n' "$SIGNING_CERT" > "$RUNNER_TEMP/rauc-cert.pem"
-      - name: Assemble, sign and compress image
+      - name: Assemble, sign and compress the NixOS image
         env:
-          TARGET: ${{ matrix.target }}
           RAUC_KEY: ${{ runner.temp }}/rauc-key.pem
           RAUC_CERT: ${{ runner.temp }}/rauc-cert.pem
+          PRODUCTION: ${{ needs.check.outputs.production }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            bash image/build.sh "$TARGET" "$GITHUB_REF_NAME" --components build/components --defer-tests
+          if [[ "$PRODUCTION" == true ]]; then
+            bash image/build.sh "$TARGET" "$VERSION" --defer-tests
           else
-            bash image/build.sh "$TARGET" "dev-${GITHUB_SHA:0:12}" --development --components build/components --defer-tests
+            bash image/build.sh "$TARGET" "$VERSION" --development --defer-tests
           fi
-      - name: Remove signing key
+      - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/rauc-key.pem" "$RUNNER_TEMP/rauc-cert.pem"
+      - name: Publish only system and U-Boot runtime closures
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'))
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHE: ${{ vars.CACHIX_CACHE }}
+        run: |
+          test "$CACHE" = nabos
+          test -n "$CACHIX_AUTH_TOKEN"
+          # The cache's official-cache exclusion omits cache.nixos.org paths.
+          # Explicit runtime roots exclude payloads, SD images, bundles and dev shells.
+          cachix push "$CACHE" < "dist/$TARGET/cache-roots-$TARGET"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nabos-${{ matrix.target }}
-          path: dist/${{ matrix.target }}/
+          path: |
+            dist/${{ matrix.target }}/nabos-${{ matrix.target }}.img.xz
+            dist/${{ matrix.target }}/nabos-${{ matrix.target }}.raucb
+            dist/${{ matrix.target }}/ca-${{ matrix.target }}.cert.pem
+            dist/${{ matrix.target }}/flake-${{ matrix.target }}.lock
+            dist/${{ matrix.target }}/boot-${{ matrix.target }}.cmd
+            dist/${{ matrix.target }}/cache-roots-${{ matrix.target }}
+            dist/${{ matrix.target }}/build-${{ matrix.target }}.json
+            dist/${{ matrix.target }}/SHA256SUMS-${{ matrix.target }}
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: failure()
-        with:
-          name: diagnostics-${{ matrix.target }}
-          path: dist/${{ matrix.target }}/*.txt
-          retention-days: 7
   image-test:
-    needs: [build, uboot-sandbox]
+    needs: [check, build]
     strategy:
       fail-fast: false
       matrix:
@@ -134,40 +209,218 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
-      GOCACHE: ${{ github.workspace }}/build/cache/image-tests/${{ matrix.target }}/go
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.27.1'
-          cache: false
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+          persist-credentials: false
+      - run: mkdir -p "$TMPDIR"
+      - name: Install privileged artifact runtime test dependencies
+        run: |
+          sudo apt-get update
+          packages=(util-linux)
+          if [[ "$TARGET" == zero-armv6 ]]; then
+            packages+=(qemu-user-static qemu-user)
+          fi
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+          if [[ "$TARGET" == zero-armv6 ]]; then
+            sudo systemctl restart systemd-binfmt
+            test -x /usr/bin/qemu-arm-static
+            grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-arm
+            # F keeps the host interpreter available inside the read-only root.
+            grep -Eq '^flags:.*F' /proc/sys/fs/binfmt_misc/qemu-arm
+          fi
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
-          path: ${{ env.GOCACHE }}
-          key: image-tests-go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-1.27.1-${{ hashFiles('services/go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            image-tests-go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-1.27.1-${{ hashFiles('services/go.sum') }}-
-      - name: Test dependencies
-        run: bash image/host-deps.sh
+          extra_nix_config: |
+            extra-substituters = https://nabos.cachix.org
+            extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: nabos-${{ matrix.target }}
           path: dist/${{ matrix.target }}
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: uboot-${{ matrix.target }}
-          path: build/components
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: uboot-sandbox-${{ matrix.target }}
-          path: build/components
-      - name: Verify the built image with the prebuilt sandbox
+      - name: Prepare expected production trust anchor
+        if: github.repository == 'guilhem/nabos' && github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'
         env:
-          TARGET: ${{ matrix.target }}
-        run: bash image/test-artifact.sh "$TARGET" "dist/$TARGET" build/components
+          SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
+        run: |
+          umask 077
+          test -n "$SIGNING_CERT"
+          printf '%s\n' "$SIGNING_CERT" > "$RUNNER_TEMP/rauc-expected-cert.pem"
+      - name: Validate downloaded image, read-only runtime, RAUC bundle and U-Boot slots
+        env:
+          EXPECTED_VERSION: ${{ needs.check.outputs.version }}
+          EXPECTED_DEVELOPMENT: ${{ needs.check.outputs.development }}
+          EXPECTED_RAUC_CERT: ${{ needs.check.outputs.production == 'true' && format('{0}/rauc-expected-cert.pem', runner.temp) || '' }}
+        run: bash image/test-artifact.sh "$TARGET" "dist/$TARGET"
+      - name: Remove expected production certificate
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rauc-expected-cert.pem"
+  seed:
+    if: github.repository == 'guilhem/nabos' && github.event_name == 'workflow_dispatch' && inputs.mode == 'benchmark'
+    needs: [check, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: zero-armv6
+            runner: ubuntu-24.04
+          - target: zero2-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: mkdir -p "$TMPDIR"
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            extra-substituters = https://nabos.cachix.org
+            extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: nabos
+          skipPush: true
+      - name: Measure cold runtime closures
+        run: |
+          bash image/benchmark.sh cold "$TARGET" "$VERSION"
+          directory="dist/measurements/$TARGET/cold"
+          python3 image/cache-report.py "$directory/cache-roots.txt" --output "$directory/cache-before-push.json"
+      - name: Publish only runtime closures and verify publication
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHE: ${{ vars.CACHIX_CACHE }}
+        run: |
+          test "$CACHE" = nabos
+          test -n "$CACHIX_AUTH_TOKEN"
+          directory="dist/measurements/$TARGET/cold"
+          # Cachix's official-cache exclusion skips upstream binaries.
+          cachix push "$CACHE" < "$directory/cache-roots.txt"
+          python3 image/cache-report.py "$directory/cache-roots.txt" --require-published \
+            --output "$directory/cache-after-push.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: nabos-benchmark-${{ matrix.target }}-cold
+          path: dist/measurements/${{ matrix.target }}/cold/
+          compression-level: 0
+          if-no-files-found: warn
+          retention-days: 7
+  warm:
+    if: github.repository == 'guilhem/nabos' && github.event_name == 'workflow_dispatch' && inputs.mode == 'benchmark'
+    needs: seed
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [zero-armv6, zero2-arm64]
+        phase: ${{ fromJSON(inputs.nixpkgs_rev != '' && '["warm","version","nixpkgs"]' || '["warm","version"]') }}
+        include:
+          - target: zero-armv6
+            runner: ubuntu-24.04
+          - target: zero2-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    env:
+      TARGET: ${{ matrix.target }}
+      PHASE: ${{ matrix.phase }}
+      VERSION: ${{ inputs.version }}
+      NIXPKGS_REV: ${{ inputs.nixpkgs_rev }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: mkdir -p "$TMPDIR"
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            extra-substituters = https://nabos.cachix.org
+            extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: nabos
+          skipPush: true
+      - name: Measure on a fresh runner with no restored Nix store
+        run: |
+          if [[ "$PHASE" == version ]]; then VERSION="$VERSION.next"; fi
+          if [[ "$PHASE" == nixpkgs ]]; then
+            [[ "$NIXPKGS_REV" =~ ^[0-9a-f]{40}$ ]]
+            current=$(python3 -c 'import json; lock=json.load(open("flake.lock")); print(lock["nodes"][lock["nodes"]["root"]["inputs"]["nixpkgs"]]["locked"]["rev"])')
+            test "$NIXPKGS_REV" != "$current"
+            nix --extra-experimental-features 'nix-command flakes' flake lock \
+              --override-input nixpkgs "github:NixOS/nixpkgs/$NIXPKGS_REV"
+            actual=$(python3 -c 'import json; lock=json.load(open("flake.lock")); print(lock["nodes"][lock["nodes"]["root"]["inputs"]["nixpkgs"]]["locked"]["rev"])')
+            test "$actual" = "$NIXPKGS_REV"
+          fi
+          bash image/benchmark.sh "$PHASE" "$TARGET" "$VERSION"
+          directory="dist/measurements/$TARGET/$PHASE"
+          python3 image/cache-report.py "$directory/cache-roots.txt" --output "$directory/cache-before-push.json"
+          cp flake.lock "$directory/flake.lock"
+      - name: Publish measured runtime closures and read actual compressed sizes
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHE: ${{ vars.CACHIX_CACHE }}
+        run: |
+          test "$CACHE" = nabos
+          test -n "$CACHIX_AUTH_TOKEN"
+          directory="dist/measurements/$TARGET/$PHASE"
+          # Cachix's official-cache exclusion skips upstream binaries.
+          cachix push "$CACHE" < "$directory/cache-roots.txt"
+          python3 image/cache-report.py "$directory/cache-roots.txt" --require-published \
+            --output "$directory/cache-after-push.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: nabos-benchmark-${{ matrix.target }}-${{ matrix.phase }}
+          path: dist/measurements/${{ matrix.target }}/${{ matrix.phase }}/
+          compression-level: 0
+          if-no-files-found: warn
+          retention-days: 7
+  report:
+    if: always() && github.repository == 'guilhem/nabos' && github.event_name == 'workflow_dispatch' && inputs.mode == 'benchmark'
+    needs: [seed, warm]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: nabos-benchmark-*
+          path: measurements
+      - name: Recheck all expected phases for missing or evicted paths
+        env:
+          NIXPKGS_REV: ${{ inputs.nixpkgs_rev }}
+        run: |
+          phases=(cold warm version)
+          if [[ -n "$NIXPKGS_REV" ]]; then phases+=(nixpkgs); fi
+          reports=()
+          for target in zero-armv6 zero2-arm64; do
+            for phase in "${phases[@]}"; do
+              report="measurements/nabos-benchmark-$target-$phase/cache-after-push.json"
+              test -f "$report"
+              reports+=("$report")
+            done
+          done
+          python3 image/cache-report.py --merge "${reports[@]}" \
+            --require-published --output dist/cache-union.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: nabos-cache-union
+          path: dist/cache-union.json
+          if-no-files-found: warn
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, image-test]
+    if: >-
+      always() && github.repository == 'guilhem/nabos' && github.event_name == 'release' &&
+      github.event.action == 'published' && needs.check.outputs.production == 'true' && needs.check.result == 'success' &&
+      needs.test.result == 'success' && needs.build.result == 'success' && needs.image-test.result == 'success'
+    needs: [check, test, build, image-test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -176,18 +429,20 @@ jobs:
         with:
           pattern: nabos-*
           path: dist
-          merge-multiple: true
-      - name: Verify artifacts and upload to release
+      - name: Verify both targets and upload to the published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum --check SHA256SUMS-zero-armv6 SHA256SUMS-zero2-arm64
+          for target in zero-armv6 zero2-arm64; do
+            (cd "nabos-$target" && sha256sum --check --strict "SHA256SUMS-$target")
+          done
+          # Preserve target directories until both manifests have been validated.
+          cat nabos-zero-armv6/SHA256SUMS-zero-armv6 nabos-zero2-arm64/SHA256SUMS-zero2-arm64 > SHA256SUMS
           manifest=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[] | select(.name == "SHA256SUMS") | .name')
           if [[ -n $manifest ]]; then
             gh release delete-asset "$GITHUB_REF_NAME" SHA256SUMS --repo "$GITHUB_REPOSITORY" --yes
           fi
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*
-          cat SHA256SUMS-zero-armv6 SHA256SUMS-zero2-arm64 > SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber nabos-zero-armv6/* nabos-zero2-arm64/*
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS

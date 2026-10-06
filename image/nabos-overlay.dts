@@ -6,7 +6,7 @@
 };
 
 /*
- * Linux-only hardware profile. image/prepare.sh merges it at build time into
+ * Linux-only hardware profile. NixOS merges it at build time into
  * the slot's vendor DTB, which U-Boot loads for Linux; the firmware partition
  * keeps the pristine DTB for U-Boot itself. Labels are those of the locked
  * bcm2708-rpi-zero-w and bcm2710-rpi-zero-2-w DTBs.

@@ -9,9 +9,10 @@ import (
 	"testing"
 )
 
-// Check resolved phandles in the shipped overlay. Cached builds retain pristine
-// payload sources; compile provided sources only for standalone tests.
+// Check resolved phandles in the shipped overlay; compile provided sources
+// only for standalone tests.
 func TestVolumeOverlay(t *testing.T) {
+	checkImageInputs(t)
 	overlay := filepath.Join(os.Getenv("NABOS_IMAGE_OVERLAYS"), "tagtagtag-sound.dtbo")
 	tools := []string{"fdtoverlay", "fdtget"}
 	if os.Getenv("NABOS_IMAGE_OVERLAYS") == "" {
@@ -19,7 +20,7 @@ func TestVolumeOverlay(t *testing.T) {
 	}
 	for _, tool := range tools {
 		if _, err := exec.LookPath(tool); err != nil {
-			if os.Getenv("NABOS_IMAGE_BOOT") != "" {
+			if actualImage() {
 				t.Fatal(err)
 			}
 			t.Skipf("%s unavailable", tool)
@@ -28,7 +29,7 @@ func TestVolumeOverlay(t *testing.T) {
 	if os.Getenv("NABOS_IMAGE_OVERLAYS") == "" {
 		dts := find(filepath.Join(sources, "sound"), "tagtagtag-sound-overlay.dts")
 		if len(dts) != 1 {
-			if os.Getenv("NABOS_IMAGE_BOOT") != "" {
+			if actualImage() {
 				t.Fatalf("expected one sound overlay source, got %v", dts)
 			}
 			t.Skip("sound source unavailable (set NABOS_SOURCES)")
@@ -44,11 +45,15 @@ func TestVolumeOverlay(t *testing.T) {
 		run(t, "", "fdtoverlay", "-i", base, "-o", resolved, overlay)
 		checkVolumeTree(t, base, resolved)
 	}
-	for _, target := range []string{"zero-armv6", "zero2-arm64"} {
+	targets := []string{"zero-armv6", "zero2-arm64"}
+	if target := os.Getenv("NABOS_IMAGE_TARGET"); target != "" {
+		targets = []string{target}
+	}
+	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
 			base := filepath.Join(vendorDTBs, dtbs[target])
 			if _, err := os.Stat(base); err != nil {
-				if os.Getenv("NABOS_IMAGE_TARGET") == target {
+				if os.Getenv("NABOS_IMAGE_TARGET") == target || os.Getenv("NABOS_VENDOR_DTBS") != "" {
 					t.Fatal(err)
 				}
 				t.Skipf("vendor DTB unavailable: %s", base)

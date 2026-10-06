@@ -1,6 +1,6 @@
 # Hardware access for nab-hardware; see nab-hardware.service.
 SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"
-# Final assignments keep Raspberry Pi OS's later i2c group rule from overriding this.
+# Final assignments prevent other rules from overriding the hardware group.
 SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="0660", TAG+="systemd"
 # sysfs attributes have no device node: grant only the five rabbit LEDs.
 SUBSYSTEM=="leds", KERNEL=="multi:indicator-[0-4]", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/sys/class/leds/%k", RUN+="/usr/bin/chgrp nab-hardware /sys%p/brightness /sys%p/multi_intensity", RUN+="/usr/bin/chmod g+w /sys%p/brightness /sys%p/multi_intensity"

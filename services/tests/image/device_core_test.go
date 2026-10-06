@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -38,32 +39,21 @@ func TestDeviceCoreImageContract(t *testing.T) {
 	if !strings.Contains(policy, `<deny own="io.github.guilhem.DeviceCore1"/>`) || !strings.Contains(policy, `<policy user="device-core">`) {
 		t.Error("missing default deny/service-account policy")
 	}
-	for _, file := range []string{"etc/systemd/system/ssh.service.d/nabos.conf", "etc/ssh/sshd_config.d/00-nabos.conf"} {
-		if !strings.Contains(read(t, filepath.Join(rootfsDir, file)), "/data/device-core/ssh/authorized_keys") {
-			t.Errorf("SSH path in %s", file)
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	for _, required := range []string{
+		`authorizedKeysCommand = "${pkgs.coreutils}/bin/cat /data/device-core/ssh/authorized_keys";`,
+		`authorizedKeysCommandUser = "device-core";`, `ConditionFileNotEmpty = "/data/device-core/ssh/authorized_keys";`,
+		`ConditionPathExists = "!/data/.volatile";`, `name = mkForce "ssh.service";`,
+		`DEVICE_CORE_IMAGE_VERSION=${nabosVersion}`, `DEVICE_CORE_UPDATE_REPO=guilhem/nabos`,
+		`DEVICE_CORE_UPDATE_ASSET=nabos-${nabosTarget}.raucb`,
+	} {
+		if !strings.Contains(config, required) {
+			t.Errorf("NixOS configuration lacks %q", required)
 		}
 	}
 	voice := read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/linux-voice-assistant.service"))
 	if !strings.Contains(voice, "ConditionPathExists=/data/device-core/voice-enabled") || !strings.Contains(voice, "--preferences-file /var/lib/nabos/lva/preferences.json") {
 		t.Error("voice flag/preferences contract")
-	}
-	build := read(t, filepath.Join(imageDir, "build.sh"))
-	for _, required := range []string{"for component in go rust device-core uboot", "verify-device-core", `"$root/usr/bin/device-core"`, "DEVICE_CORE_IMAGE_VERSION", "DEVICE_CORE_UPDATE_REPO", "device_core_revision", "device_core_archive_sha256", "device_core_binary_sha256"} {
-		if !strings.Contains(build, required) {
-			t.Errorf("build lacks %q", required)
-		}
-	}
-	makefile := read(t, filepath.Join(repo, "Makefile"))
-	for _, required := range []string{
-		"$$out/inputs/$$component", "$$inputs/$$component/Cargo.lock", "$$inputs/$$component/cargo-vendor", "$$repo/build/sysroot/$$component/$$target", "--locked --offline", "export RUST_COMPONENT = nab-hardware", `"$$out/nabos" ./cmd/nabos`, "if [[ $$component == nab-hardware ]]", "--exclude=./.source", "cc_key=CC_$${rust_target//-/_}", `"$$cc_key=$$linker"`,
-		`cargo vendor --locked --manifest-path "$$source/Cargo.toml" "$$component_inputs/cargo-vendor" > "$$component_inputs/cargo-vendor.toml"`,
-		`cp "$$inputs/$$component/cargo-vendor.toml" "$$component_inputs/"`,
-		`cargo --config "$$component_inputs/cargo-vendor.toml"`,
-		`--config "source.vendored-sources.directory=\"$$component_inputs/cargo-vendor\""`,
-	} {
-		if !strings.Contains(makefile, required) {
-			t.Errorf("Make lacks %q", required)
-		}
 	}
 }
 
@@ -126,9 +116,15 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 			t.Errorf("obsolete file remains: %s", file)
 		}
 	}
-	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
-	if !strings.Contains(prepare, "usermod -G '' nabos") {
-		t.Error("operator account must not inherit hardware groups")
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	operator := regexp.MustCompile(`(?s)nabos = \{(.*?)\};`).FindStringSubmatch(config)
+	if operator == nil || strings.Contains(operator[1], "extraGroups") {
+		t.Error("operator must not inherit hardware groups")
+	}
+	for _, required := range []string{`nab-hardware = fixedUser 1002 "/run/nab-hardware" [ "gpio" ];`, `nab-hardware.gid = 1002;`, `createHome = false;`, `hashedPassword = "!";`} {
+		if !strings.Contains(config, required) {
+			t.Errorf("NixOS account configuration lacks %s", required)
+		}
 	}
 	udev := read(t, filepath.Join(rootfsDir, "etc/udev/rules.d/60-nabos.rules"))
 	i2cRule := `SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="0660", TAG+="systemd"`
@@ -163,9 +159,6 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 			t.Errorf("missing hardware bus policy %s", rule)
 		}
 	}
-	if !strings.Contains(prepare, "nab-hardware:1002") || !strings.Contains(prepare, "--user-group --no-create-home") {
-		t.Error("hardware needs its fixed private account and primary group")
-	}
 }
 
 func TestDeviceCorePrivateDevices(t *testing.T) {
@@ -180,50 +173,41 @@ func TestDeviceCorePrivateDevices(t *testing.T) {
 			t.Errorf("device access restored by %q", forbidden)
 		}
 	}
-	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
-	setup := read(t, filepath.Join(rootfsDir, "usr/lib/nabos/image-setup"))
-	if !strings.Contains(prepare, "pipewire-alsa") || !strings.Contains(setup, "systemctl --global enable pipewire.service pipewire.socket") {
-		t.Fatal("device-core audio requires the PipeWire ALSA plugin and user session")
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	for _, required := range []string{`alsa.enable = true; pulse.enable = true;`, `systemd.user.services.pipewire = { wantedBy = [ "default.target" ];`, `systemd.user.services.pipewire-pulse = { wantedBy = [ "default.target" ];`, `ConditionUser = [ "" "nab-audio" ];`, `touch $out/var/lib/systemd/linger/nab-audio`} {
+		if !strings.Contains(config, required) {
+			t.Errorf("PipeWire user session configuration lacks %s", required)
+		}
 	}
 }
 
 func TestLVAUnitAdvertisedOnlyWhenInstalled(t *testing.T) {
-	setup := read(t, filepath.Join(rootfsDir, "usr/lib/nabos/image-setup"))
-	_, block, ok := strings.Cut(setup, "# Advertise Voice only when finalize installed its executable environment.\n")
-	if !ok {
-		t.Fatal("LVA availability check missing")
-	}
-	block, _, ok = strings.Cut(block, "\n# pi-gen soft-blocks")
-	if !ok {
-		t.Fatal("end of LVA availability check missing")
-	}
-	for _, scenario := range []struct {
-		name      string
-		installed bool
-		mode      os.FileMode
-		want      string
-	}{
-		{"absent", false, 0, ""},
-		{"not-executable", true, 0o644, ""},
-		{"installed", true, 0o755, "linux-voice-assistant.service"},
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	for _, required := range []string{
+		`hasVoice = nabosTarget == "zero2-arm64" && packages.lva != null;`,
+		`linux-voice-assistant = mkIf hasVoice {`,
+		`DEVICE_CORE_LVA_UNIT=${lib.optionalString hasVoice "linux-voice-assistant.service"}`,
+		`rm $out/lib/systemd/system/linux-voice-assistant.service`,
 	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			python := filepath.Join(tmp, "python")
-			release := filepath.Join(tmp, "release.env")
-			write(t, release, "NABOS_VERSION=test\n")
-			if scenario.installed {
-				if err := os.WriteFile(python, []byte("#!/bin/sh\n"), scenario.mode); err != nil {
-					t.Fatal(err)
-				}
-			}
-			script := strings.ReplaceAll(block, "/opt/linux-voice-assistant/.venv/bin/python", python)
-			script = strings.ReplaceAll(script, "/etc/nabos/release.env", release)
-			run(t, "", "bash", "-euo", "pipefail", "-c", script)
-			if got := read(t, release); got != "NABOS_VERSION=test\nDEVICE_CORE_LVA_UNIT="+scenario.want+"\n" {
-				t.Fatalf("unexpected release environment: %q", got)
-			}
-		})
+		if !strings.Contains(config, required) {
+			t.Errorf("LVA availability lacks %s", required)
+		}
+	}
+}
+
+func TestFixedServiceAccounts(t *testing.T) {
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	for _, required := range []string{
+		`uid = 1000; group = "nabos";`, `home = "/var/lib/nabos"; createHome = false;`,
+		`nab-app = fixedUser 1001 "/data/nabos" [ "nab-media" ];`,
+		`device-core = fixedUser 1003 "/data/device-core" [ "nab-media" "nab-audio" ];`,
+		`nab-audio = fixedUser 1004 "/var/lib/nabos/lva" [ "audio" ];`,
+		`group = (builtins.elemAt [ "nab-app" "nab-hardware" "device-core" "nab-audio" ] (uid - 1001));`,
+		`nabos.gid = 1000;`, `nab-app.gid = 1001;`, `device-core.gid = 1003;`, `nab-audio.gid = 1004;`,
+	} {
+		if !strings.Contains(config, required) {
+			t.Errorf("fixed account configuration lacks %s", required)
+		}
 	}
 }
 

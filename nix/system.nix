@@ -6,13 +6,7 @@ let
   hasVoice = nabosTarget == "zero2-arm64" && packages.lva != null;
   lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
   compatible = lock.targets.${nabosTarget}.compatible;
-  # Keep the deployed /data/system layout shared with the existing image.
-  bootLibrary = pkgs.writeText "nabos-boot-init-library" (
-    lib.replaceStrings
-      [ " /var/lib/nabos\"" ]
-      [ " /var/lib/nabos /var/lib/systemd/linger\"" ]
-      (builtins.readFile (rootfs + "/usr/lib/nabos/boot-init"))
-  );
+  persistLibrary = pkgs.writeText "nabos-persist-library" (builtins.readFile ./runtime/persist.sh);
   tools = with pkgs; [ coreutils util-linux e2fsprogs gnugrep gawk systemd curl
     ubootTools rauc openssh alsa-utils mpg123 wireplumber pulseaudio ];
   stateSeeds = pkgs.runCommand "nabos-persistent-defaults" { } ''
@@ -26,25 +20,14 @@ let
   '';
   persist = pkgs.writeShellScript "nabos-initrd-persist" ''
     export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.gnugrep pkgs.findutils ]}
-    export NABOS_BOOT_INIT=${bootLibrary}
+    export NABOS_PERSIST_LIB=${persistLibrary}
     export NABOS_STATE_SEEDS=${stateSeeds}
     ${builtins.readFile ./runtime/initrd-persist.sh}
   '';
   health = pkgs.writeShellScript "nabos-health" ''
     export PATH=${lib.makeBinPath tools}
     ${lib.replaceStrings
-      [ "/usr/lib/nabos/boot-init" "persistent() {\n" ]
-      [ "${bootLibrary}" ''persistent() {
-          case $slot in A) root_part=2 ;; B) root_part=3 ;; esac
-          [ "$(findmnt -n -o SOURCE,FSTYPE --mountpoint /)" = "/dev/mmcblk0p$root_part ext4" ] ||
-              { reason="root is not the booted A/B slot"; return 1; }
-          for readonly in / /etc; do
-              case ,$(findmnt -n -o OPTIONS --mountpoint "$readonly"), in
-                  *,ro,*) ;;
-                  *) reason="$readonly is not read-only"; return 1 ;;
-              esac
-          done
-      '' ]
+      [ "/usr/lib/nabos/persist.sh" ] [ "${persistLibrary}" ]
       (builtins.readFile (rootfs + "/usr/lib/nabos/health"))}
   '';
   manual = pkgs.writeShellScript "nabos-rauc-manual" ''
@@ -52,7 +35,8 @@ let
     ${builtins.readFile (rootfs + "/usr/lib/nabos/rauc-manual")}
   '';
   postInstall = pkgs.writeShellScript "nabos-rauc-post-install" ''
-    exec ${pkgs.coreutils}/bin/sync /dev/mmcblk0
+    export PATH=${lib.makeBinPath [ pkgs.coreutils ]}
+    ${builtins.readFile (rootfs + "/usr/lib/nabos/rauc-post-install")}
   '';
   # Reuse the complete source units, including their confinement and dependencies.
   runtimeUnits = pkgs.runCommand "nabos-runtime-units" { } ''
@@ -129,6 +113,8 @@ in
   system.nixos.label = "nabos-${nabosVersion}";
   system.nixos-init.enable = true;
   system.activatable = false;
+  # The initrd discards references; also ship defaults in the root closure.
+  system.extraDependencies = [ stateSeeds ];
   # Image assembly precreates these symlinks on the read-only root.
   environment.binsh = null;
   environment.usrbinenv = null;

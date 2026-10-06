@@ -5,21 +5,7 @@ let
   arm64 = target == "zero2-arm64";
   dtb = if arm64 then "bcm2710-rpi-zero-2-w.dtb" else "bcm2708-rpi-zero-w.dtb";
   kernel = config.boot.kernelPackages.kernel;
-  originalBoot = builtins.readFile ../image/boot/boot.cmd;
-  replacements = [
-    { from = "setenv bootargs \"root=";
-      to = "if load \${devtype} \${devnum}:\${nabos_part} \${pxefile_addr_r} /boot/init; then env import -t \${pxefile_addr_r} \${filesize} nabos_init nabos_kernel_params; else echo \"nabos: missing slot init\"; exit; fi; setenv bootargs \"\${nabos_kernel_params} root="; }
-    { from = "init=/usr/lib/nabos/boot-init"; to = "init=\${nabos_init}"; }
-    { from = "/boot/dtb/\${nabos_dtb}; then run nabos_overlays";
-      to = "/boot/dtb/\${nabos_dtb} && load \${devtype} \${devnum}:\${nabos_part} \${ramdisk_addr_r} /boot/initrd; then setenv nabos_initrd_size \${filesize}; run nabos_overlays"; }
-    { from = "booti \${kernel_addr_r} - \${fdt_addr_r}";
-      to = "booti \${kernel_addr_r} \${ramdisk_addr_r}:\${nabos_initrd_size} \${fdt_addr_r}"; }
-    { from = "bootz \${kernel_addr_r} - \${fdt_addr_r}";
-      to = "bootz \${kernel_addr_r} \${ramdisk_addr_r}:\${nabos_initrd_size} \${fdt_addr_r}"; }
-  ];
-  bootScript = assert lib.all (r: lib.hasInfix r.from originalBoot) replacements;
-    pkgs.writeText "nabos-nixos-boot.cmd"
-      (builtins.replaceStrings (map (r: r.from) replacements) (map (r: r.to) replacements) originalBoot);
+  bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);
   rootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-ext4-fs.nix") {
     storePaths = [ config.system.build.toplevel ];
     volumeLabel = "nabos-root";

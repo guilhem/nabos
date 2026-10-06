@@ -21,19 +21,19 @@ External components
 
 device-core is an independent GPL-3.0-only Rust/Linux service, pinned by
 repository, commit archive and SHA-256 in image/sources.lock.json. Its LICENSE
-and NOTICE are installed under /usr/share/doc/device-core; its source, Cargo.lock
-and vendored dependencies belong to the archived build inputs, not the runtime
-filesystem.
+and NOTICE must accompany the distributed binaries. Nix resolves its source
+and build dependencies from the pinned inputs; build sources and dependency
+caches are not part of the runtime closure.
 
 Drivers, U-Boot, Linux Voice Assistant and their dependencies keep
-their respective licenses. Their pinned sources are listed in
-image/sources.lock.json; build input archives include the upstream sources.
-Raspberry Pi OS supplies the Raspberry Pi firmware under its own terms.
+their respective licenses. Their sources are pinned by the Nix expressions,
+flake.lock and image/sources.lock.json. Raspberry Pi firmware is distributed
+under its own terms.
 
 The cr14 and st25r391x Rust userspace reader libraries are independent MIT
 implementations from https://github.com/guilhem/cr14 and
 https://github.com/guilhem/st25r391x. Their exact revisions are pinned in
-core/Cargo.toml and core/Cargo.lock; their sources are archived by cargo vendor.
+core/Cargo.toml and core/Cargo.lock and resolved by the Nix package expressions.
 Both libraries carry the following notice:
 
 MIT License

@@ -1,7 +1,8 @@
+# shellcheck shell=sh
 # Runs after the immutable /etc overlay and the separate /var tmpfs exist.
-# Reuse only boot-init's data checking/growth; this is not a second PID 1.
 set -eu
-NABOS_BOOT_INIT_LIB=1 . "$NABOS_BOOT_INIT"
+# shellcheck disable=SC1090
+. "$NABOS_PERSIST_LIB"
 
 tries=0
 while [ ! -b "$DATA" ] && [ "$tries" -lt 50 ]; do

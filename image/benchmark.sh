@@ -2,7 +2,7 @@
 # Build only the runtime cache roots; SD images/signatures are deliberately outside this timer.
 set -euo pipefail
 if [[ $# != 3 ]]; then
-  echo "Usage: bash image/nix-benchmark.sh cold|warm|version|nixpkgs TARGET VERSION" >&2
+  echo "Usage: bash image/benchmark.sh cold|warm|version|nixpkgs TARGET VERSION" >&2
   exit 2
 fi
 phase=$1 target=$2 version=$3
@@ -12,14 +12,14 @@ case "$target" in zero-armv6|zero2-arm64) ;; *) exit 2 ;; esac
 cd "$(dirname "$0")/.."
 export TMPDIR="$PWD/build/nix-tmp"
 mkdir -p "$TMPDIR"
-out="$PWD/dist/nixos/measurements/$target/$phase"
+out="$PWD/dist/measurements/$target/$phase"
 mkdir -p "$out"
 export NABOS_FLAKE="git+file://$PWD" NABOS_TARGET="$target" NABOS_VERSION="$version"
 nix_cmd=(nix --extra-experimental-features 'nix-command flakes')
 build_system=$("${nix_cmd[@]}" eval --impure --raw --expr builtins.currentSystem)
 export NABOS_BUILD_SYSTEM="$build_system"
 expr='let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE");
-  p = f.lib.mkPrototype {
+  p = f.lib.mkImage {
     buildSystem = builtins.getEnv "NABOS_BUILD_SYSTEM";
     target = builtins.getEnv "NABOS_TARGET";
     version = builtins.getEnv "NABOS_VERSION";

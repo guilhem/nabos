@@ -74,7 +74,7 @@ schedules, tags and media stay under `/data/nabos` (`application.json`).
 Settings writes are atomic and mode 0600. Uploaded sounds use mode 0640 so
 device-core can read them through `nab-media`; boot also updates existing sounds.
 The operator home and LVA files
-remain under `/var/lib/nabos`, bound from `/data/system` by `boot-init`.
+remain under `/var/lib/nabos`, bound from `/data/system` by the NixOS initrd.
 There is no migration of the former MQTT protocol, API names or settings.
 
 ## Configuration

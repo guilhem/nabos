@@ -1,35 +1,52 @@
-#!/bin/bash
-# Verify the exact image artifact produced by a previous CI job.
+#!/usr/bin/env bash
+# Revalidate the exact downloaded outputs; testing never modifies the artifacts.
 set -euo pipefail
-[[ $# == 3 ]] || { echo 'Usage: image/test-artifact.sh TARGET ARTIFACTS COMPONENTS' >&2; exit 2; }
+[[ $# == 2 ]] || { echo 'Usage: bash image/test-artifact.sh TARGET ARTIFACTS' >&2; exit 2; }
 target=$1
 [[ $target == zero-armv6 || $target == zero2-arm64 ]] || exit 2
 repo=$(cd "$(dirname "$0")/.." && pwd)
 artifacts=$(realpath "$2")
-components=$(realpath "$3")
-GO=${GO:-go}
-revision=$(git -C "$repo" rev-parse HEAD)
+mkdir -p "$repo/build/nix-tmp"
+export TMPDIR="$repo/build/nix-tmp"
+if [[ ${NABOS_NIX_SHELL:-} != 1 ]]; then
+  exec nix --extra-experimental-features 'nix-command flakes' develop "$repo" \
+    --command env NABOS_NIX_SHELL=1 bash "$0" "$target" "$artifacts"
+fi
+: "${EXPECTED_VERSION:?Expected version required}" "${EXPECTED_DEVELOPMENT:?Expected development flag required}"
 (cd "$artifacts" && sha256sum --check --strict "SHA256SUMS-$target")
-jq -e --arg target "$target" --arg revision "$revision" \
-  '.target == $target and .source_revision == $revision and .source_dirty == false' \
+jq -e --arg target "$target" --arg revision "$(git -C "$repo" rev-parse HEAD)" \
+  --arg version "$EXPECTED_VERSION" --argjson development "$EXPECTED_DEVELOPMENT" \
+  --arg nixpkgs "$(jq -r '.nodes[.nodes.root.inputs.nixpkgs].locked.rev' "$repo/flake.lock")" \
+  '.target == $target and .source_revision == $revision and .source_dirty == false and
+   .version == $version and .development == $development and .nixpkgs_revision == $nixpkgs' \
   "$artifacts/build-$target.json" >/dev/null
-mkdir -p "$repo/build/iot"
-nab_image=$repo/build/iot/nab-image
-(cd "$repo/services" && GOTOOLCHAIN=local CGO_ENABLED=0 "$GO" build -o "$nab_image" ./cmd/nab-image)
-work=$(mktemp -d "$repo/build/iot/artifact-$target.XXXXXX")
+cmp "$repo/flake.lock" "$artifacts/flake-$target.lock"
+cmp "$repo/image/boot/boot.cmd" "$artifacts/boot-$target.cmd"
+certificate=$artifacts/ca-$target.cert.pem
+if [[ $EXPECTED_DEVELOPMENT == false ]]; then
+  : "${EXPECTED_RAUC_CERT:?Production validation requires the expected public trust anchor}"
+  cmp "$EXPECTED_RAUC_CERT" "$certificate"
+fi
+test "$(stat -c %s "$artifacts/nabos-$target.raucb")" -le 2147483648
+work=$(mktemp -d "$TMPDIR/artifact-$target.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
-payload=$work/payload
-mkdir -p "$payload/inputs" "$payload/src"
-"$nab_image" extract "$artifacts/build-inputs-$target.tar.xz" "$payload/inputs"
-cmp "$repo/image/sources.lock.json" "$payload/inputs/sources.lock.json"
-cmp "$repo/services/go.sum" "$payload/inputs/go.sum"
-"$nab_image" unpack "$payload/inputs/sources.lock.json" "$payload/inputs" "$payload/src"
-"$nab_image" extract "$components/uboot-$target.tar" "$work/uboot"
-printf '%s\n' "$target" "$revision" | cmp - "$work/uboot/build-info"
-"$nab_image" extract "$components/uboot-sandbox-$target.tar" "$work/sandbox"
-# Keep zero-filled partitions sparse when expanding the 13.5 GiB SD image.
 xz --decompress --stdout "$artifacts/nabos-$target.img.xz" |
   dd of="$work/sdcard.img" bs=4M conv=sparse status=none
-chmod a-w "$work/sdcard.img"
-NABOS_UBOOT_SANDBOX="$work/sandbox" bash "$repo/image/test.sh" \
-  "$target" "$work/sdcard.img" "$payload" "$work/uboot/u-boot.bin"
+dd if="$work/sdcard.img" of="$work/rootfs.ext4" bs=1M skip=516 count=6144 conv=sparse status=none
+dd if="$work/sdcard.img" of="$work/boot.vfat" bs=1M skip=4 count=256 conv=sparse status=none
+dd if="$work/sdcard.img" of="$work/data.ext4" bs=1M skip=12804 count=1024 conv=sparse status=none
+dd if="$work/sdcard.img" of="$work/uboot.env" bs=64K skip=16 count=1 status=none
+chmod a-w "$work/"{sdcard.img,rootfs.ext4,boot.vfat,data.ext4,uboot.env}
+bash "$repo/image/test.sh" "$target" "$work/sdcard.img" "$work/rootfs.ext4" \
+  "$work/boot.vfat" "$artifacts/nabos-$target.raucb" "$certificate"
+mkdir "$work/boot" "$work/overlays"
+mcopy -i "$work/boot.vfat" -s '::*' "$work/boot/"
+debugfs -R "dump /boot/overlays/tagtagtag-sound.dtbo $work/overlays/tagtagtag-sound.dtbo" "$work/rootfs.ext4"
+sandbox=$(nix --extra-experimental-features 'nix-command flakes' build "$repo#uboot-sandbox" --no-link --print-out-paths)
+(cd "$sandbox" && sha256sum --check --strict SHA256SUMS)
+export NABOS_UBOOT_SANDBOX="$sandbox" NABOS_IMAGE_TARGET="$target" \
+  NABOS_IMAGE_BOOT="$work/boot" NABOS_IMAGE_ENV="$work/uboot.env" \
+  NABOS_IMAGE_DISK="$work/sdcard.img" NABOS_IMAGE_OVERLAYS="$work/overlays" \
+  NABOS_VENDOR_DTBS="$work/boot"
+(cd "$repo/services" && go test -count=1 ./tests/image)
+bash "$repo/image/test-runtime.sh" "$target" "$work/rootfs.ext4" "$work/data.ext4"

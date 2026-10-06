@@ -1,5 +1,5 @@
 {
-  description = "NabOS NixOS appliance prototype (RAUC A/B)";
+  description = "NabOS NixOS appliance (RAUC A/B)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -12,7 +12,7 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       targets = [ "zero-armv6" "zero2-arm64" ];
       forSystems = nixpkgs.lib.genAttrs systems;
-      mkPrototype = { buildSystem, target, version ? "dev-nixos" }:
+      mkImage = { buildSystem, target, version ? "dev-local" }:
         let
           arm64 = target == "zero2-arm64";
           hostPlatform = if arm64 then "aarch64-linux" else nixpkgs.lib.systems.examples.raspberryPi;
@@ -58,16 +58,29 @@
             inherit system packages target version;
           };
         in { inherit system packages payload; };
+      nativePackages = forSystems (buildSystem:
+        let pkgs = nixpkgs.legacyPackages.${buildSystem};
+        in import ./nix/packages.nix {
+          inherit pkgs;
+          target = "zero2-arm64";
+          kernelPackages = pkgs.linuxPackages;
+        });
     in {
-      lib = { inherit mkPrototype; };
+      lib = { inherit mkImage; };
       packages = forSystems (buildSystem:
         nixpkgs.lib.genAttrs targets (target:
-          (mkPrototype { inherit buildSystem target; }).payload));
+          (mkImage { inherit buildSystem target; }).payload) // {
+            device-core-native = nativePackages.${buildSystem}.device-core;
+            nab-hardware-native = nativePackages.${buildSystem}.nab-hardware;
+            nabos-native = nativePackages.${buildSystem}.nabos;
+            uboot-sandbox = nativePackages.${buildSystem}.uboot-sandbox;
+          });
       devShells = forSystems (buildSystem:
         let pkgs = nixpkgs.legacyPackages.${buildSystem};
         in { default = pkgs.mkShellNoCC {
           packages = with pkgs; [ nix cachix rauc genimage e2fsprogs dosfstools
-            mtools ubootTools openssl xz zstd jq python3 fakeroot shellcheck ];
+            mtools ubootTools openssl xz zstd jq python3 fakeroot shellcheck dtc
+            go_1_27 rustc cargo pkg-config dbus systemd util-linux ];
         }; });
     };
 }

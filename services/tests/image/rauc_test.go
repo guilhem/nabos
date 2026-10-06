@@ -19,6 +19,9 @@ func imageTools(t *testing.T, names ...string) {
 	t.Helper()
 	for _, name := range names {
 		if _, err := exec.LookPath(name); err != nil {
+			if actualImage() {
+				t.Fatal(err)
+			}
 			t.Skipf("image tool %s not installed", name)
 		}
 	}
@@ -80,7 +83,7 @@ func checkInitialCard(t *testing.T, disk string) {
 }
 
 func TestGeneratedCardLayout(t *testing.T) {
-	// The build exercises the actual assembled image too, before boot-init grows p4.
+	// The build exercises the actual assembled image too, before the initrd grows p4.
 	if disk := os.Getenv("NABOS_IMAGE_DISK"); disk != "" {
 		checkInitialCard(t, disk)
 		return
@@ -114,20 +117,11 @@ func TestGeneratedCardLayout(t *testing.T) {
 }
 
 func TestSignedCompleteBundle(t *testing.T) {
-	imageTools(t, "rauc", "openssl", "mksquashfs", "unsquashfs", "jq")
-	build := read(t, filepath.Join(imageDir, "build.sh"))
-	_, build, ok := strings.Cut(build, "mkdir \"$work/bundle\"")
-	if !ok {
-		t.Fatal("missing bundle build")
-	}
-	build, _, ok = strings.Cut(build, "echo \"$(date -u +%FT%TZ) Compressing SD image\"")
-	if !ok {
-		t.Fatal("missing end of bundle build")
-	}
+	imageTools(t, "rauc", "openssl", "mksquashfs", "unsquashfs")
 	for _, target := range []string{"zero-armv6", "zero2-arm64"} {
 		t.Run(target, func(t *testing.T) {
 			tmp := t.TempDir()
-			for _, dir := range []string{"images", "bundle"} {
+			for _, dir := range []string{"images"} {
 				if err := os.Mkdir(filepath.Join(tmp, dir), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -143,12 +137,10 @@ func TestSignedCompleteBundle(t *testing.T) {
 			}
 			cert, key := filepath.Join(tmp, "cert.pem"), filepath.Join(tmp, "key.pem")
 			run(t, "", "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=NabOS bundle test/", "-keyout", key, "-out", cert)
-			env := []string{"repo=" + repo, "work=" + tmp, "out=" + tmp, "target=" + target,
-				"compatible=nabos-" + target, "version=dev-test", "signing_key=" + key, "signing_cert=" + cert}
-			if r := execute(t, "", env, "bash", "-euo", "pipefail", "-c", build); r.code != 0 {
-				t.Fatalf("bundle creation/verification: %s%s", r.stdout, r.stderr)
+			bundle := raBundle(t, tmp, "complete", "nabos-"+target, filepath.Join(tmp, "images/rootfs.ext4"), filepath.Join(tmp, "images/boot.vfat"), key, cert)
+			if r := execute(t, "", nil, "rauc", "info", "--keyring="+cert, bundle); r.code != 0 {
+				t.Fatal(r.stderr)
 			}
-			bundle := filepath.Join(tmp, "nabos-"+target+".raucb")
 			if stat := run(t, "", "unsquashfs", "-stat", bundle); !strings.Contains(stat, "Compression zstd") {
 				t.Fatalf("bundle compression: %s", stat)
 			}
@@ -176,11 +168,21 @@ func TestSignedCompleteBundle(t *testing.T) {
 	}
 }
 
+// Exercise the shared hook consumed by Nix; inject sync failure only.
+func raucPostInstall(t *testing.T) string {
+	t.Helper()
+	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	if !strings.Contains(config, `${builtins.readFile (rootfs + "/usr/lib/nabos/rauc-post-install")}`) {
+		t.Fatal("Nix must consume the shared RAUC post-install hook")
+	}
+	return read(t, filepath.Join(rootfsDir, "usr/lib/nabos/rauc-post-install"))
+}
+
 func TestRaucPostInstallSync(t *testing.T) {
 	for _, status := range []int{0, 74} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			fake := newFakes(t, t.TempDir(), map[string]string{"sync": fmt.Sprintf("exit %d", status)})
-			r := execute(t, "", fake.env(), filepath.Join(rootfsDir, "usr/lib/nabos/rauc-post-install"))
+			r := execute(t, "", fake.env(), "sh", "-c", raucPostInstall(t))
 			if r.code != status || !slices.Equal(fake.calls(t), []string{"sync /dev/mmcblk0"}) {
 				t.Fatalf("sync result: %d, calls %q: %s", r.code, fake.calls(t), r.stderr)
 			}

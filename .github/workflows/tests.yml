@@ -4,11 +4,16 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  TMPDIR: ${{ github.workspace }}/build/nix-tmp
 jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: mkdir -p "$TMPDIR"
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.27.1'
@@ -61,13 +66,13 @@ jobs:
         run: |
           for script in ../image/*.sh; do bash -n "$script"; done
           shellcheck -x ../image/*.sh
-          for component in go rust device-core uboot; do
-            { printf 'set -euo pipefail\n'; make -C .. --no-print-directory -n "$component"; } | shellcheck -s bash -
-          done
   device-integration:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: mkdir -p "$TMPDIR"
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.27.1'
@@ -85,29 +90,32 @@ jobs:
           # Test brokers use private generated configurations and an isolated executable.
           cp /usr/sbin/mosquitto "$RUNNER_TEMP/nabos-test-mosquitto"
           printf 'MOSQUITTO=%s/nabos-test-mosquitto\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Pinned device-core
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            extra-substituters = https://nabos.cachix.org
+            extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
+      - name: Build and test pinned native Nix packages
         run: |
-          make device-core-source OUT="$PWD/build/device-core-test"
-          source=$(cat build/device-core-test/source-path)
-          export CARGO_TARGET_DIR="$PWD/build/cargo/device-core-tests"
-          cargo fmt --manifest-path "$source/Cargo.toml" --check
-          cargo clippy --locked --manifest-path "$source/Cargo.toml" --all-targets -- -D warnings
-          cargo test --locked --manifest-path "$source/Cargo.toml"
-          cargo build --locked --manifest-path "$source/Cargo.toml"
-          printf 'DEVICE_CORE_BIN=%s/debug/device-core\n' "$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+          for package in device-core nab-hardware nabos; do
+            nix --extra-experimental-features 'nix-command flakes' build \
+              --no-update-lock-file ".#$package-native" --out-link "build/$package-native"
+          done
+          {
+            printf 'DEVICE_CORE_BIN=%s/build/device-core-native/bin/device-core\n' "$PWD"
+            printf 'NABOS_HARDWARE_BIN=%s/build/nab-hardware-native/bin/nab-hardware\n' "$PWD"
+            printf 'NABOS_BIN=%s/build/nabos-native/bin/nabos\n' "$PWD"
+          } >> "$GITHUB_ENV"
       - name: Native D-Bus clients and Home Assistant MQTT fixtures
         run: |
-          cargo build --locked --manifest-path core/Cargo.toml
-          export NABOS_HARDWARE_BIN="$PWD/core/target/debug/nab-hardware"
           cargo test --locked --manifest-path core/Cargo.toml -- --ignored
           NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./cmd/nabos ./internal/rabbit ./internal/devicetest
           NABOS_INTEGRATION=1 go -C services test -race -count=1 -v ./tests/integration -run '^TestDeviceCore$'
           mkdir -p build/tests
-          go -C services build -o "$PWD/build/tests/nabos" ./cmd/nabos
           go -C services test -race -c -o "$PWD/build/tests/integration.test" ./tests/integration
           cd services
           sudo env "PATH=$PATH" "TMPDIR=/tmp" \
-            "NABOS_HARDWARE_BIN=$NABOS_HARDWARE_BIN" "NABOS_BIN=$GITHUB_WORKSPACE/build/tests/nabos" \
+            "NABOS_HARDWARE_BIN=$NABOS_HARDWARE_BIN" "NABOS_BIN=$NABOS_BIN" \
             "DEVICE_CORE_BIN=$DEVICE_CORE_BIN" "NABOS_TEST_ASSETS=$GITHUB_WORKSPACE/assets" "MOSQUITTO=$MOSQUITTO" \
             unshare --mount --net --fork --kill-child --propagation private \
             bash -s -- "$GITHUB_WORKSPACE/build/tests/integration.test" <<'NAMESPACE'

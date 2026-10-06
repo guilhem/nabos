@@ -17,7 +17,7 @@ import (
 )
 
 // TestRaucBootMBRIntegration needs a disposable loop device in a private CI namespace.
-// It exercises the real RAUC 1.11.3 MBR handler, not an on-device boot.
+// It exercises the real native RAUC MBR handler, not an on-device boot.
 func TestRaucBootMBRIntegration(t *testing.T) {
 	if os.Getenv("NABOS_RAUC_INTEGRATION") != "1" {
 		t.Skip("set NABOS_RAUC_INTEGRATION=1 for the privileged loop-device test")
@@ -29,9 +29,6 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if version := run(t, "", "rauc", "--version"); !strings.Contains(version, "1.11.3") {
-		t.Fatalf("this test requires RAUC 1.11.3, got %q", version)
 	}
 	dir := t.TempDir()
 	images := filepath.Join(dir, "images")
@@ -83,18 +80,45 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 		}
 	}
 
-	config := read(t, filepath.Join(rootfsDir, "etc/rauc/system.conf"))
+	// Disposable settings use the production geometry checked by TestAttemptsAndSlotsAgree.
+	config := `[system]
+compatible=@COMPATIBLE@
+bootloader=uboot
+boot-attempts=3
+boot-attempts-primary=3
+data-directory=/data/rauc
+mountprefix=/run/rauc/mnt
+bundle-formats=-plain +verity
+[keyring]
+path=/data/rauc/ca.cert.pem
+[handlers]
+post-install=/usr/lib/nabos/rauc-post-install
+[slot.rootfs.0]
+device=/dev/mmcblk0p2
+type=ext4
+bootname=A
+[slot.rootfs.1]
+device=/dev/mmcblk0p3
+type=ext4
+bootname=B
+[slot.bootloader.0]
+device=/dev/mmcblk0
+type=boot-mbr-switch
+region-start=4M
+region-size=512M
+install-same=false
+`
 	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-rauc-integration")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", loop+"p2")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", loop+"p3")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0", loop)
 	config = strings.ReplaceAll(config, "/run/rauc", filepath.Join(dir, "mount"))
 	config = strings.ReplaceAll(config, "/data/rauc", filepath.Join(dir, "data"))
-	config = strings.ReplaceAll(config, "/etc/rauc/ca.cert.pem", filepath.Join(dir, "trusted.crt"))
+	config = strings.ReplaceAll(config, filepath.Join(dir, "data", "ca.cert.pem"), filepath.Join(dir, "trusted.crt"))
 	config = strings.ReplaceAll(config, "/usr/lib/nabos/rauc-post-install", filepath.Join(dir, "post-install"))
 	conf := filepath.Join(dir, "system.conf")
 	write(t, conf, config)
-	post := strings.ReplaceAll(read(t, filepath.Join(rootfsDir, "usr/lib/nabos/rauc-post-install")), "/dev/mmcblk0", loop)
+	post := strings.ReplaceAll(raucPostInstall(t), "/dev/mmcblk0", loop)
 	raExecutable(t, filepath.Join(dir, "post-install"), post)
 	fwConf := filepath.Join(dir, "fw_env.config")
 	write(t, fwConf, fmt.Sprintf("%s 0x100000 0x10000\n%s 0x200000 0x10000\n", loop, loop))

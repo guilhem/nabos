@@ -1,39 +1,21 @@
 {
   "schema": 1,
   "tools": {
-    "go": "1.27.1",
-    "rust": "1.98.1",
     "uboot": "2026.07",
     "lva": "1.1.15"
   },
   "targets": {
     "zero-armv6": {
-      "arch": "armhf",
-      "rust_target": "arm-unknown-linux-gnueabihf",
-      "goarch": "arm",
       "goarm": "6",
-      "kernel_flavour": "rpi-v6",
-      "kernel_image": "kernel.img",
       "dtb": "bcm2708-rpi-zero-w.dtb",
       "uboot_defconfig": "rpi_0_w_defconfig",
-      "compatible": "nabos-zero-armv6",
-      "image_url": "https://downloads.raspberrypi.com/raspios_lite_armhf/images/raspios_lite_armhf-2026-09-15/2026-09-15-raspios-trixie-armhf-lite.img.xz",
-      "image_sha256": "c766b3fb279b95c12cb4dd22d06f8eab31972c372675d05bd0ca95b060523a7f",
-      "extract_sha256": "f6154846c674d27f61f2d91704783f105f2a8d1e40944126ca6d7f60d10644f1"
+      "compatible": "nabos-zero-armv6"
     },
     "zero2-arm64": {
-      "arch": "arm64",
-      "rust_target": "aarch64-unknown-linux-gnu",
-      "goarch": "arm64",
       "goarm": "",
-      "kernel_flavour": "rpi-v8",
-      "kernel_image": "kernel8.img",
       "dtb": "bcm2710-rpi-zero-2-w.dtb",
       "uboot_defconfig": "rpi_arm64_defconfig",
-      "compatible": "nabos-zero2-arm64",
-      "image_url": "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2026-09-15/2026-09-15-raspios-trixie-arm64-lite.img.xz",
-      "image_sha256": "cdf4f3bfac35ae947b46e4e767f935453810549779ac3290e05a6754aee627e5",
-      "extract_sha256": "49fafba626ec00e0f9800349b9edae6caf8cfc223f673b875b72ac2797ed9576"
+      "compatible": "nabos-zero2-arm64"
     }
   },
   "sources": {
