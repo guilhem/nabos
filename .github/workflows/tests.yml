@@ -61,11 +61,11 @@ jobs:
           go test -race -c -o "$RUNNER_TEMP/nabos-image-tests" .
           sudo env NABOS_RAUC_INTEGRATION=1 unshare --mount --propagation private \
             "$RUNNER_TEMP/nabos-image-tests" -test.run '^TestRaucBootMBRIntegration$' -test.v -test.timeout 10m
-      - name: Shell and protocol checks
-        working-directory: services
+      - name: Shell and runtime fixture checks
         run: |
-          for script in ../image/*.sh; do bash -n "$script"; done
-          shellcheck -x ../image/*.sh
+          for script in image/*.sh nix/runtime/*.sh; do bash -n "$script"; done
+          shellcheck -x image/*.sh nix/runtime/*.sh
+          python3 image/test-service-accounts.py --self-test
   device-integration:
     runs-on: ubuntu-24.04
     steps:
