@@ -9,7 +9,7 @@ work=$repo/build/rpi-image-gen/work
 out=$repo/dist/rpi-image-gen
 mode=${1:-build}
 [[ $mode == check || $mode == build ]] || { echo 'Usage: build.sh [check|build]' >&2; exit 2; }
-mkdir -p "$repo/build/rpi-image-gen/tmp" "$out"
+mkdir -p "$repo/build/rpi-image-gen/tmp" "$work" "$out"
 export TMPDIR=$repo/build/rpi-image-gen/tmp
 if [[ ! -d $upstream/.git ]]; then
   git init "$upstream"
@@ -33,7 +33,7 @@ awk -F '\t' '$4 != "install ok installed" || ($3 != "arm64" && $3 != "all") { pr
 for package in linux-image-rpi-v8 raspi-firmware systemd network-manager pipewire wireplumber rauc; do
   awk -F '\t' -v package="$package" '$1 == package { found=1 } END { exit !found }' "$out/packages.tsv"
 done
-if awk -F '\t' '$1 ~ /^(gcc|g\+\+|make|build-essential|linux-headers-)/ { found=1 } END { exit !found }' "$out/packages.tsv"; then
+if awk -F '\t' '$1 ~ /^((gcc|g\+\+|cpp)(-[0-9]+)?|make|build-essential|dpkg-dev|linux-headers-.*)$/ { found=1 } END { exit !found }' "$out/packages.tsv"; then
   echo 'Development packages leaked into the runtime base' >&2
   exit 1
 fi
