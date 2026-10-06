@@ -35,6 +35,21 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test -race ./...
+      - name: LED recovery with missing sysfs attributes
+        run: |
+          paths=$(sed -n 's/^ReadWritePaths=//p' image/rootfs/usr/lib/systemd/system/nab-hardware.service)
+          recovered=$(sudo systemd-run --wait --pipe --collect \
+            -p ProtectSystem=strict -p CapabilityBoundingSet= -p "ReadWritePaths=$paths" \
+            -p 'ExecStopPost=/usr/bin/printf led-cleanup-ran' /bin/true)
+          [[ $recovered == *led-cleanup-ran* ]]
+          if blocked=$(sudo systemd-run --wait --pipe --collect \
+            -p ProtectSystem=strict \
+            -p ReadWritePaths=/sys/class/leds/nabos-test-unavailable/brightness \
+            -p 'ExecStopPost=/usr/bin/printf led-cleanup-ran' /bin/true 2>&1); then
+            echo 'Mandatory missing path unexpectedly allowed namespace setup' >&2
+            exit 1
+          fi
+          [[ $blocked != *led-cleanup-ran* ]]
       - name: RAUC on a disposable loop device
         working-directory: services/tests/image
         run: |

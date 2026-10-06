@@ -15,7 +15,7 @@ runtime=(ca-certificates curl dbus dbus-user-session polkitd systemd-timesyncd o
   libasound2t64 libmpg123-0t64 mpg123
   network-manager wpasupplicant dnsmasq-base nftables avahi-daemon rauc rauc-service u-boot-tools libubootenv-tool
   util-linux fdisk e2fsprogs python3 device-tree-compiler)
-development=(build-essential cmake pkg-config libasound2-dev libssl-dev
+development=(build-essential pkg-config libasound2-dev libssl-dev
   bison flex bc python3-dev python3-setuptools python3-pyelftools
   "linux-headers-$flavour")
 inputs=/nabos-build/inputs
@@ -132,7 +132,8 @@ build-packages|packages)
        "$(dpkg-query -W -f='${Version}' "linux-headers-$kernel")" ]] || { echo 'Kernel/header package version mismatch' >&2; exit 1; }
     for option in CONFIG_BCM2835_WDT=y CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y \
       'CONFIG_SQUASHFS=[ym]' CONFIG_SQUASHFS_ZSTD=y \
-      'CONFIG_KEYBOARD_GPIO=[ym]' 'CONFIG_INPUT_EVDEV=[ym]'; do
+      'CONFIG_KEYBOARD_GPIO=[ym]' 'CONFIG_INPUT_EVDEV=[ym]' \
+      'CONFIG_LEDS_CLASS_MULTICOLOR=[ym]' 'CONFIG_DMA_BCM2835=[ym]'; do
       grep -qxE "$option" "/lib/modules/$kernel/build/.config" || { echo "Kernel lacks $option" >&2; exit 1; }
     done
     printf '%s\n' "$kernel" > /nabos-build/kernel-release
@@ -148,16 +149,18 @@ build-packages|packages)
 drivers)
   kernel=$(cat /nabos-build/kernel-release)
   mkdir -p "$stage/usr/lib/modules/$kernel/updates/nabos" "$stage/boot/firmware/overlays"
-  directory=$src/sound
-  [[ -d $directory ]] || exit 1
-  make -C "/lib/modules/$kernel/build" M="$directory" -j2 modules
-  find "$directory" -maxdepth 1 -name '*.ko' -exec install -m644 '{}' "$stage/usr/lib/modules/$kernel/updates/nabos/" \;
-  for overlay in "$directory"/*-overlay.dts; do
-    [[ -f $overlay ]] || continue
-    # Kernel headers are unavailable to dtc's parser; preprocess DTS first.
-    cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I "/lib/modules/$kernel/build/include" "$overlay" |
-      dtc -@ -I dts -O dtb -o "$stage/boot/firmware/overlays/$(basename "${overlay%-overlay.dts}").dtbo"
+  for driver in sound led; do
+    directory=$src/$driver
+    [[ -d $directory ]] || exit 1
+    make -C "/lib/modules/$kernel/build" M="$directory" -j2 modules
+    find "$directory" -maxdepth 1 -name '*.ko' -exec install -m644 '{}' "$stage/usr/lib/modules/$kernel/updates/nabos/" \;
+    for overlay in "$directory"/*-overlay.dts; do
+      [[ -f $overlay ]] || continue
+      cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I "/lib/modules/$kernel/build/include" "$overlay" |
+        dtc -@ -I dts -O dtb -o "$stage/boot/firmware/overlays/$(basename "${overlay%-overlay.dts}").dtbo"
+    done
   done
+  install -Dm644 "$src/led/LICENSE" "$stage/usr/share/doc/bcm2835-ws2812/copyright"
   make -C "$src/sound" tagtagtag-mixerd
   make -C "$src/sound" test
   install -Dm755 "$src/sound/tagtagtag-mixerd" "$stage/usr/local/sbin/tagtagtag-mixerd"
@@ -165,11 +168,6 @@ drivers)
   install -m644 "$src/sound/mixer.conf.default" "$stage/var/lib/tagtagtag-sound/mixer.conf"
   install -Dm644 "$src/sound/tagtagtag-mixerd.service" "$stage/usr/lib/systemd/system/tagtagtag-mixerd.service"
   install -Dm644 "$src/sound/60-tagtagtag-volume.rules" "$stage/usr/lib/udev/rules.d/60-tagtagtag-volume.rules"
-  # Keep the existing DMA/PWM library instead of reimplementing LED timing.
-  cmake -S "$src/led" -B "$src/led-build" -DBUILD_SHARED=ON -DBUILD_TEST=OFF -DCMAKE_INSTALL_PREFIX=/usr
-  cmake --build "$src/led-build" --parallel 2
-  # Copy the shared library only; CMake's install also includes development headers.
-  install -Dm644 "$src/led-build/libws2811.so" "$stage/usr/lib/libws2811.so"
   ;;
 wheels)
   if [[ $target == zero2-arm64 ]]; then
@@ -218,7 +216,7 @@ finalize)
   cp /boot/firmware/*.dtb /boot/dtb/
   # Linux hardware profile, only in the DTB U-Boot loads from this slot.
   dtc -@ -I dts -O dtb -o /tmp/nabos.dtbo /nabos-build/image/nabos-overlay.dts
-  fdtoverlay -i "/boot/dtb/$dtb" -o "/boot/dtb/$dtb" /tmp/nabos.dtbo
+  fdtoverlay -i "/boot/dtb/$dtb" -o "/boot/dtb/$dtb" /tmp/nabos.dtbo /boot/overlays/bcm2835-ws2812.dtbo
   if [[ $target == zero-armv6 ]]; then
     cp /boot/firmware/kernel.img /boot/kernel
   else

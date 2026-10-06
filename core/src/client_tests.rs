@@ -179,9 +179,8 @@ impl Harness {
             simulate: true,
             gpio_chip: "/unused".into(),
             button_gpio: 17,
-            ws2811_lib: "/unused".into(),
+            led_sysfs: "/unused".into(),
             led_brightness: 200,
-            led_strip: "grb".into(),
         };
         let ears = hw::ears::Ears::open(true, &cfg.gpio_chip, tx.clone());
         let hw = Arc::new(Hw::open(&cfg, tx, None, ears));
@@ -709,9 +708,8 @@ async fn private_bus_hardware_does_not_replace_or_queue_for_existing_owner() {
         simulate: true,
         gpio_chip: "/unused".into(),
         button_gpio: 17,
-        ws2811_lib: "/unused".into(),
+        led_sysfs: "/unused".into(),
         led_brightness: 200,
-        led_strip: "grb".into(),
     };
     let ears = hw::ears::Ears::open(true, &cfg.gpio_chip, tx.clone());
     let hardware = Hardware::new(Arc::new(Hw::open(&cfg, tx, None, ears)));

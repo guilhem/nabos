@@ -122,21 +122,28 @@ assert hardware_unit['Service']['Type'] == 'notify'
 assert 'BusName' not in hardware_unit['Service']
 for key, value in {'NotifyAccess': 'main', 'WatchdogSec': '1s',
                    'WatchdogSignal': 'SIGKILL', 'KillMode': 'control-group',
-                   'ExecStopPost': '/usr/bin/nab-hardware --stop-ears',
+                   'ExecStopPost': '/usr/bin/nab-hardware --stop-hardware',
                    'TimeoutStopSec': '6s', 'Restart': 'always', 'RestartSec': '2',
                    'RuntimeDirectory': 'nab-hardware',
                    'WorkingDirectory': '/run/nab-hardware'}.items():
     assert hardware_unit['Service'][key] == value, key
 assert 'HOME=/run/nab-hardware' in hardware_unit['Service']['Environment']
-assert hardware_unit['Service']['AmbientCapabilities'] == 'CAP_SYS_RAWIO'
-assert hardware_unit['Service']['CapabilityBoundingSet'] == 'CAP_SYS_RAWIO'
-assert hardware_unit['Service']['SupplementaryGroups'] == 'gpio video kmem'
-assert 'ReadWritePaths' not in hardware_unit['Service']
+assert hardware_unit['Service'].get('AmbientCapabilities', '') == ''
+assert hardware_unit['Service']['CapabilityBoundingSet'] == ''
+assert hardware_unit['Service']['SupplementaryGroups'] == 'gpio'
+led_paths = {f'/sys/class/leds/multi:indicator-{i}/{attr}' for i in range(5)
+             for attr in ('brightness', 'multi_intensity')}
+led_paths.add('/sys/class/leds/multi:indicator-0/sync')
+assert set(hardware_unit['Service']['ReadWritePaths'].split()) == {'-' + path for path in led_paths}
+for i in range(5):
+    device = rf'sys-class-leds-multi:indicator\x2d{i}.device'
+    for dependency in ('Requires', 'After'):
+        assert device in hardware_unit['Unit'][dependency].split()
 for dependency in ('Requires', 'After'):
     for name in ('dbus.socket', r'dev-i2c\x2d1.device'):
         assert name in hardware_unit['Unit'][dependency].split(), (dependency, name)
 assert 'nabos-rfid.service' not in hardware_unit['Unit']['After']
-assert Path('/etc/modules-load.d/nabos.conf').read_text().splitlines() == ['i2c-dev']
+assert Path('/etc/modules-load.d/nabos.conf').read_text().splitlines() == ['i2c-dev', 'bcm2835-ws2812']
 udev = Path('/etc/udev/rules.d/60-nabos.rules').read_text().splitlines()
 assert 'SUBSYSTEM=="i2c-dev", KERNEL=="i2c-1", GROUP:="nab-hardware", MODE:="0660", TAG+="systemd"' in udev
 volume_rules = [dict((key, (op, value)) for key, op, value in re.findall(
@@ -163,7 +170,10 @@ for name in ('mixer.conf', 'mixer.conf.default'):
     assert Path('/var/lib/tagtagtag-sound', name).is_file(), name
 assert not any(Path('/lib/modules').rglob('snd-soc-volume-gpio.ko*'))
 assert 'SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"' in udev
-assert not any('KERNEL=="ear' in line for line in udev)
+assert not any('KERNEL=="ear' in line or 'KERNEL=="mem"' in line or 'KERNEL=="vcio"' in line for line in udev)
+assert any('SUBSYSTEM=="leds"' in line and 'SYSTEMD_ALIAS' in line for line in udev)
+assert not any(Path('/usr/lib').rglob('libws2811.so*'))
+assert any(Path('/lib/modules').rglob('bcm2835-ws2812.ko*'))
 for name in ('tagtagtag-ears', 'ears', 'cr14', 'st25r391x'):
     assert not any(Path('/lib/modules').rglob(name + '.ko*')), name
     for directory in ('/boot/overlays', '/boot/firmware/overlays'):
@@ -488,6 +498,12 @@ fdtget "$root/boot/dtb/$dtb" /__symbols__ i2s /__symbols__ i2c1 /__symbols__ gpi
 i2c1=$(fdtget "$root/boot/dtb/$dtb" /__symbols__ i2c1)
 [[ $(fdtget "$root/boot/dtb/$dtb" "$i2c1" status) == okay ]] ||
   { echo 'I2C bus 1 disabled in the Linux slot DTB' >&2; exit 1; }
+
+# The LED controller is already part of the Linux slot DTB.
+pwm=$(fdtget "$root/boot/dtb/$dtb" /__symbols__ pwm)
+[[ $(fdtget "$root/boot/dtb/$dtb" "$pwm" compatible) == guilhem,bcm2835-ws2812 ]]
+[[ $(fdtget "$root/boot/dtb/$dtb" "$pwm" status) == okay ]]
+[[ $(fdtget "$root/boot/dtb/$dtb" "$pwm" dma-names) == tx ]]
 
 # Use the shipped loader/libc for Rust; the Go application is static.
 # Variables in the generated wrappers are resolved when the child runs.

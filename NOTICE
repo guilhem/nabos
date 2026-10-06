@@ -25,7 +25,7 @@ and NOTICE are installed under /usr/share/doc/device-core; its source, Cargo.loc
 and vendored dependencies belong to the archived build inputs, not the runtime
 filesystem.
 
-Drivers, rpi_ws281x, U-Boot, Linux Voice Assistant and their dependencies keep
+Drivers, U-Boot, Linux Voice Assistant and their dependencies keep
 their respective licenses. Their pinned sources are listed in
 image/sources.lock.json; build input archives include the upstream sources.
 Raspberry Pi OS supplies the Raspberry Pi firmware under its own terms.

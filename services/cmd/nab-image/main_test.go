@@ -21,8 +21,8 @@ type roundTrip func(*http.Request) (*http.Response, error)
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestKernelDriverSet(t *testing.T) {
-	if len(driverSet) != 1 || driverSet[0].name != "sound" {
-		t.Fatalf("only sound requires a kernel build: %v", driverSet)
+	if len(driverSet) != 2 || driverSet[0].name != "sound" || driverSet[1].name != "led" {
+		t.Fatalf("sound and LEDs require kernel builds: %v", driverSet)
 	}
 	lock, err := readLock("../../../image/sources.lock.json")
 	if err != nil {

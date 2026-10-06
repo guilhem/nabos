@@ -19,8 +19,10 @@ func TestImageIsolation(t *testing.T) {
 	pristine := filepath.Join(dtDir, "pristine.dtb")
 	profile := filepath.Join(dtDir, "nabos.dtbo")
 	slotDTB := filepath.Join(dtDir, "slot.dtb")
+	ledProfile := filepath.Join(dtDir, "led.dtbo")
 	run(t, baseDTS+`/ {
 		soc {
+			pwm: pwm@7e20c000 { reg = <0x7e20c000 0x28>; compatible = "brcm,bcm2835-pwm"; status = "disabled"; };
 			uart0: serial@7e201000 { reg = <0x7e201000 0x1000>; };
 			fb: fb {};
 			vchiq: mailbox@7e00b840 { reg = <0x7e00b840 0x3c>; };
@@ -31,7 +33,11 @@ func TestImageIsolation(t *testing.T) {
 		cam_dummy_reg: cam_dummy_reg {};
 	};`, "dtc", "-@", "-I", "dts", "-O", "dtb", "-o", pristine, "-")
 	run(t, "", "dtc", "-@", "-I", "dts", "-O", "dtb", "-o", profile, filepath.Join(imageDir, "nabos-overlay.dts"))
-	run(t, "", "fdtoverlay", "-i", pristine, "-o", slotDTB, profile)
+	run(t, `/dts-v1/; /plugin/;
+/ { fragment@0 { target = <&pwm>; __overlay__ {
+compatible = "guilhem,bcm2835-ws2812"; dma-names = "tx"; status = "okay";
+}; }; };`, "dtc", "-@", "-I", "dts", "-O", "dtb", "-o", ledProfile, "-")
+	run(t, "", "fdtoverlay", "-i", pristine, "-o", slotDTB, profile, ledProfile)
 	for _, scenario := range []struct {
 		name, target  string
 		fail, corrupt bool

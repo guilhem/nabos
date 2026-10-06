@@ -56,8 +56,8 @@ Les lecteurs RFID/NFC utilisent les crates Rust externes `guilhem/cr14` et
 Git sont fixés par `rev` dans `core/Cargo.toml` et résolus dans `core/Cargo.lock` ;
 `cargo vendor` les archive avec les entrées de `nab-hardware`. Ils n'ont aucune
 archive de source distincte dans `image/sources.lock.json`. Les oreilles utilisent
-`gpiocdev` dans le même processus Rust. Seul le son WM8960 conserve ses modules
-et son overlay noyau ; les anciens pilotes et overlays oreilles/CR14/ST25R391x
+`gpiocdev` dans le même processus Rust. Le son WM8960 et les LED WS2812 conservent des modules
+et overlays noyau ; les anciens pilotes et overlays oreilles/CR14/ST25R391x
 et le service de probe `nabos-rfid` sont supprimés.
 
 Les sources audio viennent du fork `guilhem/wm8960` (branche `nabos-gpio-keys`).
@@ -75,13 +75,13 @@ La CI sépare ensuite `build` et `image-test`. `build` assemble, signe et compre
 
 Le job `image-test` conserve les objets Go des tests dans `build/cache/image-tests/<cible>/go`, hors des images. Les modules Go archivés et la copie de test restent jetables ; les tests s'exécutent à chaque fabrication avec `-count=1`. En local, `image/build.sh` conserve par défaut l'assemblage et les tests dans une seule invocation ; le sandbox utilise alors ccache. `NABOS_UBOOT_SANDBOX=/chemin/sandbox` permet d'utiliser un sandbox préconstruit avec son manifeste `SHA256SUMS`.
 
-`image/base-cache.sh` conserve dans `build/cache/base/<cible>/` une archive creuse de la base préparée : paquets runtime, noyau, pilotes, mixer, bibliothèque LED et ressources vocales, avec les paquets et wheels nécessaires au replay. La base est démontée avant archivage, sans les binaires NabOS, le certificat RAUC ni les fichiers de version de la fabrication. Une restauration vérifie son identité et le SHA-256 de l'archive, puis produit une copie indépendante. Une absence ou une corruption provoque une reconstruction.
+`image/base-cache.sh` conserve dans `build/cache/base/<cible>/` une archive creuse de la base préparée : paquets runtime, noyau, pilotes, mixer et ressources vocales, avec les paquets et wheels nécessaires au replay. La base est démontée avant archivage, sans les binaires NabOS, le certificat RAUC ni les fichiers de version de la fabrication. Une restauration vérifie son identité et le SHA-256 de l'archive, puis produit une copie indépendante. Une absence ou une corruption provoque une reconstruction.
 
 La clé dépend de la cible, des sources verrouillées, des scripts de préparation, des sources de `nab-image` et de `services/go.mod`, ainsi que de la date UTC : APT est résolu de nouveau chaque jour et lors de ces changements. La CI fixe cette date au début du job pour les builds qui traversent minuit. `NABOS_BASE_CACHE=0 bash image/build.sh ...` force une fabrication sans ce cache ; `--replay` utilise toujours les entrées archivées fournies. Les réglages, binaires applicatifs, versions et signatures sont ajoutés après restauration, puis l'image complète est testée.
 
 La fabrication sans cache sépare compilation, livraison et tests :
 
-1. Une copie jetable de l'image Raspberry Pi reçoit les outils de compilation et les en-têtes du noyau. Elle compile les pilotes, le mixer, la bibliothèque LED et les wheels Python, puis est démontée et supprimée. Seuls les modules, overlays, exécutables, bibliothèque partagée et ressources nécessaires au fonctionnement sont conservés.
+1. Une copie jetable de l'image Raspberry Pi reçoit les outils de compilation et les en-têtes du noyau. Elle compile les pilotes, le mixer et les wheels Python, puis est démontée et supprimée. Seuls les modules, overlays, exécutables et ressources nécessaires au fonctionnement sont conservés.
 2. L'image à livrer repart de la base intacte. APT y installe uniquement les paquets nécessaires au fonctionnement depuis le dépôt local archivé par la compilation, avec les mêmes versions de bibliothèques. Les outils de compilation déjà présents dans l'image officielle sont retirés ; les dépendances de nos compilations restent dans la copie jetable. Les wheels sont installés hors ligne, sans compilation ni cache pip. Les versions des paquets communs et du noyau doivent correspondre à celles de l'environnement de compilation ; les en-têtes et le noyau doivent aussi provenir de la même version de paquet.
 3. Après assemblage du disque SD, `image/test.sh` en crée une copie jetable. Les tests d'intégration utilisent les trois binaires (`nab-hardware`, `device-core`, `nabos`) et les ressources de cette copie (QEMU ARM1176 pour ARMv6). Le sandbox natif U-Boot vérifie les scénarios A/B avec les fichiers de démarrage livrés. La copie est démontée et supprimée même si les tests échouent ; l'empreinte de l'original est contrôlée avant et après. En local, la signature et la compression suivent leur succès. En CI, elles précèdent le job séparé de test ; la publication en release attend sa réussite.
 
@@ -144,7 +144,7 @@ Le système racine est monté en lecture seule ; identité, connexion réseau, r
 
 SSH utilise le service OpenSSH fourni par Raspberry Pi OS, conditionné par un fichier `/data/device-core/ssh/authorized_keys` non vide et des données persistantes disponibles. L’interface authentifiée délègue à device-core, qui valide les clés avec `ssh-keygen`, écrit ce fichier atomiquement et demande uniquement `start` ou `stop` sur `ssh.service` via Polkit. Les clés hôtes sont créées dans `/data/system/ssh/etc/ssh` au premier démarrage du service ; la configuration OpenSSH reste dans le slot pour recevoir les mises à jour. Le compte `nabos` a un shell, conserve son mot de passe verrouillé et dispose de sudo sans mot de passe. Gérer ses clés permet donc d'accorder un accès administrateur au système. Le flag voix est `/data/device-core/voice-enabled` ; les préférences et téléchargements LVA restent dans `/var/lib/nabos/lva`, dont le montage persistant existant provient de `/data/system`.
 
-`nab-hardware.service` possède seulement le matériel et publie [NabHardware1](hardware-dbus.md), avec `Type=notify`, `NotifyAccess=main` et `CAP_SYS_RAWIO`. Les groupes `gpio video kmem` sont propres à cette unité, pas au compte commun. `nabos.service` porte les états, médias et chorégraphies en Go, sert HTTP sur 80 avec `CAP_NET_BIND_SERVICE`, et utilise `PrivateDevices=yes`, `/data/nabos` et `/run/nabos`. Le matériel n’a aucune exception d’écriture vers les données applicatives. Aucun paquet ou service Mosquitto n’est livré ; son installation sur l’hôte sert uniquement aux fixtures Home Assistant.
+`nab-hardware.service` possède seulement le matériel et publie [NabHardware1](hardware-dbus.md), avec `Type=notify` et `NotifyAccess=main`, sans capability. Seul le groupe `gpio` est ajouté à cette unité. Les règles udev donnent au groupe `nab-hardware` l’écriture des attributs `brightness`, `multi_intensity` des cinq LED et `sync` de la première ; l’unité attend ces périphériques et limite ses chemins sysfs inscriptibles à ces attributs. `nabos.service` porte les états, médias et chorégraphies en Go, sert HTTP sur 80 avec `CAP_NET_BIND_SERVICE`, et utilise `PrivateDevices=yes`, `/data/nabos` et `/run/nabos`. Le matériel n’a aucune exception d’écriture vers les données applicatives. Aucun paquet ou service Mosquitto n’est livré ; son installation sur l’hôte sert uniquement aux fixtures Home Assistant.
 
 Le profil DTB Linux du slot active `i2c1` sur GPIO 2/3, partagé avec le codec
 audio, et `/etc/modules-load.d/nabos.conf` charge `i2c-dev` au démarrage.
@@ -176,27 +176,51 @@ Le contrôle de santé exige les trois unités actives, `Manager.Ready` par D-Bu
 
 À la sortie réussie de `nabos-health.service`, systemd déclenche `nabos-board-led-off.service` via `OnSuccess`, sans délai fixe. Cette unité éteint uniquement la LED ACT du Raspberry Pi si elle existe et si `/run/nabos-boot-health` contient `good A` ou `good B`, écrit après confirmation RAUC. Cette action cosmétique est indépendante du contrôle de santé : son échec ne remet pas en cause la confirmation du slot. Les LED du lapin restent pilotées par `nab-hardware`.
 
+### LED Linux
+
+La source de [bcm2835-ws2812](https://github.com/guilhem/bcm2835-ws2812) est
+verrouillée par commit et SHA-256 dans `image/sources.lock.json`. Le module est
+compilé dans la copie de fabrication contre les en-têtes et `Module.symvers` du
+noyau livré, pour ARMv6 et ARM64. Son overlay est fusionné à la fabrication avec
+le DTB Linux du slot, avant que U-Boot applique l’overlay audio. Il réserve le bloc
+PWM, GPIO13 et une voie DMAengine ; aucun processus n’accède à `/dev/mem` ou
+`/dev/vcio` pour les LED.
+
+`nab-hardware` écrit dans `/sys/class/leds/multi:indicator-{0..4}`. Il lit
+`multi_index` pour retrouver les canaux RGB, puis règle `multi_intensity` et
+`brightness`. Les animations restent en Rust. `Clear` met les cinq luminosités à
+zéro et écrit `1` dans `multi:indicator-0/sync`, qui attend les travaux LED en
+cours et retransmet l’état complet. Une erreur de transmission fait échouer
+l’extinction et empêche d’annoncer la quiescence de maintenance. Les écritures de
+couleur ordinaires restent asynchrones selon l’API LED Linux.
+
+La qualification physique reste nécessaire sur les deux cartes : couleurs et
+ordre des cinq LED, luminosité, pulses, animations, extinction en maintenance,
+SIGTERM et SIGKILL avec `ExecStopPost`, puis réactivation après maintenance.
+Vérifier la racine en lecture seule et les restrictions de l’unité réelle ; les
+tests sysfs sur fichiers et la compilation des modules ne mesurent pas le signal
+GPIO13, le temps de reset WS2812 ou la concurrence audio/DMA.
+
 ### Qualification des oreilles userspace
 
 Les oreilles sont intégrées en Rust dans `nab-hardware` avec `gpiocdev`, via
 `/dev/gpiochip*` et le groupe `gpio` déjà attribué à l’unité. L’image ne télécharge
 ni ne compile `tagtagtag-ears`, ne livre plus son patch, son module ou son DTBO,
 et U-Boot ne charge que l’overlay du son. Aucune règle `/dev/ear*` ni nouveau
-paquet n’est nécessaire. Les modules WM8960 et la bibliothèque LED
-`rpi_ws281x` sont conservés.
+paquet n’est nécessaire. Les modules WM8960 et LED WS2812 restent dans le noyau.
 
-L’unité requiert `dbus.socket` et `dev-i2c\x2d1.device`, et démarre après tmpfiles,
-le mixer, device-core et ces deux unités. Son watchdog de 1 seconde utilise
+L’unité requiert `dbus.socket`, `dev-i2c\x2d1.device` et les cinq périphériques LED, et démarre après tmpfiles,
+le mixer, device-core et ces périphériques. Son watchdog de 1 seconde utilise
 `SIGKILL` et `KillMode=control-group`. La calibration ne démarre qu’après
 confirmation de l’activation du watchdog : la notification de démarrage systemd
 est distincte de la propriété D-Bus `Ready`, qui reste fausse avec les oreilles
 `initializing` jusqu’à la réussite de leur initialisation. Le nom D-Bus reste
 `io.github.guilhem.NabHardware1`, sans directive systemd `BusName=`.
 
-Sur `SIGTERM`, les moteurs sont coupés ; une écriture NFC indivisible déjà admise
+Sur `SIGTERM`, les moteurs sont coupés et les LED éteintes ; une écriture NFC indivisible déjà admise
 peut encore se terminer, dans une limite de 5 secondes. Après la sortie du
-processus, `ExecStopPost=/usr/bin/nab-hardware --stop-ears` demande directement
-les GPIO moteurs à l’état bas, sans initialiser D-Bus, les LED ou le NFC.
+processus, `ExecStopPost=/usr/bin/nab-hardware --stop-hardware` demande directement
+les GPIO moteurs à l’état bas et retransmet une trame LED noire, sans initialiser D-Bus ou le NFC. Les deux arrêts sont tentés même si l’un échoue.
 `TimeoutStopSec=6s` borne l’arrêt systemd et `Restart=always` relance le service.
 La fermeture des FD GPIO ne garantit pas un état électrique bas ; ni le délai
 du watchdog ni le succès du helper ne constituent à eux seuls une mesure de
