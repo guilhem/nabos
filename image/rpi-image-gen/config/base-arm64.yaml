@@ -6,5 +6,9 @@ artefact:
 deploy:
   compression: none
 
+# Required by the upstream initramfs hook even for rootfs-only builds.
+device:
+  storage_type: sd
+
 layer:
   base: nabos-base-arm64
