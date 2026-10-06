@@ -16,6 +16,7 @@ var driverSet = []struct {
 	modules       []string
 }{
 	{"sound", "tagtagtag-sound", []string{"snd-soc-wm8960", "snd-soc-max9759", "snd-soc-volume-gpio"}},
+	{"led", "bcm2835-ws2812", []string{"bcm2835-ws2812"}},
 }
 
 func kernelBuild(value string) (string, string, error) {
@@ -49,7 +50,7 @@ func runCmd(name string, args ...string) error {
 // each DTBO (which must keep external fixups) and optionally the modules.
 func drivers(lockPath string, args []string) error {
 	fs := flag.NewFlagSet("drivers", flag.ContinueOnError)
-	archives := fs.String("archives", "", "directory containing the locked sound tar.gz file")
+	archives := fs.String("archives", "", "directory containing the locked driver tar.gz files")
 	kernelArg := fs.String("kernel", "", "KERNELRELEASE or its headers build directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -86,7 +87,11 @@ func drivers(lockPath string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := runCmd("patch", "--batch", "--fuzz=0", "-d", source, "-p1", "-i", patch); err != nil {
+		if _, err := os.Stat(patch); err == nil {
+			if err := runCmd("patch", "--batch", "--fuzz=0", "-d", source, "-p1", "-i", patch); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
 			return err
 		}
 		if err := runCmd("make", "-C", source, d.overlay+".dtbo"); err != nil {
@@ -100,7 +105,7 @@ func drivers(lockPath string, args []string) error {
 		if !strings.Contains(string(decoded), "__fixups__ {") {
 			return fmt.Errorf("no external fixups in %s", dtbo)
 		}
-		done := "patch + DTBO"
+		done := "DTBO"
 		if kernel != "" {
 			if err := runCmd("make", "-C", kernel, "M="+source, "modules"); err != nil {
 				return err

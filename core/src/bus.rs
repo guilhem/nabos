@@ -191,7 +191,7 @@ impl Hardware {
         }
         Ok((guard, token))
     }
-    pub fn invalidate(self: &Arc<Self>, remove_claim: bool) {
+    pub fn fence(&self, remove_claim: bool) {
         {
             let mut s = self.state.lock().unwrap();
             if let Some(c) = &s.claim {
@@ -207,6 +207,9 @@ impl Hardware {
             }
             s.draining = true;
         }
+    }
+    pub fn invalidate(self: &Arc<Self>, remove_claim: bool) {
+        self.fence(remove_claim);
         self.drain();
     }
     fn drain(self: &Arc<Self>) {
@@ -221,9 +224,12 @@ impl Hardware {
         tokio::spawn(async move {
             let quiet = tokio::time::timeout(WORK_TIMEOUT, async {
                 let _serial = hardware.serial.lock().await;
-                hardware.hw.leds.clear().await?;
-                // Wait for actual quiescence, including any admitted movement.
-                hardware.hw.ears.wait_idle().await?;
+                // Attempt both waits even if one device fails. This is also
+                // used by graceful shutdown after urgent motor stop.
+                let (leds, ears) =
+                    tokio::join!(hardware.hw.leds.clear(), hardware.hw.ears.wait_idle());
+                leds?;
+                ears?;
                 loop {
                     let busy = hardware
                         .state

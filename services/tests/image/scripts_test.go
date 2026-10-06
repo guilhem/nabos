@@ -39,7 +39,7 @@ func TestKernelSupportsZstdBundles(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			config := filepath.Join(t.TempDir(), "kernel.config")
-			write(t, config, "CONFIG_BCM2835_WDT=y\nCONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y\n"+c.config)
+			write(t, config, "CONFIG_BCM2835_WDT=y\nCONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y\nCONFIG_LEDS_CLASS_MULTICOLOR=m\nCONFIG_DMA_BCM2835=y\n"+c.config)
 			r := execute(t, "", []string{"NABOS_TEST_CONFIG=" + config}, "bash", "-eu", "-c", check)
 			if (r.code == 0) != c.valid {
 				t.Fatalf("kernel support: exit %d: %s", r.code, r.stderr)
@@ -547,15 +547,18 @@ func TestHealth(t *testing.T) {
 }
 
 func TestUserspaceHardwareImageContract(t *testing.T) {
-	if got := read(t, filepath.Join(rootfsDir, "etc/modules-load.d/nabos.conf")); got != "i2c-dev\n" {
-		t.Errorf("unexpected static I2C module configuration: %q", got)
+	if got := read(t, filepath.Join(rootfsDir, "etc/modules-load.d/nabos.conf")); got != "i2c-dev\nbcm2835-ws2812\n" {
+		t.Errorf("unexpected hardware module configuration: %q", got)
 	}
 	if !strings.Contains(read(t, filepath.Join(imageDir, "nabos-overlay.dts")), `&i2c1 { status = "okay"; };`) {
 		t.Error("the Linux slot DTB must enable I2C bus 1 independently of reader overlays")
 	}
 	prepare := read(t, filepath.Join(imageDir, "prepare.sh"))
-	if !strings.Contains(prepare, "directory=$src/sound\n") || strings.Contains(prepare, "for driver in ") {
-		t.Error("only sound should be built as a kernel driver")
+	if !strings.Contains(prepare, "for driver in sound led; do") || strings.Contains(prepare, "libws2811") {
+		t.Error("sound and native LED modules must replace the raw-memory LED library")
+	}
+	if !strings.Contains(prepare, "/boot/overlays/bcm2835-ws2812.dtbo") {
+		t.Error("the LED overlay must be merged into the Linux slot DTB")
 	}
 	var lock struct{ Sources map[string]json.RawMessage }
 	if err := json.Unmarshal([]byte(read(t, filepath.Join(imageDir, "sources.lock.json"))), &lock); err != nil {
@@ -572,8 +575,10 @@ func TestUserspaceHardwareImageContract(t *testing.T) {
 		}
 	}
 	udev := read(t, filepath.Join(rootfsDir, "etc/udev/rules.d/60-nabos.rules"))
-	if strings.Contains(udev, `KERNEL=="ear`) {
-		t.Error("obsolete ears device access rule remains")
+	for _, obsolete := range []string{`KERNEL=="ear`, `KERNEL=="mem"`, `KERNEL=="vcio"`} {
+		if strings.Contains(udev, obsolete) {
+			t.Errorf("obsolete raw hardware access rule remains: %s", obsolete)
+		}
 	}
 	for _, file := range []string{
 		"patches/ears.patch", "patches/cr14.patch", "patches/nfc.patch",

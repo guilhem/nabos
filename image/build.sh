@@ -177,7 +177,6 @@ if ! $base_cached; then
   in_target wheels
   unmount_image
   rm "$work/builder.img"
-  sudo rm -rf "$payload/src/led-build"
 
   echo "$(date -u +%FT%TZ) Assembling runtime image from archived packages and components"
   mount_image "$work/base.img"
