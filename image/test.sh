@@ -133,7 +133,7 @@ assert hardware_unit['Service']['SupplementaryGroups'] == 'gpio'
 led_paths = {f'/sys/class/leds/multi:indicator-{i}/{attr}' for i in range(5)
              for attr in ('brightness', 'multi_intensity')}
 led_paths.add('/sys/class/leds/multi:indicator-0/sync')
-assert set(hardware_unit['Service']['ReadWritePaths'].split()) == led_paths
+assert set(hardware_unit['Service']['ReadWritePaths'].split()) == {'-' + path for path in led_paths}
 for i in range(5):
     device = rf'sys-class-leds-multi:indicator\x2d{i}.device'
     for dependency in ('Requires', 'After'):

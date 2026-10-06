@@ -26,7 +26,8 @@ RestartSec=2
 UMask=0027
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/sys/class/leds/multi:indicator-0/brightness /sys/class/leds/multi:indicator-0/multi_intensity /sys/class/leds/multi:indicator-1/brightness /sys/class/leds/multi:indicator-1/multi_intensity /sys/class/leds/multi:indicator-2/brightness /sys/class/leds/multi:indicator-2/multi_intensity /sys/class/leds/multi:indicator-3/brightness /sys/class/leds/multi:indicator-3/multi_intensity /sys/class/leds/multi:indicator-4/brightness /sys/class/leds/multi:indicator-4/multi_intensity /sys/class/leds/multi:indicator-0/sync
+# Missing LEDs must not prevent ExecStopPost from cutting the motors.
+ReadWritePaths=-/sys/class/leds/multi:indicator-0/brightness -/sys/class/leds/multi:indicator-0/multi_intensity -/sys/class/leds/multi:indicator-1/brightness -/sys/class/leds/multi:indicator-1/multi_intensity -/sys/class/leds/multi:indicator-2/brightness -/sys/class/leds/multi:indicator-2/multi_intensity -/sys/class/leds/multi:indicator-3/brightness -/sys/class/leds/multi:indicator-3/multi_intensity -/sys/class/leds/multi:indicator-4/brightness -/sys/class/leds/multi:indicator-4/multi_intensity -/sys/class/leds/multi:indicator-0/sync
 
 [Install]
 WantedBy=multi-user.target

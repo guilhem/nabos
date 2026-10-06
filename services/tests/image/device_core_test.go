@@ -90,10 +90,10 @@ func TestHardwareApplicationImageContract(t *testing.T) {
 			t.Errorf("raw memory authority remains: %s", forbidden)
 		}
 	}
-	allowedPaths := map[string]bool{"/sys/class/leds/multi:indicator-0/sync": true}
+	allowedPaths := map[string]bool{"-/sys/class/leds/multi:indicator-0/sync": true}
 	for i := 0; i < 5; i++ {
 		for _, attr := range []string{"brightness", "multi_intensity"} {
-			allowedPaths[fmt.Sprintf("/sys/class/leds/multi:indicator-%d/%s", i, attr)] = true
+			allowedPaths[fmt.Sprintf("-/sys/class/leds/multi:indicator-%d/%s", i, attr)] = true
 		}
 		device := fmt.Sprintf(`sys-class-leds-multi:indicator\x2d%d.device`, i)
 		for _, directive := range []string{"Requires=", "After="} {
