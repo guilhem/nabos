@@ -1,6 +1,7 @@
 #!/bin/bash
 # Standalone package-base experiment; production image/build.sh is unchanged.
 set -euo pipefail
+trap 'echo "Prototype failed at line $LINENO" >&2' ERR
 prototype=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$prototype/../.." && pwd)
 revision=3e1041129c4eb87b8784c2875caa169ed45dbfce
@@ -38,7 +39,7 @@ if awk -F '\t' '$1 ~ /^((gcc|g\+\+|cpp)(-[0-9]+)?|make|build-essential|dpkg-dev|
 fi
 tar -tf "$archive" > "$out/archive-files.txt"
 grep -Eq '^\./(usr/)?lib/modules/[^/]+-rpi-v8/' "$out/archive-files.txt"
-grep -Eq '^\./(usr/)?lib/linux-image-[^/]+/broadcom/bcm2710-rpi-zero-2-w.dtb$' "$out/archive-files.txt"
+grep -Eq '^\./(usr/)?lib/modules/[^/]+-rpi-v8/dtb/broadcom/bcm2710-rpi-zero-2-w.dtb$' "$out/archive-files.txt"
 tar -xOf "$archive" ./usr/share/nabos-prototype/scope
 [[ -z $(tar -xOf "$archive" ./etc/machine-id) ]]
 if grep -Eq '^\./etc/ssh/ssh_host_' "$out/archive-files.txt"; then
