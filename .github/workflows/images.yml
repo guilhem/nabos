@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Build SD images, or benchmark runtime closures on fresh runners'
+        description: 'Build SD images, or benchmark selected cache roots on fresh runners'
         type: choice
         options: [build, benchmark]
         default: build
@@ -170,7 +170,7 @@ jobs:
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/rauc-key.pem" "$RUNNER_TEMP/rauc-cert.pem"
-      - name: Publish only system and U-Boot runtime closures
+      - name: Publish selected cache roots
         if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'))
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -179,7 +179,7 @@ jobs:
           test "$CACHE" = nabos
           test -n "$CACHIX_AUTH_TOKEN"
           # The cache's official-cache exclusion omits cache.nixos.org paths.
-          # Explicit runtime roots exclude payloads, SD images, bundles and dev shells.
+          # Selected roots exclude payloads, SD images, bundles and dev shells.
           cachix push "$CACHE" < "dist/$TARGET/cache-roots-$TARGET"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -286,12 +286,12 @@ jobs:
         with:
           name: nabos
           skipPush: true
-      - name: Measure cold runtime closures
+      - name: Measure cold selected cache roots
         run: |
           bash image/benchmark.sh cold "$TARGET" "$VERSION"
           directory="dist/measurements/$TARGET/cold"
           python3 image/cache-report.py "$directory/cache-roots.txt" --output "$directory/cache-before-push.json"
-      - name: Publish only runtime closures and verify publication
+      - name: Publish selected cache roots and verify publication
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHE: ${{ vars.CACHIX_CACHE }}
@@ -361,7 +361,7 @@ jobs:
           directory="dist/measurements/$TARGET/$PHASE"
           python3 image/cache-report.py "$directory/cache-roots.txt" --output "$directory/cache-before-push.json"
           cp flake.lock "$directory/flake.lock"
-      - name: Publish measured runtime closures and read actual compressed sizes
+      - name: Publish measured cache roots and read actual compressed sizes
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHE: ${{ vars.CACHIX_CACHE }}

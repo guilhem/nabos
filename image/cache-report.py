@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure runtime closures and public cache metadata; never inspect a token."""
+"""Measure selected cache closures and public metadata; never inspect a token."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -75,7 +75,7 @@ def closure_entries(data):
             raise ValueError("conflicting duplicate closure path")
         result[path] = size
     if not result:
-        raise ValueError("empty runtime closure")
+        raise ValueError("empty cache closure")
     return result
 
 
@@ -150,7 +150,7 @@ def self_test():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("roots", nargs="?", type=Path, help="system/U-Boot roots, one store path per line")
+    parser.add_argument("roots", nargs="?", type=Path, help="selected cache roots, one store path per line")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--merge", nargs="+", type=Path, help="union reports from both targets or versions")
     parser.add_argument("--require-published", action="store_true")
@@ -203,7 +203,7 @@ def main():
     else:
         print(content, end="")
     if args.require_published and not report["publication_complete"]:
-        parser.exit(1, "runtime closure missing from both public caches; see unpublished_paths\n")
+        parser.exit(1, "selected closure missing from both public caches; see unpublished_paths\n")
 
 
 if __name__ == "__main__":

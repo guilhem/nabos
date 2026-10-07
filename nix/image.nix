@@ -5,6 +5,9 @@ let
   arm64 = target == "zero2-arm64";
   dtb = if arm64 then "bcm2710-rpi-zero-2-w.dtb" else "bcm2708-rpi-zero-w.dtb";
   kernel = config.boot.kernelPackages.kernel;
+  # Runtime references omit headers and native helpers needed on a fresh builder.
+  cacheRoots = [ config.system.build.toplevel packages.uboot kernel.dev
+    pkgs.gtk4.dev pkgs.gobject-introspection.dev ];
   bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);
   rootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-ext4-fs.nix") {
     storePaths = [ config.system.build.toplevel ];
@@ -35,7 +38,7 @@ let
 in
 pkgs.runCommand "nabos-nixos-${target}-${version}" {
   nativeBuildInputs = with pkgs; [ e2fsprogs dosfstools mtools ubootTools jq ];
-  passthru = { inherit rootfs bootScript; systemClosure = config.system.build.toplevel; };
+  passthru = { inherit rootfs bootScript cacheRoots; systemClosure = config.system.build.toplevel; };
 } ''
   mkdir -p $out boot
   cp --reflink=auto --sparse=always ${rootfs} $out/rootfs.ext4
@@ -55,7 +58,7 @@ pkgs.runCommand "nabos-nixos-${target}-${version}" {
   mkenvimage -r -s 0x10000 -o $out/uboot.env ${../image/boot/uboot.env}
   cp ${bootScript} $out/boot.cmd
   cp ${config.system.build.toplevel}/kernel-params $out/kernel-params
-  printf '%s\n' ${config.system.build.toplevel} ${packages.uboot} > $out/cache-roots
+  printf '%s\n' ${lib.escapeShellArgs cacheRoots} > $out/cache-roots
   jq -n --arg target '${target}' --arg version '${version}' --arg kernel '${kernel.modDirVersion}' \
     --arg system '${config.system.build.toplevel}' --arg initrd '${config.system.build.initialRamdisk}' \
     '{target:$target,version:$version,kernel:$kernel,system:$system,initrd:$initrd,hardware_validated:false}' > $out/build.json

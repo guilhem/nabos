@@ -46,7 +46,7 @@ ou une signature reproductible bit à bit.
 | `ca-<cible>.cert.pem` | Certificat public utilisé pour la signature |
 | `flake-<cible>.lock` | Entrées Nix verrouillées |
 | `boot-<cible>.cmd` | Script de démarrage livré |
-| `cache-roots-<cible>` | Racines store du système et d’U-Boot, une par ligne |
+| `cache-roots-<cible>` | Racines store du système, d’U-Boot et des outils de compilation sélectionnés |
 | `build-<cible>.json` | Cible, version, révisions et mesure du payload |
 | `SHA256SUMS-<cible>` | Empreintes des fichiers livrés |
 
@@ -133,8 +133,12 @@ extra-substituters = https://nabos.cachix.org
 extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
 ```
 
-Publier uniquement les racines listées dans `cache-roots-<cible>` : le système
-et U-Boot, avec leurs dépendances d’exécution. Le payload d’assemblage, les
+Publier uniquement les racines listées dans `cache-roots-<cible>` : le système,
+U-Boot, les en-têtes préparés du noyau et les sorties natives `gtk4.dev` et
+`gobject-introspection.dev`, avec leurs dépendances. Les trois dernières sont
+nécessaires à la reconstruction sur un hôte neuf mais absentes de la closure
+d’exécution. Cachix ignore les objets déjà présents dans le cache officiel.
+Le payload d’assemblage, les
 images, bundles, certificats et dev shells ne sont pas des racines de
 publication ; les images et releases sont conservées hors Cachix.
 La publication globale du store et `watch-store` ne sont pas utilisés.
@@ -150,7 +154,8 @@ publics après publication.
 
 Les outils canoniques sont `image/benchmark.sh` et `image/cache-report.py`.
 Les résultats sont conservés sous `dist/measurements/`, séparés des images.
-Les phases mesurent **les closures système et U-Boot**, sans réassembler le SD :
+Les phases mesurent **les racines du cache sélectionnées par le constructeur**,
+outils de compilation compris, sans réassembler le SD :
 
 | Phase | Conditions |
 |---|---|
@@ -173,7 +178,7 @@ Sans nouveau pin, aucune mesure de changement Nixpkgs n’est possible.
 `.next` mesure un changement de version, pas une modification de logique métier.
 
 Chaque phase conserve le manifeste `build-<cible>.json`, le verrou, les sorties
-Nix et les journaux. Son `build_seconds` mesure les deux closures ; celui d’une
+Nix et les journaux. Son `build_seconds` mesure les racines sélectionnées ; celui d’une
 image complète mesure le **payload Nix**, génération ext4/FAT comprise.
 Signature, assemblage SD, tests et compression restent hors de ces chronomètres.
 Relever séparément la durée totale et le pic disque des jobs.
