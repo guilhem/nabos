@@ -60,7 +60,7 @@ truncate -s 1G "$work/images/data.ext4"
 # shellcheck disable=SC2016
 fakeroot bash -c 'chown -R 0:0 "$1"; exec mkfs.ext4 -q -F -L nabos-data -d "$1" "$2"' \
   -- "$work/data" "$work/images/data.ext4"
-genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" \
+GENIMAGE_SHELL="$(command -v bash)" genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" \
   --inputpath "$work/images" --outputpath "$work/images" --tmppath "$work/genimage-tmp"
 cp --reflink=auto "$work/images/rootfs.ext4" "$work/bundle/"
 cp --reflink=auto "$work/images/boot.vfat" "$work/bundle/"
