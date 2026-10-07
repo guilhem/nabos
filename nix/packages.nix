@@ -234,6 +234,9 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     installDir = "$out/bin";
     postInstall = ''
       ln -s ${pkgs.buildPackages.dtc}/bin/dtc "$out/bin/dtc"
+    '';
+    # Hash the final binaries after stripping and ELF fixups.
+    postFixup = ''
       cd "$out"
       sha256sum bin/u-boot bin/dtc bin/mkimage bin/mkenvimage > SHA256SUMS
     '';
