@@ -1,6 +1,9 @@
 name: Tests
 on:
   workflow_call:
+    secrets:
+      CACHIX_AUTH_TOKEN:
+        required: false
   workflow_dispatch:
 permissions:
   contents: read
@@ -81,6 +84,7 @@ jobs:
         with:
           toolchain: '1.98.1'
           components: rustfmt,clippy
+          cache-workspaces: core
       - name: Install runtime test dependencies
         run: |
           sudo apt-get update
@@ -95,11 +99,18 @@ jobs:
           extra_nix_config: |
             extra-substituters = https://nabos.cachix.org
             extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published'))
+        with:
+          name: nabos
+          skipPush: true
       - name: Build and test pinned native Nix packages
         run: |
+          : > build/native-test-cache-roots
           for package in device-core nab-hardware nabos; do
             nix --extra-experimental-features 'nix-command flakes' build \
-              --no-update-lock-file ".#$package-native" --out-link "build/$package-native"
+              --no-update-lock-file ".#$package-native" --out-link "build/$package-native" \
+              --print-out-paths >> build/native-test-cache-roots
           done
           {
             printf 'DEVICE_CORE_BIN=%s/build/device-core-native/bin/device-core\n' "$PWD"
@@ -144,3 +155,13 @@ jobs:
           export NABOS_INTEGRATION=1 NABOS_APP_USER=nab-app NABOS_HARDWARE_USER=nab-hardware NABOS_DEVICE_USER=device-core
           "$1" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
           NAMESPACE
+      - name: Publish tested native package roots
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published'))
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          test -n "$CACHIX_AUTH_TOKEN"
+          cachix push nabos < build/native-test-cache-roots
+          unset CACHIX_AUTH_TOKEN
+          python3 image/cache-report.py build/native-test-cache-roots --require-published \
+            --output build/native-test-cache-report.json

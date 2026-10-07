@@ -143,6 +143,14 @@ images, bundles, certificats et dev shells ne sont pas des racines de
 publication ; les images et releases sont conservées hors Cachix.
 La publication globale du store et `watch-store` ne sont pas utilisés.
 
+Le job `device-integration` lit également ce cache pour les trois paquets natifs
+`device-core-native`, `nab-hardware-native` et `nabos-native`. Après réussite des
+tests, il publie leurs racines sur `main`, lors d’une release ou d’un lancement
+manuel sur `main`, et vérifie leur disponibilité publique. Les PR restent en
+lecture anonyme. Les deux jobs de tests ciblent `core/target` dans leur cache
+Rust ; Go conserve son cache de modules et de compilation. Les fixtures
+d’intégration sont exécutées à chaque run, même lorsque les binaires sont cachés.
+
 `CACHIX_AUTH_TOKEN` est un secret de publication CI, transmis uniquement à
 l’étape autorisée à écrire dans le cache `nabos`. Sa valeur ne doit jamais
 apparaître dans le dépôt, les documents ou les journaux. Les PR, y compris

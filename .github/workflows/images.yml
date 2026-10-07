@@ -114,6 +114,8 @@ jobs:
   test:
     needs: check
     uses: ./.github/workflows/tests.yml
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ (github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.action == 'published')) && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
   build:
     if: github.event_name != 'workflow_dispatch' || inputs.mode == 'build'
     needs: [check, test]
