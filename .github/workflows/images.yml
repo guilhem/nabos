@@ -115,7 +115,7 @@ jobs:
     needs: check
     uses: ./.github/workflows/tests.yml
     secrets:
-      CACHIX_AUTH_TOKEN: ${{ (github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.action == 'published')) && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
+      CACHIX_AUTH_TOKEN: ${{ github.repository == 'guilhem/nabos' && (((github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.action == 'published')) && github.event_name != 'pull_request') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && secrets.CACHIX_AUTH_TOKEN || '' }}
   build:
     if: github.event_name != 'workflow_dispatch' || inputs.mode == 'build'
     needs: [check, test]
@@ -143,7 +143,7 @@ jobs:
             extra-substituters = https://nabos.cachix.org
             extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'))
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
         with:
           name: nabos
           skipPush: true
@@ -173,7 +173,7 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/rauc-key.pem" "$RUNNER_TEMP/rauc-cert.pem"
       - name: Publish selected cache roots
-        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'))
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHE: ${{ vars.CACHIX_CACHE }}
@@ -183,6 +183,9 @@ jobs:
           # The cache's official-cache exclusion omits cache.nixos.org paths.
           # Selected roots exclude payloads, SD images, bundles and dev shells.
           cachix push "$CACHE" < "dist/$TARGET/cache-roots-$TARGET"
+          unset CACHIX_AUTH_TOKEN
+          python3 image/cache-report.py "dist/$TARGET/cache-roots-$TARGET" --require-published \
+            --output "dist/$TARGET/cache-report-$TARGET.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nabos-${{ matrix.target }}
@@ -303,6 +306,7 @@ jobs:
           directory="dist/measurements/$TARGET/cold"
           # Cachix's official-cache exclusion skips upstream binaries.
           cachix push "$CACHE" < "$directory/cache-roots.txt"
+          unset CACHIX_AUTH_TOKEN
           python3 image/cache-report.py "$directory/cache-roots.txt" --require-published \
             --output "$directory/cache-after-push.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -373,6 +377,7 @@ jobs:
           directory="dist/measurements/$TARGET/$PHASE"
           # Cachix's official-cache exclusion skips upstream binaries.
           cachix push "$CACHE" < "$directory/cache-roots.txt"
+          unset CACHIX_AUTH_TOKEN
           python3 image/cache-report.py "$directory/cache-roots.txt" --require-published \
             --output "$directory/cache-after-push.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

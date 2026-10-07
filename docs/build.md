@@ -154,18 +154,20 @@ paquet : les sorties de manuels non installées ne déclenchent pas de compilati
 
 Le job `device-integration` lit également ce cache pour les trois paquets natifs
 `device-core-native`, `nab-hardware-native` et `nabos-native`. Après réussite des
-tests, il publie leurs racines sur `main`, lors d’une release ou d’un lancement
-manuel sur `main`, et vérifie leur disponibilité publique. Les PR restent en
-lecture anonyme. Les deux jobs de tests ciblent `core/target` dans leur cache
+tests, il publie leurs racines sur `main`, lors d’une release, d’un lancement
+manuel sur `main` ou d’une PR issue d’une branche de ce dépôt, et vérifie leur
+disponibilité publique. Les builds d’images publient également leurs racines
+sur les PR internes. Les deux jobs de tests ciblent `core/target` dans leur cache
 Rust ; Go conserve son cache de modules et de compilation. Les fixtures
 d’intégration sont exécutées à chaque run, même lorsque les binaires sont cachés.
 
 `CACHIX_AUTH_TOKEN` est un secret de publication CI, transmis uniquement à
 l’étape autorisée à écrire dans le cache `nabos`. Sa valeur ne doit jamais
-apparaître dans le dépôt, les documents ou les journaux. Les PR, y compris
-celles des forks, ne reçoivent pas ce secret. Lire le cache ne demande aucun
-token. Vérifier les dépendances effectivement disponibles dans les caches
-publics après publication.
+apparaître dans le dépôt, les documents ou les journaux. Les PR internes peuvent
+publier avec ce secret ; les PR de forks et celles ouvertes par Dependabot
+conservent la lecture anonyme. Le jeton est retiré de l’environnement avant les
+vérifications du cache qui appellent Nix. Vérifier les dépendances effectivement
+disponibles dans les caches publics après publication.
 
 ## Mesurer le cache et les constructions
 
