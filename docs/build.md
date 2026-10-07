@@ -134,14 +134,23 @@ extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP
 ```
 
 Publier uniquement les racines listées dans `cache-roots-<cible>` : le système,
-U-Boot, les en-têtes préparés du noyau et les sorties natives `gtk4.dev` et
-`gobject-introspection.dev`, avec leurs dépendances. Les trois dernières sont
-nécessaires à la reconstruction sur un hôte neuf mais absentes de la closure
+les sorties d’exécution demandées pour assembler son profil, U-Boot,
+les en-têtes préparés du noyau, les sorties natives `gtk4.dev` et
+`gobject-introspection.dev` et le compilateur Go, avec leurs dépendances.
+Ces outils et certaines sorties masquées par les collisions du profil sont
+nécessaires à la reconstruction sur un hôte neuf mais absents de la closure
 d’exécution. Cachix ignore les objets déjà présents dans le cache officiel.
 Le payload d’assemblage, les
 images, bundles, certificats et dev shells ne sont pas des racines de
 publication ; les images et releases sont conservées hors Cachix.
 La publication globale du store et `watch-store` ne sont pas utilisés.
+
+La version de l’image est inscrite dans NabOS et ses métadonnées. Les assets et
+`nab-hardware` gardent une identité indépendante de cette version ; Nix invalide
+leur cache quand leurs sources ou dépendances changent. Changer uniquement la
+version de l’image ne recompile donc pas les deux services Rust.
+Le profil système sélectionne explicitement la sortie d’exécution de chaque
+paquet : les sorties de manuels non installées ne déclenchent pas de compilation.
 
 Le job `device-integration` lit également ce cache pour les trois paquets natifs
 `device-core-native`, `nab-hardware-native` et `nabos-native`. Après réussite des

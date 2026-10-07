@@ -79,8 +79,7 @@ let
   };
 
   assets = pkgs.stdenvNoCC.mkDerivation {
-    pname = "nabos-assets";
-    inherit version;
+    name = "nabos-assets";
     src = ../assets;
     dontBuild = true;
     installPhase = ''
@@ -126,7 +125,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
 
   nab-hardware = pkgs.rustPlatform.buildRustPackage {
     pname = "nab-hardware";
-    inherit version;
+    version = (builtins.fromTOML (builtins.readFile ../core/Cargo.toml)).package.version;
     src = ../core;
     cargoLock = {
       lockFile = ../core/Cargo.lock;

@@ -6,8 +6,10 @@ let
   dtb = if arm64 then "bcm2710-rpi-zero-2-w.dtb" else "bcm2708-rpi-zero-w.dtb";
   kernel = config.boot.kernelPackages.kernel;
   # Runtime references omit headers and native helpers needed on a fresh builder.
-  cacheRoots = [ config.system.build.toplevel packages.uboot kernel.dev
-    pkgs.gtk4.dev pkgs.gobject-introspection.dev ];
+  cacheRoots = lib.unique ([ config.system.build.toplevel packages.uboot kernel.dev
+    pkgs.gtk4.dev pkgs.gobject-introspection.dev pkgs.go_1_27 ]
+    # Profile collisions can discard references to outputs it still must build.
+    ++ lib.concatMap (entry: entry.paths) config.system.path.chosenOutputs);
   bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);
   rootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-ext4-fs.nix") {
     storePaths = [ config.system.build.toplevel ];

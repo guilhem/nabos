@@ -97,7 +97,24 @@ let
   };
 in
 {
-  imports = [ "${modulesPath}/profiles/image-based-appliance.nix" ];
+  imports = [
+    "${modulesPath}/profiles/image-based-appliance.nix"
+    {
+      # buildEnv otherwise requests meta.outputsToInstall (including manuals),
+      # even though the appliance never links their directories into its profile.
+      options.system.path = lib.mkOption {
+        apply = path: path.override {
+          paths = map (package: package // {
+            meta = (package.meta or { }) // {
+              outputsToInstall = builtins.filter
+                (output: !(builtins.elem output [ "man" "info" "doc" "devman" "devinfo" "devdoc" ]))
+                (package.meta.outputsToInstall or [ (package.outputName or "out") ]);
+            };
+          }) config.environment.systemPackages;
+        };
+      };
+    }
+  ];
   disabledModules = [ "profiles/base.nix" ];
   assertions = [
     { assertion = builtins.elem nabosTarget [ "zero-armv6" "zero2-arm64" ]; message = "Unknown NabOS target"; }
