@@ -19,3 +19,15 @@ diff --git a/src/network/tests.rs b/src/network/tests.rs
              assert!(
                  crate::auth::sender_uid(&core.bus, &sender).await.is_err(),
                  "a disconnected connection has no authenticated UID"
+diff --git a/tests/update_integration.rs b/tests/update_integration.rs
+--- a/tests/update_integration.rs
++++ b/tests/update_integration.rs
+@@ -1116,6 +1116,8 @@ async fn optional_domain_allows_power_and_releases_failed_hooks() {
+     let mut options = f.options.clone();
+     options.update_repo.clear();
+     options.update_asset.clear();
++    // Wait for the broker to release the name before asserting RAUC is absent.
++    assert!(f.rauc_connection.release_name(RAUC).await.unwrap());
+     f.rauc_connection.clone().close().await.unwrap();
+     let unsupported = f.fresh(&options).await;
+     assert_eq!(unsupported.status().state, "unsupported");
