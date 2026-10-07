@@ -374,8 +374,13 @@ func TestUnitsParse(t *testing.T) {
 	if _, err := exec.LookPath("systemd-analyze"); err != nil {
 		t.Skip("systemd-analyze not available")
 	}
-	units, _ := filepath.Glob(filepath.Join(rootfsDir, "usr/lib/systemd/system/*.service"))
-	r := execute(t, "", nil, "systemd-analyze", append([]string{"verify", "--man=no", "--generators=no"}, units...)...)
+	// Host units must not be parsed with the image's version of systemd.
+	hostUnits := t.TempDir()
+	write(t, filepath.Join(hostUnits, "sysinit.target"), "[Unit]\nNabosInvalidHostDirective=true\n")
+	t.Setenv("SYSTEMD_UNIT_PATH", hostUnits)
+	unitsDir := filepath.Join(rootfsDir, "usr/lib/systemd/system")
+	units, _ := filepath.Glob(filepath.Join(unitsDir, "*.service"))
+	r := execute(t, "", []string{"SYSTEMD_UNIT_PATH=" + unitsDir}, "systemd-analyze", append([]string{"verify", "--man=no", "--generators=no"}, units...)...)
 	noise := []string{"is not executable", "No such file or directory", "Failed to prepare filename",
 		"Unit is bound to inactive", "not found", "Failed to resolve", "Operation not permitted"}
 	for _, line := range strings.Split(r.stdout+r.stderr, "\n") {
