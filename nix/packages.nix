@@ -146,7 +146,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     pname = "device-core";
     version = sourceVersion "device_core";
     src = source "device_core";
-    # Fence the fixture's disconnect at the broker before asserting its UID is gone.
+    # Observe asynchronous fixture completion before checking its effects.
     patches = [ ./device-core-tests.patch ];
     postPatch = ''
       # The decoder fixture deliberately clears PATH; its interpreter must be absolute.
@@ -155,6 +155,8 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     '';
     cargoLock.lockFile = ./device-core.Cargo.lock;
     doCheck = native;
+    # Test harnesses do not need the release profile's full LTO under QEMU.
+    checkType = "debug";
     nativeBuildInputs = [ pkgs.makeWrapper ];
     nativeCheckInputs = [ dbusForTests ] ++ (with pkgs.buildPackages; [
       coreutils python3 openssh openssl rauc squashfsTools

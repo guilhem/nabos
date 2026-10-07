@@ -22,7 +22,23 @@ diff --git a/src/network/tests.rs b/src/network/tests.rs
 diff --git a/tests/update_integration.rs b/tests/update_integration.rs
 --- a/tests/update_integration.rs
 +++ b/tests/update_integration.rs
-@@ -1116,6 +1116,8 @@ async fn optional_domain_allows_power_and_releases_failed_hooks() {
+@@ -1049,6 +1049,7 @@
+     assert!(f.updater.power(action.clone()).await.is_err());
+     assert_eq!(calls.load(Ordering::SeqCst), 0);
+     assert_eq!(f.terminal(&id).await.state, "reboot");
++    f.maintenance_released().await;
+     f.updater.power(action.clone()).await.unwrap();
+     assert_eq!(calls.load(Ordering::SeqCst), 1);
+     f.rauc_connection.clone().close().await.unwrap();
+@@ -1070,6 +1071,7 @@
+     assert_eq!(f.install(true).await.state, "reboot");
+     // The successful retry is known installed, even before health clears the prior suspension.
+     assert!(f.updater.status().suspended);
++    f.maintenance_released().await;
+     f.updater.power(action).await.unwrap();
+     assert_eq!(calls.load(Ordering::SeqCst), 2);
+ }
+@@ -1116,6 +1118,8 @@
      let mut options = f.options.clone();
      options.update_repo.clear();
      options.update_asset.clear();
@@ -31,6 +47,55 @@ diff --git a/tests/update_integration.rs b/tests/update_integration.rs
      f.rauc_connection.clone().close().await.unwrap();
      let unsupported = f.fresh(&options).await;
      assert_eq!(unsupported.status().state, "unsupported");
+@@ -1210,11 +1214,19 @@
+     async fn manual(&self, version: &str, bypass: bool, retry: bool) -> Status {
+         use std::os::fd::AsFd;
+         let file = manual_bundle(&self.bus.dir, version);
+-        let id = self
+-            .updater
+-            .install_bundle(file.as_fd().into(), bypass, retry)
+-            .await
+-            .unwrap();
++        // Terminal results can precede the previous actor releasing its lock.
++        let id = tokio::time::timeout(Duration::from_secs(2), async {
++            loop {
++                match self.updater.install_bundle(file.as_fd().into(), bypass, retry).await {
++                    Err(error) if error == "an update operation is already in progress" => {
++                        tokio::time::sleep(Duration::from_millis(5)).await;
++                    }
++                    result => break result.unwrap(),
++                }
++            }
++        })
++        .await
++        .expect("previous update operation did not finish");
+         drop(file);
+         self.terminal(&id).await
+     }
+@@ -1421,6 +1433,7 @@
+     assert_eq!(f.reboots.load(Ordering::SeqCst), 0);
+     assert_eq!(f.rauc.0.lock().unwrap().installed[0], expected);
+     assert_eq!(std::fs::read(peer).unwrap(), b"online resume bytes");
++    f.maintenance_released().await;
+     assert!(!f.options.data_dir.join("updates/manual.raucb").exists());
+     let journal: Value = serde_json::from_slice(
+         &std::fs::read(f.options.data_dir.join("updates/state.json")).unwrap(),
+@@ -1572,6 +1585,15 @@
+     helper.0.lock().unwrap().fail_stop = true;
+     let s = f.manual("dev-test", true, false).await;
+     assert_eq!(s.state, "reboot");
++    // The terminal result is published before asynchronous helper cleanup.
++    tokio::time::timeout(Duration::from_secs(2), async {
++        while f.updater.status().error.is_empty() {
++            tokio::time::sleep(Duration::from_millis(5)).await;
++        }
++    })
++    .await
++    .expect("helper cleanup failure was never reported");
++    let s = f.updater.status();
+     assert!(s.error.contains("helper cleanup failed"), "{s:?}");
+     assert!(f.gate.blocked());
+     assert!(f.options.data_dir.join("updates/manual.raucb").exists());
 diff --git a/tests/config_system_voice.rs b/tests/config_system_voice.rs
 --- a/tests/config_system_voice.rs
 +++ b/tests/config_system_voice.rs
