@@ -78,9 +78,9 @@ if ! $defer_tests; then
     "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$out/nabos-$target.raucb" "$out/ca-$target.cert.pem"
 fi
 xz -T0 -6 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
-cp "$payload/cache-roots" "$out/cache-roots-$target"
+install -m644 "$payload/cache-roots" "$out/cache-roots-$target"
 cp "$repo/flake.lock" "$out/flake-$target.lock"
-cp "$payload/boot.cmd" "$out/boot-$target.cmd"
+install -m644 "$payload/boot.cmd" "$out/boot-$target.cmd"
 dirty=false
 [[ -z $(git -C "$repo" status --porcelain --untracked-files=no) ]] || dirty=true
 jq --arg revision "$(git -C "$repo" rev-parse HEAD)" --argjson seconds "$seconds" \
