@@ -242,8 +242,13 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     '';
   };
 
-  lva = if target == "zero-armv6" then null else pkgs.callPackage ./lva.nix {
+  lva = if target == "zero-armv6" then null else (pkgs.callPackage ./lva.nix {
     src = source "lva";
     version = lock.tools.lva;
-  };
+  }).overrideAttrs (old: {
+    preFixup = (old.preFixup or "") + ''
+      # QEMU can lose the Python wrapper's argv0-based dependency path.
+      export PYTHONPATH="${pkgs.buildPackages.python3Packages.pyelftools}/${pkgs.buildPackages.python3.sitePackages}''${PYTHONPATH:+:$PYTHONPATH}"
+    '';
+  });
 }
