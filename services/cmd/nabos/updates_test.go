@@ -52,6 +52,34 @@ func TestUpdateUIUsesRemoteOperationsAndConfig(t *testing.T) {
 	}
 }
 
+func TestEdgeChannelKeepsRawIdentity(t *testing.T) {
+	a := testApp(t)
+	f := appFixture(t, a)
+	tag := "edge-0.1.1.1234"
+	f.Mu.Lock()
+	f.Configured = true
+	f.Catalog = []device.Release{{Tag: tag, Prerelease: true, Ready: true}}
+	f.Mu.Unlock()
+	cookie, h := serviceSession(t, a), a.routes()
+	revision, _, _ := a.device.ReadConfig(a.ctx)
+	form := url.Values{"revision": {revision}, "mode": {"notify"}, "channel": {"edge"}, "start": {"03:00"}, "end": {"05:00"}}
+	if w := serviceRequest(h, "POST", "/updates/settings", form, cookie); strings.Contains(w.Header().Get("Location"), "err=") {
+		t.Fatal(w.Header())
+	}
+	page := serviceRequest(h, "GET", "/updates", nil, cookie)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `value="edge" selected`) || !strings.Contains(page.Body.String(), tag+" — Edge") {
+		t.Fatal(page.Code, page.Body.String())
+	}
+	if w := serviceRequest(h, "POST", "/updates/install", url.Values{"tag": {tag}}, cookie); strings.Contains(w.Header().Get("Location"), "err=") {
+		t.Fatal(w.Header())
+	}
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	if f.InstallTag != tag || f.InstallChannel != "edge" || f.InstallAutomatic {
+		t.Fatal("raw Edge identity lost", f.InstallTag, f.InstallChannel)
+	}
+}
+
 type updatePart struct {
 	name, filename string
 	body           io.Reader

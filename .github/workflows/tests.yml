@@ -43,9 +43,14 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test -race ./...
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
       - name: LED recovery with missing sysfs attributes
         run: |
-          paths=$(sed -n 's/^ReadWritePaths=//p' image/rootfs/usr/lib/systemd/system/nab-hardware.service)
+          paths=$(nix --extra-experimental-features 'nix-command flakes' eval --impure --json --expr '
+            ((builtins.getFlake ("git+file://" + toString ./.)).lib.mkImage {
+              buildSystem = "x86_64-linux"; target = "zero-armv6";
+            }).system.config.systemd.services.nab-hardware.serviceConfig.ReadWritePaths
+          ' | jq -er 'select(length > 0) | join(" ")')
           recovered=$(sudo systemd-run --wait --pipe --collect \
             -p ProtectSystem=strict -p CapabilityBoundingSet= -p "ReadWritePaths=$paths" \
             -p 'ExecStopPost=/usr/bin/printf led-cleanup-ran' /bin/true)
@@ -100,7 +105,7 @@ jobs:
             extra-substituters = https://nabos.cachix.org
             extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
         with:
           name: nabos
           skipPush: true
@@ -112,6 +117,9 @@ jobs:
               --no-update-lock-file ".#$package-native" --out-link "build/$package-native" \
               --print-out-paths >> build/native-test-cache-roots
           done
+          nix --extra-experimental-features 'nix-command flakes' build \
+            --no-update-lock-file .#checks.x86_64-linux.audio-boot \
+            --out-link build/audio-boot-test --print-out-paths >> build/native-test-cache-roots
           {
             printf 'DEVICE_CORE_BIN=%s/build/device-core-native/bin/device-core\n' "$PWD"
             printf 'NABOS_HARDWARE_BIN=%s/build/nab-hardware-native/bin/nab-hardware\n' "$PWD"
@@ -156,7 +164,8 @@ jobs:
           "$1" -test.run '^TestEndToEnd$' -test.count=1 -test.v -test.timeout=10m
           NAMESPACE
       - name: Publish tested native package roots
-        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
+        continue-on-error: true
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |

@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixos-hardware.url = "github:NixOS/nixos-hardware/31cc5f4d9b9ba601071e8b8504601b9b176e2756";
+    nixos-hardware.url = "github:NixOS/nixos-hardware";
     nixos-hardware.inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -67,6 +67,9 @@
         });
     in {
       lib = { inherit mkImage; };
+      checks.x86_64-linux.audio-boot = import ./nix/tests/audio-boot.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      };
       packages = forSystems (buildSystem:
         nixpkgs.lib.genAttrs targets (target:
           (mkImage { inherit buildSystem target; }).payload) // {

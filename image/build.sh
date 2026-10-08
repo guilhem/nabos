@@ -9,6 +9,8 @@ shift 2
 [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,63}$ ]] || exit 2
 development=false
 defer_tests=false
+xz_level=3
+zstd_level=6
 for option in "$@"; do
   case $option in
     --development) development=true ;;
@@ -30,16 +32,25 @@ cleanup() { rm -rf "$work/signing"; }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+payload_expr='let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE"); in
+  (f.lib.mkImage { buildSystem = builtins.currentSystem;
+    target = builtins.getEnv "NABOS_TARGET";
+    version = builtins.getEnv "NABOS_VERSION"; }).payload'
+# Keep selected roots available even when building or packaging the payload fails.
+rm -f "$out/cache-roots-$target"
+nix --extra-experimental-features 'nix-command flakes' eval --impure --json \
+  --apply 'roots: map builtins.toString roots' --expr "($payload_expr).cacheRoots" \
+  > "$work/cache-roots.json"
+jq -er '.[]' "$work/cache-roots.json" > "$work/cache-roots"
+install -m644 "$work/cache-roots" "$out/cache-roots-$target"
 started=$(date +%s)
 payload=$(nix --extra-experimental-features 'nix-command flakes' build --impure \
   --no-link --print-out-paths \
   --option extra-substituters https://nabos.cachix.org \
   --option extra-trusted-public-keys 'nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=' \
-  --expr 'let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE"); in
-    (f.lib.mkImage { buildSystem = builtins.currentSystem;
-      target = builtins.getEnv "NABOS_TARGET";
-      version = builtins.getEnv "NABOS_VERSION"; }).payload')
+  --expr "$payload_expr")
 seconds=$(( $(date +%s) - started ))
+started=$(date +%s)
 mkdir -p "$work/images" "$work/data/rauc" "$work/bundle" "$work/empty"
 if $development; then
   mkdir -m700 "$work/signing"
@@ -62,30 +73,41 @@ fakeroot bash -c 'chown -R 0:0 "$1"; exec mkfs.ext4 -q -F -L nabos-data -d "$1" 
   -- "$work/data" "$work/images/data.ext4"
 GENIMAGE_SHELL="$(command -v bash)" genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" \
   --inputpath "$work/images" --outputpath "$work/images" --tmppath "$work/genimage-tmp"
-cp --reflink=auto "$work/images/rootfs.ext4" "$work/bundle/"
-cp --reflink=auto "$work/images/boot.vfat" "$work/bundle/"
+sd_seconds=$(( $(date +%s) - started ))
+started=$(date +%s)
+ln "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$work/bundle/"
 compatible=$(jq -er --arg target "$target" '.targets[$target].compatible' "$repo/image/sources.lock.json")
 sed -e "s/@COMPATIBLE@/$compatible/g" -e "s/@VERSION@/$version/g" \
   "$repo/image/manifest.raucm.in" > "$work/bundle/manifest.raucm"
 rm -f "$out/nabos-$target.raucb"
-rauc bundle --mksquashfs-args='-comp zstd -Xcompression-level 15' \
+rauc bundle --mksquashfs-args="-comp zstd -Xcompression-level $zstd_level" \
   --cert="$signing_cert" --key="$signing_key" "$work/bundle" "$out/nabos-$target.raucb"
 test "$(stat -c %s "$out/nabos-$target.raucb")" -le 2147483648
 install -m644 "$signing_cert" "$out/ca-$target.cert.pem"
+rauc_seconds=$(( $(date +%s) - started ))
 chmod a-w "$work/images/"{sdcard.img,rootfs.ext4,boot.vfat}
+test_seconds=null
 if ! $defer_tests; then
+  started=$(date +%s)
   EXPECTED_VERSION="$version" bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" \
     "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$out/nabos-$target.raucb" "$out/ca-$target.cert.pem"
+  test_seconds=$(( $(date +%s) - started ))
 fi
-xz -T0 -6 --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
-install -m644 "$payload/cache-roots" "$out/cache-roots-$target"
+started=$(date +%s)
+xz -T0 "-$xz_level" --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
+xz_seconds=$(( $(date +%s) - started ))
 cp "$repo/flake.lock" "$out/flake-$target.lock"
 install -m644 "$payload/boot.cmd" "$out/boot-$target.cmd"
 dirty=false
 [[ -z $(git -C "$repo" status --porcelain --untracked-files=no) ]] || dirty=true
 jq --arg revision "$(git -C "$repo" rev-parse HEAD)" --argjson seconds "$seconds" \
+  --argjson sd_seconds "$sd_seconds" --argjson rauc_seconds "$rauc_seconds" \
+  --argjson xz_seconds "$xz_seconds" --argjson test_seconds "$test_seconds" \
+  --argjson xz_level "$xz_level" --argjson zstd_level "$zstd_level" \
   --argjson development "$development" --argjson dirty "$dirty" --arg nixpkgs "$(jq -r '.nodes[.nodes.root.inputs.nixpkgs].locked.rev' "$repo/flake.lock")" \
-  '. + {source_revision:$revision,nixpkgs_revision:$nixpkgs,build_seconds:$seconds,development:$development,source_dirty:$dirty}' \
+  '. + {source_revision:$revision,nixpkgs_revision:$nixpkgs,build_seconds:$seconds,development:$development,source_dirty:$dirty,
+    durations_seconds:{nix_build:$seconds,sd_assembly:$sd_seconds,rauc_bundle:$rauc_seconds,xz:$xz_seconds,tests:$test_seconds},
+    compression:{xz:$xz_level,rauc_zstd:$zstd_level}}' \
   "$payload/build.json" > "$out/build-$target.json"
 (cd "$out"; sha256sum "nabos-$target.img.xz" "nabos-$target.raucb" "ca-$target.cert.pem" \
   "build-$target.json" "flake-$target.lock" "boot-$target.cmd" "cache-roots-$target" > "SHA256SUMS-$target")

@@ -23,12 +23,13 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: images-${{ github.event_name }}-${{ github.ref }}-${{ inputs.mode || 'build' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+  group: images-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}-${{ inputs.mode || 'build' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   TMPDIR: ${{ github.workspace }}/build/nix-tmp
 jobs:
   check:
+    if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'edge-')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -46,6 +47,8 @@ jobs:
           MODE: ${{ inputs.mode }}
           NIXPKGS_REV: ${{ inputs.nixpkgs_rev }}
           RELEASE_ACTION: ${{ github.event.action }}
+          EDGE_ENABLED: ${{ vars.NABOS_EDGE_ENABLED }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="dev-${GITHUB_SHA:0:12}"
           production=false
@@ -62,6 +65,10 @@ jobs:
                      for part in (match[4] or '').split('.')), 'numeric prerelease identifiers cannot have leading zeros'
           PYTAG
             VERSION="$GITHUB_REF_NAME"
+            production=true
+            development=false
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main && "$EDGE_ENABLED" == true ]]; then
+            VERSION=$(python3 image/edge-release.py version)
             production=true
             development=false
           elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
@@ -88,6 +95,8 @@ jobs:
       - name: Parse, evaluate both configurations without builds, check metrics parser
         run: |
           python3 image/cache-report.py --self-test
+          python3 image/test-edge-release.py
+          python3 image/test-build-efficiency.py
           bash -n image/build.sh image/test.sh image/test-artifact.sh image/test-runtime.sh image/benchmark.sh
           while IFS= read -r file; do nix-instantiate --parse "$file" >/dev/null; done < <(find nix -name '*.nix' -print)
           nix-instantiate --parse flake.nix >/dev/null
@@ -108,13 +117,13 @@ jobs:
                 in p.payload.drvPath'
           done
   test:
-    needs: check
+    if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'edge-')
     uses: ./.github/workflows/tests.yml
     secrets:
-      CACHIX_AUTH_TOKEN: ${{ github.repository == 'guilhem/nabos' && (((github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.action == 'published')) && github.event_name != 'pull_request') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && secrets.CACHIX_AUTH_TOKEN || '' }}
+      CACHIX_AUTH_TOKEN: ${{ github.repository == 'guilhem/nabos' && ((github.event_name == 'workflow_dispatch') || ((github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.action == 'published')) && github.event_name != 'pull_request') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && secrets.CACHIX_AUTH_TOKEN || '' }}
   build:
     if: github.event_name != 'workflow_dispatch' || inputs.mode == 'build'
-    needs: [check, test]
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -135,12 +144,12 @@ jobs:
             extra-substituters = https://nabos.cachix.org
             extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
         with:
           name: nabos
           skipPush: true
       - name: Prepare production signing material
-        if: github.repository == 'guilhem/nabos' && github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'
+        if: github.repository == 'guilhem/nabos' && needs.check.outputs.production == 'true'
         env:
           SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
           SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
@@ -164,21 +173,41 @@ jobs:
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/rauc-key.pem" "$RUNNER_TEMP/rauc-cert.pem"
+      - name: Select completed cache roots, including after packaging failure
+        id: cache-roots
+        if: ${{ !cancelled() && hashFiles(format('dist/{0}/cache-roots-{0}', matrix.target)) != '' }}
+        run: |
+          while IFS= read -r root; do
+            if nix-store --check-validity "$root" 2>/dev/null; then printf '%s\n' "$root"; fi
+          done < "dist/$TARGET/cache-roots-$TARGET" > "$RUNNER_TEMP/realized-cache-roots"
       - name: Publish selected cache roots
-        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
+        id: cache
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.cache-roots.outcome == 'success' && github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHE: ${{ vars.CACHIX_CACHE }}
         run: |
+          # shellcheck disable=SC2034 # Used by the EXIT timing trap.
+          started=$(date +%s)
+          trap 'printf "{\"cachix_seconds\":%s}\n" "$(( $(date +%s) - started ))" > "dist/$TARGET/cache-timings-$TARGET.json"' EXIT
           test "$CACHE" = nabos
           test -n "$CACHIX_AUTH_TOKEN"
           # The cache's official-cache exclusion omits cache.nixos.org paths.
           # Selected roots exclude payloads, SD images, bundles and dev shells.
-          cachix push "$CACHE" < "dist/$TARGET/cache-roots-$TARGET"
-          unset CACHIX_AUTH_TOKEN
-          python3 image/cache-report.py "dist/$TARGET/cache-roots-$TARGET" --require-published \
+          cachix push "$CACHE" < "$RUNNER_TEMP/realized-cache-roots"
+      - name: Measure published cache and report failures
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.cache.outcome != 'skipped' && steps.cache-roots.outcome == 'success' }}
+        run: |
+          if [[ '${{ steps.cache.outcome }}' != success ]]; then
+            echo '::warning::Cachix publication failed; image artifacts are preserved.'
+            echo 'Cachix publication failed; image artifacts are preserved.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python3 image/cache-report.py "$RUNNER_TEMP/realized-cache-roots" --require-published \
             --output "dist/$TARGET/cache-report-$TARGET.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
           name: nabos-${{ matrix.target }}
           path: |
@@ -189,10 +218,21 @@ jobs:
             dist/${{ matrix.target }}/boot-${{ matrix.target }}.cmd
             dist/${{ matrix.target }}/cache-roots-${{ matrix.target }}
             dist/${{ matrix.target }}/build-${{ matrix.target }}.json
+            dist/${{ matrix.target }}/cache-report-${{ matrix.target }}.json
+            dist/${{ matrix.target }}/cache-timings-${{ matrix.target }}.json
             dist/${{ matrix.target }}/SHA256SUMS-${{ matrix.target }}
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: nabos-cache-report-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/cache-report-${{ matrix.target }}.json
+            dist/${{ matrix.target }}/cache-timings-${{ matrix.target }}.json
+          if-no-files-found: warn
+          retention-days: 45
   image-test:
     needs: [check, build]
     strategy:
@@ -237,7 +277,7 @@ jobs:
           name: nabos-${{ matrix.target }}
           path: dist/${{ matrix.target }}
       - name: Prepare expected production trust anchor
-        if: github.repository == 'guilhem/nabos' && github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true'
+        if: github.repository == 'guilhem/nabos' && needs.check.outputs.production == 'true'
         env:
           SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
         run: |
@@ -251,7 +291,8 @@ jobs:
           EXPECTED_RAUC_CERT: ${{ needs.check.outputs.production == 'true' && format('{0}/rauc-expected-cert.pem', runner.temp) || '' }}
         run: bash image/test-artifact.sh "$TARGET" "dist/$TARGET"
       - name: Publish tested native U-Boot sandbox root
-        if: ${{ !cancelled() && hashFiles(format('build/nix-tmp/uboot-cache-root-{0}', matrix.target)) != '' && github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
+        continue-on-error: true
+        if: ${{ !cancelled() && hashFiles(format('build/nix-tmp/uboot-cache-root-{0}', matrix.target)) != '' && github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
@@ -261,6 +302,13 @@ jobs:
       - name: Remove expected production certificate
         if: always()
         run: rm -f "$RUNNER_TEMP/rauc-expected-cert.pem"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: nabos-test-report-${{ matrix.target }}
+          path: build/nix-tmp/test-${{ matrix.target }}.json
+          if-no-files-found: warn
+          retention-days: 45
   seed:
     if: github.repository == 'guilhem/nabos' && github.event_name == 'workflow_dispatch' && inputs.mode == 'benchmark'
     needs: [check, test]
@@ -425,7 +473,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          pattern: nabos-*
+          pattern: nabos-zero*
           path: dist
       - name: Verify both targets and upload to the published release
         env:
@@ -444,3 +492,84 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber nabos-zero-armv6/* nabos-zero2-arm64/*
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS
+  cache-compare:
+    if: >-
+      always() && github.repository == 'guilhem/nabos' && needs.build.result == 'success' &&
+      (github.ref == 'refs/heads/codex/nix-inputs-update' || github.head_ref == 'codex/nix-inputs-update')
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: nabos-cache-report-*
+          path: measurements/candidate
+      - name: Download current main reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow images.yml --branch main \
+            --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          test -n "$run"
+          for target in zero-armv6 zero2-arm64; do
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "nabos-cache-report-$target" \
+              --dir "measurements/current/$target"
+          done
+      - name: Recheck the current and candidate union, including evictions
+        run: |
+          reports=()
+          for target in zero-armv6 zero2-arm64; do
+            current="measurements/current/$target/cache-report-$target.json"
+            candidate="measurements/candidate/nabos-cache-report-$target/cache-report-$target.json"
+            test -f "$current"
+            jq -e '.publication_complete == true' "$candidate"
+            reports+=("$current" "$candidate")
+          done
+          python3 image/cache-report.py --merge "${reports[@]}" --output measurements/cache-union.json
+          python3 - <<'PY'
+          import json, os
+          report = json.load(open('measurements/cache-union.json'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write(f"Current + candidate selected Cachix closure: {report['cachix_compressed_bytes']} compressed bytes.\n")
+              out.write(f"Previously cached paths now absent: {len(report['previously_cached_missing_paths'])}.\n")
+              out.write('This union does not measure total account storage.\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: nabos-current-candidate-cache
+          path: measurements/
+          if-no-files-found: warn
+          retention-days: 45
+  edge:
+    if: >-
+      always() && github.repository == 'guilhem/nabos' && github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' && vars.NABOS_EDGE_ENABLED == 'true' &&
+      needs.check.outputs.production == 'true' && needs.check.result == 'success' &&
+      needs.test.result == 'success' && needs.build.result == 'success' && needs.image-test.result == 'success'
+    needs: [check, test, build, image-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: nabos-zero-armv6
+          path: dist/nabos-zero-armv6
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: nabos-zero2-arm64
+          path: dist/nabos-zero2-arm64
+      - name: Publish tested bytes through a draft, then retain 30 Edge versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: python3 image/edge-release.py publish "$VERSION" dist

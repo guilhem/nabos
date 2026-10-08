@@ -154,7 +154,7 @@ var (
 	persistLib = filepath.Join(repo, "nix/runtime/persist.sh")
 	health     = filepath.Join(rootfsDir, "usr/lib/nabos/health")
 	persist    = []string{"/etc/NetworkManager/system-connections", "/var/lib/NetworkManager",
-		"/var/lib/systemd/timesync", "/var/lib/tagtagtag-sound", "/var/lib/nabos", "/var/lib/systemd/linger"}
+		"/var/lib/systemd/timesync", "/var/lib/tagtagtag-sound", "/var/lib/nabos"}
 )
 
 func TestPersistGrowsOnlyTheDataPartitionOnA16GBCard(t *testing.T) {
@@ -415,65 +415,6 @@ esac`, !c.deviceUnready, !c.hardwareUnready),
 	return string(out), fake.calls(t), verdict
 }
 
-func TestBoardLEDOffAfterHealthyBoot(t *testing.T) {
-	units := filepath.Join(rootfsDir, "usr/lib/systemd/system")
-	healthUnit := strings.Split(read(t, filepath.Join(units, "nabos-health.service")), "\n")
-	for _, line := range []string{"Type=exec", "OnSuccess=nabos-board-led-off.service"} {
-		if !slices.Contains(healthUnit, line) {
-			t.Errorf("health unit missing %q", line)
-		}
-	}
-	unit := read(t, filepath.Join(units, "nabos-board-led-off.service"))
-	const brightness = "/sys/class/leds/ACT/brightness"
-	const marker = "/run/nabos-boot-health"
-	for _, line := range []string{"Type=oneshot", "ConditionPathExists=" + brightness,
-		"ConditionPathExists=" + marker, "NoNewPrivileges=yes", "ProtectSystem=strict", "CapabilityBoundingSet="} {
-		if !slices.Contains(strings.Split(unit, "\n"), line) {
-			t.Errorf("LED unit missing %q", line)
-		}
-	}
-	command := func(key string) string {
-		m := regexp.MustCompile(`(?m)^` + key + `=(.+)$`).FindStringSubmatch(unit)
-		if m == nil {
-			t.Fatalf("LED unit missing %s", key)
-		}
-		return m[1]
-	}
-	condition, action := command("ExecCondition"), command("ExecStart")
-	// Execute the unit's commands with only paths replaced; systemd guards and
-	// sandboxing are inspected above, not exercised by this host test.
-	for _, c := range []struct {
-		name, verdict string
-		healthy       bool
-	}{
-		{"healthy-A", "good A\n", true}, {"healthy-B", "good B\n", true},
-		{"pending", "pending A\n", false}, {"stranded", "stranded B\n", false},
-		{"invalid-slot", "good C\n", false}, {"missing-marker", "", false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			led, verdict := filepath.Join(tmp, "brightness"), filepath.Join(tmp, "health")
-			write(t, led, "1\n")
-			if c.verdict != "" {
-				write(t, verdict, c.verdict)
-			}
-			replace := strings.NewReplacer(brightness, led, marker, verdict)
-			r := execute(t, "", nil, "/bin/sh", "-c", replace.Replace(condition))
-			if (r.code == 0) != c.healthy {
-				t.Fatalf("condition exit %d: %s", r.code, r.stderr)
-			}
-			want := "1\n"
-			if r.code == 0 {
-				run(t, "", "/bin/sh", "-c", replace.Replace(action))
-				want = "0\n"
-			}
-			if got := read(t, led); got != want {
-				t.Errorf("brightness %q, want %q", got, want)
-			}
-		})
-	}
-}
-
 func TestHealth(t *testing.T) {
 	t.Parallel()
 	markGood, reboot := "rauc status mark-good", "systemctl reboot"
@@ -663,8 +604,5 @@ func TestUserspaceHardwareImageContract(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(imageDir, file)); !os.IsNotExist(err) {
 			t.Errorf("obsolete integration remains: %s", file)
 		}
-	}
-	if strings.Contains(read(t, filepath.Join(rootfsDir, "usr/lib/systemd/system/nab-hardware.service")), "nabos-rfid") {
-		t.Error("obsolete reader startup remains")
 	}
 }

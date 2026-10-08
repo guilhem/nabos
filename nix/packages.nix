@@ -30,7 +30,6 @@ let
     pname = "tagtagtag-${name}";
     version = sourceVersion name;
     src = source name;
-    patches = lib.optional (name == "sound") ./tagtagtag-mixer.patch;
     nativeBuildInputs = kernel.moduleBuildDependencies ++ [
       pkgs.buildPackages.dtc pkgs.buildPackages.kmod
     ];
@@ -68,9 +67,6 @@ let
         install -Dm755 tagtagtag-mixerd "$out/bin/tagtagtag-mixerd"
         install -Dm644 mixer.conf.default "$out/share/tagtagtag-sound/mixer.conf.default"
         install -Dm644 60-tagtagtag-volume.rules "$out/lib/udev/rules.d/60-tagtagtag-volume.rules"
-        install -Dm644 tagtagtag-mixerd.service "$out/lib/systemd/system/tagtagtag-mixerd.service"
-        substituteInPlace "$out/lib/systemd/system/tagtagtag-mixerd.service" \
-          --replace-fail /usr/local/sbin/tagtagtag-mixerd "$out/bin/tagtagtag-mixerd"
       ''}
       runHook postInstall
     '';
@@ -146,8 +142,6 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     pname = "device-core";
     version = sourceVersion "device_core";
     src = source "device_core";
-    # Observe asynchronous fixture completion before checking its effects.
-    patches = [ ./device-core-tests.patch ];
     postPatch = ''
       # The decoder fixture deliberately clears PATH; its interpreter must be absolute.
       substituteInPlace tests/audio.rs --replace-fail '#!/usr/bin/python3' \

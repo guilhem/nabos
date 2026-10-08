@@ -55,17 +55,21 @@ def require(ok, message):
         raise RuntimeError(message)
 
 
-def unit_values(directory, name, key):
-    """Read Service assignments, including NixOS resets and ordered drop-ins."""
-    unit = Path(directory) / (name + '.service')
+def unit_values(directory, name, key, section='Service'):
+    """Read generated assignments, including resets and instance drop-ins."""
+    name = name if name.endswith(('.service', '.socket')) else name + '.service'
+    unit = Path(directory) / name
+    template = Path(directory) / (name.split('@')[0] + '@.' + name.rsplit('.', 1)[1]) if '@' in name else unit
+    dropins = {p.name: p for base in (template, unit)
+               for p in Path(str(base) + '.d').glob('*.conf')}
     values = []
-    for file in [unit, *sorted(Path(str(unit) + '.d').glob('*.conf'))]:
-        section = ''
+    for file in [unit if unit.is_file() else template, *[dropins[k] for k in sorted(dropins)]]:
+        current = ''
         for line in file.read_text().replace('\\\n', ' ').splitlines():
             line = line.strip()
             if line.startswith('['):
-                section = line
-            if section == '[Service]' and line.startswith(key + '='):
+                current = line
+            if current == '[' + section + ']' and line.startswith(key + '='):
                 value = line.partition('=')[2]
                 if value:
                     values.append(value)
@@ -81,6 +85,8 @@ def unit_environment(directory, name):
     for value in unit_values(directory, name, 'EnvironmentFile'):
         for filename in shlex.split(value):
             file = Path(filename.removeprefix('-'))
+            if str(file).startswith('/etc/'):
+                file = Path(directory).parents[1] / file.relative_to('/etc')
             if filename.startswith('-') and not file.exists():
                 continue
             for line in file.read_text().splitlines():
@@ -135,6 +141,165 @@ def bus_policy(name, config=Path('/etc/dbus-1/system.conf')):
     return str(paths[0])
 
 
+def generated_unit_contracts(system_units, user_units):
+    """Check effective installed units, not the source used to generate them."""
+    def check(name, expected, directory=system_units, section='Service'):
+        for key, wanted in expected.items():
+            values = unit_values(directory, name, key, section)
+            actual = values[-1] if values else ''
+            if isinstance(wanted, bool):
+                actual = actual.lower() in ('yes', 'true', '1')
+            require(actual == wanted, f'{name} [{section}] {key}: {actual!r} != {wanted!r}')
+
+    def words(name, key, directory=system_units, section='Service'):
+        # Keep systemd device-name escapes (\x2d) intact in dependencies.
+        return {word.strip('"') for value in unit_values(directory, name, key, section)
+                for word in value.split()}
+
+    services = {
+        'device-core': ('device-core', '/data/device-core', '/run/device-core',
+                        {'nab-media', 'nab-audio'}, {'/data/device-core', '/run/device-core', '/run/lock/device-core'}),
+        'nab-hardware': ('nab-hardware', '/run/nab-hardware', '/run/nab-hardware', {'gpio'},
+                         {f'-/sys/class/leds/multi:indicator-{i}/{attr}' for i in range(5)
+                          for attr in ('brightness', 'multi_intensity')} | {'-/sys/class/leds/multi:indicator-0/sync'}),
+        'nabos': ('nab-app', '/data/nabos', '/run/nabos', set(), {'/data/nabos'}),
+    }
+    for name, (owner, home, work, groups, writable) in services.items():
+        check(name, {'User': owner, 'Group': owner, 'ProtectSystem': 'strict', 'NoNewPrivileges': True,
+                     'WorkingDirectory': work, 'RuntimeDirectory': work.removeprefix('/run/'),
+                     'Restart': 'always', 'RestartSec': '2',
+                     'UMask': '0027' if name != 'device-core' else '0077'})
+        require(not words(name, 'DefaultDependencies', section='Unit') & {'no', 'false', '0'}, name + ' default dependencies')
+        require(words(name, 'SupplementaryGroups') == groups, name + ' supplementary authority')
+        require(words(name, 'ReadWritePaths') == writable, name + ' writable surface')
+        capabilities = {'CAP_NET_BIND_SERVICE'} if name == 'nabos' else set()
+        for key in ('CapabilityBoundingSet', 'AmbientCapabilities'):
+            require(words(name, key) == capabilities, name + ' ' + key)
+        env = unit_environment(system_units, name)
+        require(env['HOME'] == home, name + ' home')
+        require(Path(unit_command(system_units, name)[0]).name == name, name + ' executable')
+        require('multi-user.target' in words(name, 'WantedBy', section='Install'), name + ' startup')
+        require('mosquitto.service' not in words(name, 'Wants', section='Unit') and
+                'nabos-rfid.service' not in words(name, 'After', section='Unit'), name + ' obsolete dependencies')
+    for name in ('device-core', 'nabos'):
+        check(name, {'Type': 'exec', 'PrivateDevices': True})
+        for key in ('DeviceAllow', 'BindPaths', 'BindReadOnlyPaths'):
+            require(not unit_values(system_units, name, key), name + ' device access via ' + key)
+    check('nab-hardware', {'Type': 'notify', 'NotifyAccess': 'main', 'WatchdogSec': '1s',
+                           'WatchdogSignal': 'SIGKILL', 'KillMode': 'control-group', 'TimeoutStopSec': '6s'})
+    require(not unit_values(system_units, 'nab-hardware', 'BusName'), 'Hardware must report readiness itself')
+    stop = shlex.split(unit_values(system_units, 'nab-hardware', 'ExecStopPost')[-1])
+    require(stop == unit_command(system_units, 'nab-hardware') + ['--stop-hardware'], 'Hardware cleanup command')
+    ready = {r'dev-i2c\x2d1.device', 'dbus.socket'} | {
+        rf'sys-class-leds-multi:indicator\x2d{i}.device' for i in range(5)}
+    for key in ('Requires', 'After'):
+        require(ready <= words('nab-hardware', key, section='Unit'), 'Hardware readiness ' + key)
+    for name, dependencies in {
+        'nab-hardware': {'device-core.service', 'tagtagtag-mixerd.service'},
+        'nabos': {'device-core.service', 'nab-hardware.service'},
+        'device-core': {'user@1004.service', 'NetworkManager.service', 'rauc.service'},
+        'nabos-health': {'device-core.service', 'nab-hardware.service', 'nabos.service', 'user@1004.service'},
+    }.items():
+        require(dependencies <= words(name, 'After', section='Unit'), name + ' ordering')
+    for name in services:
+        require('systemd-tmpfiles-setup.service' in words(name, 'After', section='Unit'), name + ' first-use state')
+    core = unit_environment(system_units, 'device-core')
+    for key, expected in {
+        'XDG_RUNTIME_DIR': '/run/device-core', 'PIPEWIRE_REMOTE': '/run/nabos-audio/pipewire-0',
+        'DEVICE_CORE_DATA_DIR': '/data/device-core', 'DEVICE_CORE_NETWORK_GUARD': '/run/lock/device-core/network',
+        'DEVICE_CORE_PRESENCE_USER': 'nab-hardware', 'DEVICE_CORE_MAINTENANCE_USERS': 'nab-app:nab-hardware',
+        'DEVICE_CORE_SSH_UNIT': 'ssh.service', 'DEVICE_CORE_UPDATE_REPO': 'guilhem/nabos',
+        'DEVICE_CORE_UPDATE_ASSET': 'nabos-' + os.environ['NABOS_RUNTIME_TARGET'] + '.raucb',
+        'DEVICE_CORE_UPDATE_PREPARE_UNIT': 'nabos-rauc-manual.service',
+        'DEVICE_CORE_UPDATE_PREPARED_BUNDLE': '/data/nabos-rauc-manual/bundle.raucb',
+    }.items():
+        require(core.get(key) == expected, 'device-core ' + key)
+    require(core['DEVICE_CORE_IMAGE_VERSION'] == (Path(system_units).parents[1] / 'nabos/release').read_text().strip(), 'Release version')
+    require('DEVICE_CORE_HTTP_ADDR' not in core, 'Device-core must not serve application HTTP')
+    app = unit_environment(system_units, 'nabos')
+    require(app['NABOS_HTTP_ADDR'] == ':80' and app['NABOS_DATA_DIR'] == '/data/nabos' and
+            app['XDG_RUNTIME_DIR'] == '/run/nabos', 'Application configuration')
+    for unit in Path(system_units).glob('*.service'):
+        if unit.name != 'nab-hardware.service':
+            require('nab-hardware' not in words(unit.name, 'Group') | words(unit.name, 'SupplementaryGroups'),
+                    'Hardware authority granted to ' + unit.name)
+    for obsolete in ('nab-core', 'nab-service', 'nabos-rfid'):
+        require(not (Path(system_units) / (obsolete + '.service')).exists(), 'Obsolete unit ' + obsolete)
+    for name in ('ssh', 'sshd-keygen'):
+        require('/data/device-core/ssh/authorized_keys' in words(name, 'ConditionFileNotEmpty', section='Unit') and
+                '!/data/.volatile' in words(name, 'ConditionPathExists', section='Unit'), name + ' activation safety')
+    session = unit_command(system_units, 'user@1004')
+    require(Path(session[0]).name == 'systemd' and '--user' in session, 'user@1004 lost its template ExecStart')
+    check('user@1004', {'NoNewPrivileges': True})
+    require('systemd-tmpfiles-setup.service' in words('user@1004', 'After', section='Unit'), 'Audio startup order')
+    check('linger-users', {'StateDirectory': 'systemd/linger', 'WorkingDirectory': '/var/lib/systemd/linger'})
+    linger = Path(unit_command(system_units, 'linger-users')[0]).read_text()
+    require('nab-audio' in linger and 'enable-linger' in linger, 'Audio linger must be managed by NixOS')
+    for name in ('pipewire.service', 'pipewire.socket', 'pipewire-pulse.service', 'pipewire-pulse.socket', 'wireplumber.service'):
+        require(words(name, 'ConditionUser', user_units, 'Unit') == {'nab-audio'}, name + ' audio-only activation')
+        if name.endswith('.service'):
+            unit_command(user_units, name)
+    voice = (Path(system_units) / 'linux-voice-assistant.service').exists()
+    require(core.get('DEVICE_CORE_LVA_UNIT', '') == ('linux-voice-assistant.service' if voice else ''), 'LVA availability')
+    if voice:
+        require(os.environ['NABOS_RUNTIME_TARGET'] == 'zero2-arm64', 'LVA is ARM64-only')
+        check('linux-voice-assistant', {'User': 'nab-audio', 'Group': 'nab-audio', 'Type': 'exec',
+              'PrivateDevices': True, 'NoNewPrivileges': True, 'ProtectSystem': 'strict',
+              'Restart': 'on-failure', 'RestartSec': '5'})
+        require(words('linux-voice-assistant', 'ReadWritePaths') == {'/var/lib/nabos/lva'}, 'LVA write surface')
+        require('/data/device-core/voice-enabled' in words('linux-voice-assistant', 'ConditionPathExists', section='Unit'),
+                'LVA opt-in flag')
+        command = unit_command(system_units, 'linux-voice-assistant')
+        for flag, path in (('--preferences-file', '/var/lib/nabos/lva/preferences.json'),
+                           ('--download-dir', '/var/lib/nabos/lva/wakewords')):
+            require(command[command.index(flag) + 1] == path, 'LVA persistence ' + flag)
+        env = unit_environment(system_units, 'linux-voice-assistant')
+        require(env['HOME'] == '/var/lib/nabos/lva' and env['PYTHONDONTWRITEBYTECODE'] == '1', 'LVA immutable home')
+        for key in ('XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'):
+            require(env[key].startswith('/var/lib/nabos/lva/'), 'LVA ' + key)
+    check('nabos-rauc-manual', {'Type': 'oneshot', 'RemainAfterExit': True, 'PrivateDevices': True,
+          'PrivateNetwork': True, 'ProtectSystem': 'strict', 'ProtectHome': True, 'NoNewPrivileges': True,
+          'WorkingDirectory': '/run/nabos-rauc-manual', 'UMask': '0077', 'TimeoutStartSec': '15min'})
+    require(words('nabos-rauc-manual', 'ReadWritePaths') ==
+            {'/data/nabos-rauc-manual', '/run/nabos-rauc-manual', '/run/nabos-rauc-trust'}, 'Manual update write surface')
+    require(words('nabos-rauc-manual', 'RuntimeDirectory') == {'nabos-rauc-manual', 'nabos-rauc-trust'},
+            'Manual update runtime state')
+    require(words('nabos-rauc-manual', 'CapabilityBoundingSet') == {'CAP_CHOWN', 'CAP_FOWNER', 'CAP_DAC_READ_SEARCH'},
+            'Manual update authority')
+    manual = unit_command(system_units, 'nabos-rauc-manual')
+    for key in ('ExecStartPre', 'ExecStopPost'):
+        require(shlex.split(unit_values(system_units, 'nabos-rauc-manual', key)[-1]) == manual + ['cleanup'],
+                'Manual trust cleanup ' + key)
+    check('tagtagtag-mixerd', {'Type': 'simple', 'User': 'root', 'WorkingDirectory': '/var/lib/tagtagtag-sound',
+                             'ProtectSystem': 'strict', 'Restart': 'always', 'RestartSec': '1', 'PIDFile': ''})
+    require(words('tagtagtag-mixerd', 'ReadWritePaths') == {'/var/lib/tagtagtag-sound'}, 'Mixer write surface')
+    for key in ('BindsTo', 'After'):
+        require(r'dev-input-tagtagtag\x2dvolume.device' in words('tagtagtag-mixerd', key, section='Unit'), 'Mixer readiness')
+    check('tagtagtag-mixerd', {'StartLimitIntervalSec': '0'}, section='Unit')
+    check('nabos-health', {'Type': 'exec'})
+    require(words('nabos-health', 'OnSuccess', section='Unit') == {'nabos-board-led-off.service'}, 'Healthy boot LED trigger')
+    check('nabos-board-led-off', {'Type': 'oneshot', 'ProtectSystem': 'strict', 'NoNewPrivileges': True,
+                                 'CapabilityBoundingSet': ''})
+    require(words('nabos-board-led-off', 'ConditionPathExists', section='Unit') ==
+            {'/sys/class/leds/ACT/brightness', '/run/nabos-boot-health'}, 'Board LED guards')
+    with tempfile.TemporaryDirectory(prefix='led-contract-', dir='/run') as tmp:
+        brightness, marker = Path(tmp) / 'brightness', Path(tmp) / 'health'
+        for verdict in ('good A', 'good B', 'pending A', 'stranded B', 'good C', ''):
+            brightness.write_text('1\n')
+            marker.write_text(verdict + '\n') if verdict else marker.unlink(missing_ok=True)
+            commands = {}
+            for key in ('ExecCondition', 'ExecStart'):
+                commands[key] = [arg.replace('/sys/class/leds/ACT/brightness', str(brightness))
+                                .replace('/run/nabos-boot-health', str(marker))
+                                for arg in shlex.split(unit_values(system_units, 'nabos-board-led-off', key)[-1])]
+            allowed = sp.run(commands['ExecCondition'], capture_output=True, timeout=5).returncode == 0
+            require(allowed == (verdict in ('good A', 'good B')), 'Board LED health verdict ' + verdict)
+            if allowed:
+                sp.run(commands['ExecStart'], check=True, timeout=5)
+            require(brightness.read_text() == ('0\n' if allowed else '1\n'), 'Board LED action')
+    print('PASS (installed-unit inspection/LED command execution): accounts, confinement, dependencies, audio/LVA and recovery', flush=True)
+
+
 def main():
     require(os.geteuid() == 0, 'Run INSIDE the disposable image as root')
     for name, uid in [('nabos', 1000), ('nab-app', 1001), ('nab-hardware', 1002),
@@ -143,6 +308,15 @@ def main():
         require((p.pw_uid, p.pw_gid) == (uid, uid) and grp.getgrgid(uid).gr_name == name, name)
     require((grp.getgrnam('nab-media').gr_gid, grp.getgrnam('gpio').gr_gid) == (1005, 1006),
             'Shared media/GPIO GIDs changed')
+    homes = {'nabos': '/var/lib/nabos/admin', 'nab-app': '/data/nabos', 'nab-hardware': '/run/nab-hardware',
+             'device-core': '/data/device-core', 'nab-audio': '/var/lib/nabos/lva'}
+    shadow = dict(line.split(':', 2)[:2] for line in Path('/etc/shadow').read_text().splitlines())
+    for name, expected in {'nabos': set(), 'nab-app': {'nab-media'}, 'nab-hardware': {'gpio'},
+                           'device-core': {'nab-media', 'nab-audio'}, 'nab-audio': {'audio'}}.items():
+        account = pwd.getpwnam(name)
+        actual = {grp.getgrgid(gid).gr_name for gid in os.getgrouplist(name, account.pw_gid)} - {name}
+        require(actual == expected and account.pw_dir == homes[name] and
+                shadow[name].startswith(('!', '*')), name + ' account authority/home/password')
     for directory in ('/', '/etc', '/nix/store'):
         require(os.statvfs(directory).f_flag & os.ST_RDONLY, directory + ' must actually be read-only')
     for path in ('/.nabos-readonly-probe', '/etc/.nabos-readonly-probe'):
@@ -162,9 +336,15 @@ def main():
     base = {key: os.environ[key] for key in
             ('PATH', 'NABOS_PERSIST_LIB', 'NABOS_TEST_LIBSYSTEMD', 'QEMU_CPU')}
     base['LC_ALL'] = 'C'
+    persisted = sp.run(['sh', '-ec', '. "$NABOS_PERSIST_LIB"; printf "%s\n" "$PERSIST"'],
+                       env=base, check=True, capture_output=True, text=True, timeout=5).stdout.split()
+    require('/var/lib/systemd/linger' not in persisted and
+            not any(line.split()[4] == '/var/lib/systemd/linger' for line in mounts),
+            'Linger must not be in the persistence map or bind mounts')
     system_units, user_units = '/etc/systemd/system', '/etc/systemd/user'
     system = Path(os.environ['NABOS_SYSTEM'])
     python = sys.executable
+    generated_unit_contracts(system_units, user_units)
 
     def product(name):
         binary = (system / 'sw/bin' / name).resolve(strict=True)
@@ -516,6 +696,24 @@ def self_test():
         assert unit_environment(directory, 'device-core') == {
             'HOME': '/data/device-core', 'LABEL': 'with spaces', 'NEXT': 'one', 'LAST': 'two',
             'DEVICE_CORE_LVA_UNIT': 'linux-voice-assistant.service', 'EMPTY': ''}
+        template = directory / 'user@.service'
+        template.write_text('[Unit]\nAfter=systemd-user-sessions.service\n[Service]\n'
+                            'ExecStart=/nix/store/systemd/lib/systemd/systemd --user\n')
+        instance = directory / 'user@1004.service.d'
+        instance.mkdir()
+        (instance / 'overrides.conf').write_text('[Unit]\nAfter=systemd-tmpfiles-setup.service\n'
+                                               '[Service]\nNoNewPrivileges=true\n')
+        assert unit_values(directory, 'user@1004', 'ExecStart') == ['/nix/store/systemd/lib/systemd/systemd --user']
+        assert unit_values(directory, 'user@1004', 'After', 'Unit') == [
+            'systemd-user-sessions.service', 'systemd-tmpfiles-setup.service']
+        assert unit_values(directory, 'user@1004', 'NoNewPrivileges') == ['true']
+        (directory / 'user@1004.service').write_text('[Service]\nNoNewPrivileges=true\n')
+        try:
+            unit_command(directory, 'user@1004')
+        except RuntimeError as error:
+            assert 'Expected one ExecStart' in str(error)
+        else:
+            raise AssertionError('An incomplete instance must not inherit template ExecStart')
         policy = directory / 'system.d'
         policy.mkdir()
         (policy / 'test.conf').write_text('<busconfig/>')

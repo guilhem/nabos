@@ -10,11 +10,10 @@ let
   tools = with pkgs; [ coreutils util-linux e2fsprogs gnugrep gawk systemd curl
     ubootTools rauc openssh alsa-utils mpg123 wireplumber pulseaudio ];
   stateSeeds = pkgs.runCommand "nabos-persistent-defaults" { } ''
-    mkdir -p $out/etc/NetworkManager/system-connections $out/var/lib/{NetworkManager,systemd/timesync,systemd/linger,tagtagtag-sound,nabos/lva}
+    mkdir -p $out/etc/NetworkManager/system-connections $out/var/lib/{NetworkManager,systemd/timesync,tagtagtag-sound,nabos/lva}
     cp ${rootfs}/var/lib/NetworkManager/NetworkManager.state $out/var/lib/NetworkManager/
     cp ${packages.sound}/share/tagtagtag-sound/mixer.conf.default $out/var/lib/tagtagtag-sound/mixer.conf.default
     cp $out/var/lib/tagtagtag-sound/mixer.conf.default $out/var/lib/tagtagtag-sound/mixer.conf
-    touch $out/var/lib/systemd/linger/nab-audio
     chmod 0700 $out/etc/NetworkManager/system-connections $out/var/lib/NetworkManager
     chmod 0711 $out/var/lib/nabos
   '';
@@ -38,27 +37,7 @@ let
     export PATH=${lib.makeBinPath [ pkgs.coreutils ]}
     ${builtins.readFile (rootfs + "/usr/lib/nabos/rauc-post-install")}
   '';
-  # Reuse the complete source units, including their confinement and dependencies.
-  runtimeUnits = pkgs.runCommand "nabos-runtime-units" { } ''
-    mkdir -p $out/lib/systemd/system
-    cp ${rootfs}/usr/lib/systemd/system/*.service $out/lib/systemd/system/
-    substituteInPlace $out/lib/systemd/system/*.service \
-      --replace /usr/bin/nabos ${packages.nabos}/bin/nabos \
-      --replace /usr/bin/nab-hardware ${packages.nab-hardware}/bin/nab-hardware \
-      --replace /usr/bin/device-core ${packages.device-core}/bin/device-core \
-      --replace /usr/bin/grep ${pkgs.gnugrep}/bin/grep \
-      --replace /bin/sh ${pkgs.runtimeShell} \
-      --replace /usr/lib/nabos/health ${health} \
-      --replace /usr/lib/nabos/rauc-manual ${manual}
-    ${if hasVoice then ''
-      substituteInPlace $out/lib/systemd/system/linux-voice-assistant.service \
-        --replace-fail /opt/linux-voice-assistant/.venv/bin/python ${packages.lva}/bin/linux-voice-assistant \
-        --replace-fail /opt/linux-voice-assistant ${packages.lva}/share/linux-voice-assistant \
-        --replace-fail ' -m linux_voice_assistant' ""
-    '' else ''
-      rm $out/lib/systemd/system/linux-voice-assistant.service
-    ''}
-  '';
+  ledDevices = map (index: "sys-class-leds-multi:indicator\\x2d${toString index}.device") (lib.range 0 4);
   dbusPolicies = pkgs.runCommand "nabos-dbus-policies" { } ''
     mkdir -p $out/share/dbus-1/system.d
     cp ${rootfs}/etc/dbus-1/system.d/io.github.guilhem.*.conf $out/share/dbus-1/system.d/
@@ -99,6 +78,7 @@ in
 {
   imports = [
     "${modulesPath}/profiles/image-based-appliance.nix"
+    ./audio.nix
     {
       # buildEnv otherwise requests meta.outputsToInstall (including manuals),
       # even though the appliance never links their directories into its profile.
@@ -158,11 +138,10 @@ in
     nab-app = fixedUser 1001 "/data/nabos" [ "nab-media" ];
     nab-hardware = fixedUser 1002 "/run/nab-hardware" [ "gpio" ];
     device-core = fixedUser 1003 "/data/device-core" [ "nab-media" "nab-audio" ];
-    nab-audio = fixedUser 1004 "/var/lib/nabos/lva" [ "audio" ];
   };
   users.groups = {
     nabos.gid = 1000; nab-app.gid = 1001; nab-hardware.gid = 1002;
-    device-core.gid = 1003; nab-audio.gid = 1004; nab-media.gid = 1005; gpio.gid = 1006;
+    device-core.gid = 1003; nab-media.gid = 1005; gpio.gid = 1006;
   };
   security.sudo.extraRules = [{ users = [ "nabos" ]; commands = [{ command = "ALL"; options = [ "NOPASSWD" ]; }]; }];
 
@@ -237,6 +216,7 @@ in
     settings.main = { rc-manager = "unmanaged"; firewall-backend = "nftables"; };
     connectionConfig."wifi.powersave" = 2;
   };
+  networking.modemmanager.enable = false;
   networking.firewall.allowedTCPPorts = [ 80 ] ++ lib.optional hasVoice 6053;
   # NetworkManager installs forwarding/NAT rules, not host INPUT allowances.
   networking.firewall.interfaces.wlan0 = {
@@ -258,19 +238,6 @@ in
       [ "${pkgs.coreutils}/bin/chgrp" "${pkgs.coreutils}/bin/chmod" ]
       (builtins.readFile (rootfs + "/etc/udev/rules.d/60-nabos.rules"));
   };
-  services.pipewire = {
-    enable = true; alsa.enable = true; pulse.enable = true;
-    configPackages = [ (pkgs.writeTextDir "share/pipewire/pipewire.conf.d/30-nabos-audio.conf"
-      (builtins.readFile (rootfs + "/etc/pipewire/pipewire.conf.d/30-nabos-audio.conf"))) ];
-    wireplumber.configPackages = [ (pkgs.writeTextDir "share/wireplumber/wireplumber.conf.d/51-nabos-audio.conf"
-      (builtins.readFile (rootfs + "/etc/wireplumber/wireplumber.conf.d/51-nabos-audio.conf"))) ];
-  };
-  systemd.user.services.pipewire = { wantedBy = [ "default.target" ]; unitConfig.ConditionUser = [ "" "nab-audio" ]; };
-  systemd.user.services.pipewire-pulse = { wantedBy = [ "default.target" ]; unitConfig.ConditionUser = [ "" "nab-audio" ]; };
-  systemd.user.services.wireplumber.unitConfig.ConditionUser = [ "" "nab-audio" ];
-  systemd.user.sockets.pipewire.unitConfig.ConditionUser = [ "" "nab-audio" ];
-  systemd.user.sockets.pipewire-pulse.unitConfig.ConditionUser = [ "" "nab-audio" ];
-
   services.rauc = {
     enable = true; mark-good.enable = false; inherit compatible;
     bootloader = "uboot"; dataDir = "/data/rauc"; settings = raucSettings;
@@ -287,47 +254,161 @@ in
       KbdInteractiveAuthentication = false; UsePAM = true;
     };
   };
-  system.build = { nabosRuntimeUnits = runtimeUnits; nabosHealth = health; nabosPersist = persist; };
-  systemd.packages = [ runtimeUnits packages.sound ];
+  system.build = { nabosHealth = health; nabosPersist = persist; };
   systemd.services = {
     nabos = {
+      description = "Nabaztag application (states, media, choreography, HTTP :80)";
       wantedBy = [ "multi-user.target" ];
+      wants = [ "device-core.service" "nab-hardware.service" ];
+      after = [ "systemd-tmpfiles-setup.service" "device-core.service" "nab-hardware.service" ];
       environment = {
+        XDG_RUNTIME_DIR = "/run/nabos";
+        HOME = "/data/nabos";
+        NABOS_DATA_DIR = "/data/nabos";
+        NABOS_HTTP_ADDR = ":80";
         NABOS_SOUNDS_DIRS = "${packages.assets}/share/nabos/sounds:/data/nabos/media/sounds";
         NABOS_CHOREOGRAPHIES_DIRS = "${packages.assets}/share/nabos/choreographies:/data/nabos/media/choreographies";
       };
+      serviceConfig = {
+        Type = "exec"; User = "nab-app"; Group = "nab-app";
+        EnvironmentFile = "/etc/nabos/release.env";
+        RuntimeDirectory = "nabos"; WorkingDirectory = "/run/nabos";
+        ExecStart = "${packages.nabos}/bin/nabos";
+        Restart = "always"; RestartSec = 2; UMask = "0027";
+        AmbientCapabilities = "CAP_NET_BIND_SERVICE";
+        CapabilityBoundingSet = "CAP_NET_BIND_SERVICE";
+        NoNewPrivileges = true; PrivateDevices = true;
+        ProtectSystem = "strict"; ReadWritePaths = [ "/data/nabos" ];
+      };
     };
-    nab-hardware.wantedBy = [ "multi-user.target" ];
+    nab-hardware = {
+      description = "Nabaztag hardware (D-Bus)";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "dbus.socket" "dev-i2c\\x2d1.device" ] ++ ledDevices;
+      wants = [ "device-core.service" ];
+      after = ledDevices ++ [ "systemd-tmpfiles-setup.service" "tagtagtag-mixerd.service" "device-core.service" "dbus.socket" "dev-i2c\\x2d1.device" ];
+      environment.HOME = "/run/nab-hardware";
+      serviceConfig = {
+        Type = "notify"; NotifyAccess = "main";
+        User = "nab-hardware"; Group = "nab-hardware"; SupplementaryGroups = [ "gpio" ];
+        CapabilityBoundingSet = "";
+        RuntimeDirectory = "nab-hardware"; WorkingDirectory = "/run/nab-hardware";
+        ExecStart = "${packages.nab-hardware}/bin/nab-hardware";
+        ExecStopPost = "${packages.nab-hardware}/bin/nab-hardware --stop-hardware";
+        WatchdogSec = "1s"; WatchdogSignal = "SIGKILL"; KillMode = "control-group";
+        TimeoutStopSec = "6s"; Restart = "always"; RestartSec = 2; UMask = "0027";
+        NoNewPrivileges = true; ProtectSystem = "strict";
+        # Missing LEDs must not prevent ExecStopPost from cutting the motors.
+        ReadWritePaths = lib.concatMap (index: map (attr:
+          "-/sys/class/leds/multi:indicator-${toString index}/${attr}")
+          [ "brightness" "multi_intensity" ]) (lib.range 0 4)
+          ++ [ "-/sys/class/leds/multi:indicator-0/sync" ];
+      };
+    };
     device-core = {
+      description = "Linux device services (D-Bus)";
       wantedBy = [ "multi-user.target" ]; path = tools;
+      wants = [ "user@1004.service" "NetworkManager.service" "rauc.service" ];
+      after = [ "systemd-tmpfiles-setup.service" "user@1004.service" "NetworkManager.service" "rauc.service" ];
       environment = {
+        HOME = "/data/device-core";
+        XDG_RUNTIME_DIR = "/run/device-core";
+        PIPEWIRE_REMOTE = "/run/nabos-audio/pipewire-0";
+        DEVICE_CORE_DATA_DIR = "/data/device-core";
+        DEVICE_CORE_NETWORK_GUARD = "/run/lock/device-core/network";
+        DEVICE_CORE_PRESENCE_USER = "nab-hardware";
+        DEVICE_CORE_MAINTENANCE_USERS = "nab-app:nab-hardware";
+        DEVICE_CORE_HOTSPOT_PREFIX = "Nabaztag-";
+        DEVICE_CORE_HOTSPOT_UUID = "4e61624f-5300-4000-8000-000000000001";
+        DEVICE_CORE_BOOT_HEALTH = "/run/nabos-boot-health";
+        DEVICE_CORE_UPDATE_PREPARE_UNIT = "nabos-rauc-manual.service";
+        DEVICE_CORE_UPDATE_PREPARED_BUNDLE = "/data/nabos-rauc-manual/bundle.raucb";
         DEVICE_CORE_AUDIO_ROOTS = "${packages.assets}/share/nabos/sounds:/data/nabos/media/sounds";
         DEVICE_CORE_SSH_UNIT = "ssh.service";
       };
+      serviceConfig = {
+        Type = "exec"; User = "device-core"; Group = "device-core";
+        SupplementaryGroups = [ "nab-media" "nab-audio" ];
+        EnvironmentFile = "/etc/nabos/release.env";
+        RuntimeDirectory = "device-core"; WorkingDirectory = "/run/device-core";
+        ExecStart = "${packages.device-core}/bin/device-core";
+        Restart = "always"; RestartSec = 2; UMask = "0077";
+        NoNewPrivileges = true; CapabilityBoundingSet = ""; PrivateDevices = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [ "/data/device-core" "/run/device-core" "/run/lock/device-core" ];
+      };
     };
-    nabos-health.wantedBy = [ "multi-user.target" ];
-    tagtagtag-mixerd = {
+    nabos-health = {
+      description = "Confirm the booted RAUC slot once local services are healthy";
       wantedBy = [ "multi-user.target" ];
+      after = [ "device-core.service" "nab-hardware.service" "nabos.service" "user@1004.service" ];
+      unitConfig.OnSuccess = "nabos-board-led-off.service";
+      serviceConfig = { Type = "exec"; ExecStart = "${health}"; };
+    };
+    nabos-board-led-off = {
+      description = "Turn off the Raspberry Pi ACT LED after a healthy boot";
+      unitConfig.ConditionPathExists = [ "/sys/class/leds/ACT/brightness" "/run/nabos-boot-health" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecCondition = "${pkgs.gnugrep}/bin/grep -qx \"good [AB]\" /run/nabos-boot-health";
+        ExecStart = "${pkgs.runtimeShell} -c 'echo 0 > /sys/class/leds/ACT/brightness'";
+        NoNewPrivileges = true; CapabilityBoundingSet = ""; ProtectSystem = "strict";
+      };
+    };
+    nabos-rauc-manual = {
+      description = "Prepare an explicitly trusted local NabOS update";
+      after = [ "rauc.service" ];
+      environment.HOME = "/run/nabos-rauc-manual";
+      serviceConfig = {
+        Type = "oneshot"; RemainAfterExit = true;
+        RuntimeDirectory = [ "nabos-rauc-manual" "nabos-rauc-trust" ]; RuntimeDirectoryMode = "0755";
+        WorkingDirectory = "/run/nabos-rauc-manual";
+        ExecStartPre = "${manual} cleanup"; ExecStart = "${manual}"; ExecStopPost = "${manual} cleanup";
+        TimeoutStartSec = "15min"; UMask = "0077"; NoNewPrivileges = true;
+        CapabilityBoundingSet = [ "CAP_CHOWN" "CAP_FOWNER" "CAP_DAC_READ_SEARCH" ];
+        PrivateDevices = true; PrivateNetwork = true; ProtectSystem = "strict"; ProtectHome = true;
+        ReadWritePaths = [ "/data/nabos-rauc-manual" "/run/nabos-rauc-manual" "/run/nabos-rauc-trust" ];
+      };
+    };
+    tagtagtag-mixerd = {
+      description = "Tagtagtag Sound Mixer Daemon";
+      wantedBy = [ "multi-user.target" ];
+      bindsTo = [ "dev-input-tagtagtag\\x2dvolume.device" ];
+      after = [ "dev-input-tagtagtag\\x2dvolume.device" ];
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         # Foreground mode lets systemd own the process; no PID file is needed.
         Type = "simple";
-        ExecStart = [ "" "${packages.sound}/bin/tagtagtag-mixerd" ];
-        PIDFile = "";
+        ExecStart = "${packages.sound}/bin/tagtagtag-mixerd";
+        User = "root"; Restart = "always"; RestartSec = 1;
         WorkingDirectory = "/var/lib/tagtagtag-sound";
         ProtectSystem = "strict";
         ReadWritePaths = [ "/var/lib/tagtagtag-sound" ];
       };
     };
-    "user@1004" = { after = [ "systemd-tmpfiles-setup.service" ]; serviceConfig.NoNewPrivileges = true; };
     linux-voice-assistant = mkIf hasVoice {
+      description = "Linux Voice Assistant (Home Assistant voice satellite)";
       wantedBy = [ "multi-user.target" ];
+      unitConfig.ConditionPathExists = [ "/data/device-core/voice-enabled" "${packages.lva}/bin/linux-voice-assistant" ];
+      wants = [ "user@1004.service" "network-online.target" ];
+      after = [ "systemd-tmpfiles-setup.service" "user@1004.service" "network-online.target" ];
       # LVA loads libmpv directly; the CLI wrapper pulls in unused yt-dlp/Deno.
       path = [ pkgs.coreutils pkgs.alsa-utils pkgs.pipewire ];
       environment = {
+        HOME = "/var/lib/nabos/lva";
+        XDG_RUNTIME_DIR = "/run/user/1004";
         PYTHONDONTWRITEBYTECODE = "1";
         XDG_CACHE_HOME = "/var/lib/nabos/lva/cache";
         XDG_CONFIG_HOME = "/var/lib/nabos/lva/config";
         XDG_DATA_HOME = "/var/lib/nabos/lva/data";
+      };
+      serviceConfig = {
+        Type = "exec"; User = "nab-audio"; Group = "nab-audio";
+        WorkingDirectory = "${packages.lva}/share/linux-voice-assistant";
+        ExecStart = "${packages.lva}/bin/linux-voice-assistant --name Nabaztag --port 6053 --peripheral-host 127.0.0.1 --peripheral-port 6055 --preferences-file /var/lib/nabos/lva/preferences.json --download-dir /var/lib/nabos/lva/wakewords";
+        Restart = "on-failure"; RestartSec = 5;
+        NoNewPrivileges = true; PrivateDevices = true; ProtectSystem = "strict";
+        ReadWritePaths = [ "/var/lib/nabos/lva" ];
       };
     };
     rauc = {

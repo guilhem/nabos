@@ -5,7 +5,7 @@ SYSFS=${NABOS_SYSFS:-/sys}
 DATA=${DISK}p4
 # Used by the initrd and health scripts sourcing this library.
 # shellcheck disable=SC2034
-PERSIST="/etc/NetworkManager/system-connections /var/lib/NetworkManager /var/lib/systemd/timesync /var/lib/tagtagtag-sound /var/lib/nabos /var/lib/systemd/linger"
+PERSIST="/etc/NetworkManager/system-connections /var/lib/NetworkManager /var/lib/systemd/timesync /var/lib/tagtagtag-sound /var/lib/nabos"
 GROWN=/data/system/.data-grown
 KMSG=${NABOS_KMSG:-/dev/kmsg}
 

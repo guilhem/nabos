@@ -47,7 +47,7 @@ ou une signature reproductible bit à bit.
 | `flake-<cible>.lock` | Entrées Nix verrouillées |
 | `boot-<cible>.cmd` | Script de démarrage livré |
 | `cache-roots-<cible>` | Racines store du système, d’U-Boot et des outils de compilation sélectionnés |
-| `build-<cible>.json` | Cible, version, révisions et mesure du payload |
+| `build-<cible>.json` | Cible, version, révisions et durées de fabrication |
 | `SHA256SUMS-<cible>` | Empreintes des fichiers livrés |
 
 ```sh
@@ -98,7 +98,9 @@ RAUC_KEY=/chemin/prive/key.pem RAUC_CERT=/chemin/public/cert.pem \
 La clé privée ne doit jamais entrer dans une dérivation Nix, un cache public
 ou un artefact. Les releases utilisent les secrets GitHub existants
 `RAUC_SIGNING_KEY` et `RAUC_SIGNING_CERT` (contenus PEM) ; les constructions de
-PR et de push utilisent une signature de développement.
+PR utilisent une signature de développement. Les pushes de `main` utilisent
+également cette signature jusqu’à l’activation du canal Edge ; ensuite ils
+utilisent l’autorité officielle.
 
 ## Créer une release
 
@@ -127,9 +129,42 @@ Ses bindings Python utilisent les chemins Nix de MPV et PulseAudio, sans Binutil
 
 La release peut être visible pendant sa fabrication. Une CI réussie ne vaut
 pas qualification matérielle. Le canal Stable exclut les préversions ; le
-canal Test les inclut. Le choix GitHub « latest » ne remplace pas la sélection
+canal Test inclut les préversions habituelles et exclut Edge. Le choix GitHub « latest » ne remplace pas la sélection
 SemVer de l’appareil. L’acceptation des assets par device-core doit aussi être
 vérifiée sur la nouvelle image.
+
+### Canal Edge
+
+Edge propose uniquement les builds automatiques de `main`. Le tag brut
+`edge-X.Y.Z.RUN` reste la version de GitHub, de l’image, du manifeste RAUC et
+du journal de reprise. Le comparateur le traite comme `X.Y.Z-edge.RUN`.
+`X.Y.Z` est le plus grand triplet des releases publiées hors Edge, préversions
+comprises, avec son patch incrémenté ; `RUN` est le numéro du workflow Images.
+Un changement de canal attend une version strictement supérieure : il ne
+réinstalle pas une ancienne version pour revenir vers Stable ou Test.
+
+Avant d’activer la publication automatique :
+
+1. Fusionner les PR des sources device-core et du mixeur, puis NabOS avec leurs
+   commits épinglés ; qualifier le client compatible dans une release Stable
+   ou Test signée officiellement, publiée volontairement.
+2. Installer cette version de base sur les appareils de test et vérifier les
+   trois canaux ainsi que la transition N → N+1 → rollback N avec les données
+   conservées. Les anciennes images Raspberry Pi OS exigent un reflash NixOS.
+3. Définir la variable de dépôt `NABOS_EDGE_ENABLED=true`.
+
+Chaque push de `main` termine sa propre construction, sans annulation par un
+push suivant. Après réussite de tous les tests et des deux images, le job Edge
+crée une release brouillon, y charge les octets testés, puis la publie comme
+préversion. Les événements de release `edge-*` ne relancent pas le constructeur.
+Une publication interrompue conserve son brouillon : relancer les jobs échoués
+du même run réutilise les artefacts précédemment testés. Un asset déjà publié
+est immuable ; une reconstruction différente ne remplace pas ses octets.
+La rétention supprime uniquement les Edge publiées au-delà des 30 versions les
+plus élevées. Stable et Test conservent leur procédure de publication volontaire.
+
+Pour arrêter Edge, retirer la variable puis annuler les jobs de publication
+déjà autorisés : la variable ne révoque pas un job en cours.
 
 ## Lire et alimenter Cachix
 
@@ -152,6 +187,10 @@ Le payload d’assemblage, les
 images, bundles, certificats et dev shells ne sont pas des racines de
 publication ; les images et releases sont conservées hors Cachix.
 La publication globale du store et `watch-store` ne sont pas utilisés.
+La liste est préparée avant la construction. Même si le packaging échoue,
+la CI publie les racines effectivement réalisées. Un échec Cachix est signalé
+et les images et rapports disponibles restent téléchargeables ; les benchmarks
+continuent d’exiger la disponibilité complète de leur closure.
 
 La version de l’image est inscrite dans NabOS et ses métadonnées. Les assets et
 `nab-hardware` gardent une identité indépendante de cette version ; Nix invalide
@@ -207,8 +246,26 @@ Sans nouveau pin, aucune mesure de changement Nixpkgs n’est possible.
 Chaque phase conserve le manifeste `build-<cible>.json`, le verrou, les sorties
 Nix et les journaux. Son `build_seconds` mesure les racines sélectionnées ; celui d’une
 image complète mesure le **payload Nix**, génération ext4/FAT comprise.
-Signature, assemblage SD, tests et compression restent hors de ces chronomètres.
-Relever séparément la durée totale et le pic disque des jobs.
+Le rapport des images distingue également `durations_seconds.nix_build`,
+`sd_assembly`, `rauc_bundle`, `xz` et `tests`. Une valeur `tests: null` signifie
+que les tests sont différés. Le job de test conserve son propre rapport
+`test-<cible>.json`, sans modifier les fichiers testés ; la publication Cachix
+conserve `cache-timings-<cible>.json`. Relever aussi le pic disque des jobs.
+
+Les images utilisent XZ 3 et Zstd RAUC 6. La comparaison locale du 8 octobre
+2026, avec huit threads sur un i7-1265U et les mêmes octets d'entrée par cible,
+a donné les résultats suivants :
+
+| Cible | XZ 6 → 3 | Zstd 15 → 6 | Taille image / bundle supplémentaire |
+| --- | --- | --- | --- |
+| ARMv6 | 140 → 74 s | 33 → 19 s | +5,8 % / +4,9 % |
+| ARM64 | 131 → 81 s | 41 → 19 s | +5,9 % / +4,8 % |
+
+Les hashes des images décompressées et des payloads extraits des bundles
+correspondent aux sources ; les signatures sont vérifiées. Ces mesures sur un
+hôte partagé ne prédisent pas la durée CI. Le format XZ et les bundles verity
+restent identiques ; les tests complets des artefacts et la limite de 2 Gio
+restent obligatoires.
 
 ```sh
 python3 image/cache-report.py --self-test
@@ -242,12 +299,32 @@ La fusion réinterroge les caches et détecte les objets évincés ou supprimés
 avec `previously_cached_missing_paths`. Seul HTTP 404 représente une absence ;
 une erreur réseau fait échouer la mesure. Cette union décrit les fichiers
 référencés à cet instant, pas l’ensemble du compte Cachix ni sa facturation.
+
+## Maintenance des pins
+
+Les merges applicatifs conservent `flake.lock`. Le workflow `nix-update.yml`
+propose chaque mois une PR brouillon actualisant ensemble Nixpkgs et
+nixos-hardware ; son lancement manuel permet d’avancer un correctif de sécurité.
+Les révisions actuellement verrouillées restent inchangées dans cette
+optimisation. La branche `codex/nix-inputs-update` appartient à ce workflow.
+
+La création de PR exige le réglage GitHub autorisant GitHub Actions à créer des
+pull requests. La CI Images est également déclenchée explicitement sur cette
+branche ; approuver les workflows de PR ordinaires s’ils attendent une
+autorisation GitHub, et exiger leurs checks avant la review ou le merge.
+Les builds compilent et testent les deux cibles, publient leurs racines Cachix
+et comparent leur union avec les derniers rapports réussis de `main`.
+Ces rapports sont conservés 45 jours. Si les rapports de référence ont expiré,
+la comparaison échoue explicitement ; reconstruire la référence avant d’accepter
+la mise à jour. Relever le volume compressé et les évictions de la closure
+courante avec le candidat avant d’accepter cette PR.
 La rétention de versions anciennes augmente l’occupation. Ajouter des
 toolchains au cache seulement si les journaux montrent des recompilations
 coûteuses, puis mesurer leur coût compressé.
 
-**Les mesures cold/warm/version/nixpkgs ne sont pas encore complètes.** Aucune
-durée, économie de cache ou suffisance d’une enveloppe de 5 Go n’est attestée.
+**Les mesures cold/warm/version/nixpkgs ne sont pas encore complètes.** Les
+timings locaux et les CI avec cache ne suffisent pas à établir la rétention de
+plusieurs générations dans une enveloppe de 5 Go.
 
 ## Partitionnement, persistance et responsabilités
 
@@ -312,6 +389,13 @@ Les sorties flake natives `device-core-native`, `nab-hardware-native`,
 distinctes des exécutables ARM livrés ; les simulations utilisent un bus D-Bus
 privé et Mosquitto uniquement pour Home Assistant. Le sandbox U-Boot exécute le
 script A/B sans démarrer le firmware ARM ou le noyau Raspberry Pi.
+
+Le check `.#checks.x86_64-linux.audio-boot` démarre le module audio partagé avec
+systemd PID 1 dans une VM x86-64 : racine et `/etc` en lecture seule, `/var`
+volatile, linger déclaratif et aucune connexion utilisateur. Il attend les
+trois processus et sockets audio, puis vérifie leurs droits et
+`NoNewPrivileges`. Ce test complète les contrôles des unités composées dans
+chaque image ; il ne qualifie pas les pilotes ni le démarrage des Raspberry Pi.
 
 ```sh
 nix develop

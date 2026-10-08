@@ -13,6 +13,9 @@ if [[ ${NABOS_NIX_SHELL:-} != 1 ]]; then
     --command env NABOS_NIX_SHELL=1 bash "$0" "$target" "$artifacts"
 fi
 : "${EXPECTED_VERSION:?Expected version required}" "${EXPECTED_DEVELOPMENT:?Expected development flag required}"
+report="$repo/build/nix-tmp/test-$target.json"
+rm -f "$report"
+started=$(date +%s)
 (cd "$artifacts" && sha256sum --check --strict "SHA256SUMS-$target")
 jq -e --arg target "$target" --arg revision "$(git -C "$repo" rev-parse HEAD)" \
   --arg version "$EXPECTED_VERSION" --argjson development "$EXPECTED_DEVELOPMENT" \
@@ -51,3 +54,8 @@ export NABOS_UBOOT_SANDBOX="$sandbox" NABOS_IMAGE_TARGET="$target" \
 (cd "$repo/services" && go test -count=1 ./tests/image)
 printf '%s\n' "$sandbox" > "$repo/build/nix-tmp/uboot-cache-root-$target"
 bash "$repo/image/test-runtime.sh" "$target" "$work/rootfs.ext4" "$work/data.ext4"
+jq -n --arg target "$target" --arg version "$EXPECTED_VERSION" \
+  --arg revision "$(git -C "$repo" rev-parse HEAD)" \
+  --argjson seconds "$(( $(date +%s) - started ))" \
+  '{target:$target,version:$version,source_revision:$revision,durations_seconds:{tests:$seconds}}' > "$report"
+echo "Artifact test measurements: $report"

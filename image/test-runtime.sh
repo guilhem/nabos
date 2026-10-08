@@ -87,6 +87,8 @@ if ! (cd "$work" && mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,meta
   exit 1
 fi
 
+bash "$repo/image/test-generated-units.sh" "$1" "$root"
+
 # Native test Python/systemd/D-Bus are test inputs, never product dependencies.
 # Image paths win collisions, so product executables/configuration stay exact.
 mkdir "$root/run/nabos-test-tools"
