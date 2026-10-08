@@ -120,7 +120,8 @@ in
     { assertion = builtins.elem nabosTarget [ "zero-armv6" "zero2-arm64" ]; message = "Unknown NabOS target"; }
     { assertion = nabosTarget != "zero-armv6" || packages.lva == null; message = "LVA is ARM64-only"; }
   ];
-  nixpkgs.overlays = [ (_final: previous: {
+  # Apply appliance settings only to ARM; retain upstream native builder packages.
+  nixpkgs.overlays = [ (_final: previous: lib.optionalAttrs previous.stdenv.hostPlatform.isAarch {
     # Audio consumers use the C API; avoid building a Fortran toolchain.
     fftw = (previous.fftw.override { withDoc = false; }).overrideAttrs (old: {
       nativeBuildInputs = [ ];
@@ -128,7 +129,7 @@ in
     });
     # Orc's documentation generators cannot run during cross compilation.
     orc = previous.orc.override { buildDevDoc = false; };
-  } // lib.optionalAttrs (nabosTarget == "zero-armv6") {
+  } // lib.optionalAttrs previous.stdenv.hostPlatform.isAarch32 {
     # Omit unused RDMA capture that fails ARMv6 cross builds.
     libpcap = previous.libpcap.override { withRdma = false; };
   }) ];
