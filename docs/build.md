@@ -18,7 +18,7 @@ attesté sans mesure. Le dev shell fournit les outils d’assemblage et de test.
 | Cible | Hôte constructeur | Appareil |
 |---|---|---|
 | `zero-armv6` | x86-64 Linux, compilation croisée ARMv6 | Raspberry Pi Zero W, ARM1176 |
-| `zero2-arm64` | ARM64 Linux natif | Raspberry Pi Zero 2 W, voix facultative |
+| `zero2-arm64` | x86-64 Linux, compilation croisée ARM64 | Raspberry Pi Zero 2 W, voix facultative |
 
 Les mêmes commandes servent en local et en CI :
 
@@ -26,7 +26,7 @@ Les mêmes commandes servent en local et en CI :
 make image TARGET=zero-armv6 VERSION=dev-local DEVELOPMENT=1
 # Équivalent :
 bash image/build.sh zero-armv6 dev-local --development
-# Sur ARM64 Linux :
+# Sur le même hôte x86-64 Linux :
 bash image/build.sh zero2-arm64 dev-local --development
 ```
 
@@ -103,8 +103,10 @@ PR et de push utilisent une signature de développement.
 ## Créer une release
 
 Le workflow principal `images.yml` construit automatiquement **les deux cibles**
-sur PR, push et publication de release. ARMv6 utilise le runner x86-64 ; ARM64
-utilise un runner ARM64 natif. Les tests d’artefacts téléchargent les sorties
+sur PR, push et publication de release. Les deux cibles sont compilées sur
+x86-64, comme les constructions locales qui alimentent Cachix. Les dérivations
+croisées diffèrent des dérivations natives ; utiliser le même hôte constructeur
+pour réutiliser le cache. Les tests d’artefacts téléchargent les sorties
 de chaque construction. La publication attend le **succès des constructions et
 des tests d’artefacts des deux cibles**, puis livre ces mêmes fichiers.
 
@@ -190,7 +192,7 @@ bash image/benchmark.sh warm zero-armv6 dev-local
 bash image/benchmark.sh version zero-armv6 dev-local.next
 ```
 
-Répéter sur ARM64 pour `zero2-arm64`. Le nom de phase n’isole pas un store
+Répéter sur x86-64 pour `zero2-arm64`. Le nom de phase n’isole pas un store
 déjà rempli : conserver des hôtes neufs pour comparer. Pour `nixpkgs`, modifier
 explicitement le pin dans un checkout de mesure et conserver le verrou utilisé.
 Sans nouveau pin, aucune mesure de changement Nixpkgs n’est possible.

@@ -96,11 +96,7 @@ jobs:
           export NABOS_FLAKE="git+file://$PWD"
           for target in zero-armv6 zero2-arm64; do
             export NABOS_TARGET="$target"
-            if [[ "$target" == zero-armv6 ]]; then
-              export NABOS_BUILD_SYSTEM=x86_64-linux
-            else
-              export NABOS_BUILD_SYSTEM=aarch64-linux
-            fi
+            export NABOS_BUILD_SYSTEM=x86_64-linux
             nix --extra-experimental-features 'nix-command flakes' eval --impure --raw \
               --option allow-import-from-derivation false --expr '
                 let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE");
@@ -122,12 +118,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: zero-armv6
-            runner: ubuntu-24.04
-          - target: zero2-arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+        target: [zero-armv6, zero2-arm64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
       TARGET: ${{ matrix.target }}
@@ -267,12 +259,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: zero-armv6
-            runner: ubuntu-24.04
-          - target: zero2-arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+        target: [zero-armv6, zero2-arm64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
       TARGET: ${{ matrix.target }}
@@ -325,12 +313,7 @@ jobs:
       matrix:
         target: [zero-armv6, zero2-arm64]
         phase: ${{ fromJSON(inputs.nixpkgs_rev != '' && '["warm","version","nixpkgs"]' || '["warm","version"]') }}
-        include:
-          - target: zero-armv6
-            runner: ubuntu-24.04
-          - target: zero2-arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
       TARGET: ${{ matrix.target }}
