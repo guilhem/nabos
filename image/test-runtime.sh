@@ -80,7 +80,7 @@ PY
 [[ ${#etc_paths[@]} == 2 && -f $root${etc_paths[0]} && -d $root${etc_paths[1]} ]]
 cp -- "$root${etc_paths[0]}" "$work/etc.erofs"
 mount -n -t erofs -o loop,ro,nodev,nosuid "$work/etc.erofs" "$work/metadata"
-if ! mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,metacopy=on,lowerdir=$work/metadata::$root${etc_paths[1]}" overlay "$root/etc"; then
+if ! LIBMOUNT_DEBUG=cxt,hook mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,metacopy=on,lowerdir=$work/metadata::$root${etc_paths[1]}" overlay "$root/etc"; then
   uname -r >&2
   dmesg | tail -20 >&2 || true
   exit 1
