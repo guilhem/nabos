@@ -44,10 +44,10 @@ mcopy -i "$work/boot.vfat" -s '::*' "$work/boot/"
 debugfs -R "dump /boot/overlays/tagtagtag-sound.dtbo $work/overlays/tagtagtag-sound.dtbo" "$work/rootfs.ext4"
 sandbox=$(nix --extra-experimental-features 'nix-command flakes' build "$repo#uboot-sandbox" --no-link --print-out-paths)
 (cd "$sandbox" && sha256sum --check --strict SHA256SUMS)
-printf '%s\n' "$sandbox" > "$repo/build/nix-tmp/uboot-cache-root-$target"
 export NABOS_UBOOT_SANDBOX="$sandbox" NABOS_IMAGE_TARGET="$target" \
   NABOS_IMAGE_BOOT="$work/boot" NABOS_IMAGE_ENV="$work/uboot.env" \
   NABOS_IMAGE_DISK="$work/sdcard.img" NABOS_IMAGE_OVERLAYS="$work/overlays" \
   NABOS_VENDOR_DTBS="$work/boot"
 (cd "$repo/services" && go test -count=1 ./tests/image)
+printf '%s\n' "$sandbox" > "$repo/build/nix-tmp/uboot-cache-root-$target"
 bash "$repo/image/test-runtime.sh" "$target" "$work/rootfs.ext4" "$work/data.ext4"

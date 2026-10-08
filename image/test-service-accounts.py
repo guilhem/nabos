@@ -268,10 +268,12 @@ def main():
                            '--conf-file=/etc/NetworkManager/dnsmasq-shared.d/nabos.conf']))
             ssh = run(0, [product('sshd'), '-G', '-f', '/etc/ssh/sshd_config'])
             expect(ssh)
+            ssh_lines = [key.lower() + ' ' + value for key, value in
+                         (line.split(None, 1) for line in ssh.stdout.splitlines())]
             for setting in ('permitrootlogin no', 'passwordauthentication no',
                             'kbdinteractiveauthentication no', 'authenticationmethods publickey',
                             'authorizedkeyscommanduser device-core', 'allowusers nabos'):
-                require(setting in ssh.stdout.splitlines(), 'SSH setting missing: ' + setting)
+                require(setting in ssh_lines, 'SSH setting missing: ' + setting + '\n' + ssh.stdout)
             expect(run(0, [product('visudo'), '--check']))
             print('PASS: shipped NetworkManager/DNS/SSH/sudo configuration parses on RO root', flush=True)
             config = '''<busconfig><type>system</type><auth>EXTERNAL</auth>
