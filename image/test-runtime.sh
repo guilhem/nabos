@@ -10,14 +10,12 @@ else
     zero2-arm64) [[ $(uname -m) == aarch64 ]] || { echo 'ARM64 runtime tests require native ARM64' >&2; exit 1; } ;;
     zero-armv6)
       [[ $(uname -m) == x86_64 ]] || { echo 'ARMv6 runtime tests require x86_64/QEMU' >&2; exit 1; }
-      handler=false
-      for entry in /proc/sys/fs/binfmt_misc/*; do
-        if [[ -f $entry ]] && grep -q '^enabled$' "$entry" &&
-            grep -Eq '^interpreter .*qemu-arm(-static)?$' "$entry" && grep -Eq '^flags: .*F' "$entry"; then
-          handler=true
-        fi
-      done
-      $handler || { echo 'Need a runner-provided qemu-arm binfmt handler with flag F; this test never registers host handlers' >&2; exit 1; }
+      # Ubuntu registers its arm-binfmt-P wrapper rather than qemu-arm-static.
+      handler=/proc/sys/fs/binfmt_misc/qemu-arm
+      if [[ ! -r $handler ]] || ! grep -qx enabled "$handler" || ! grep -Eq '^flags:.*F' "$handler"; then
+        echo 'Need a runner-provided qemu-arm binfmt handler with flag F; this test never registers host handlers' >&2
+        exit 1
+      fi
       ;;
     *) echo "Unknown target: $1" >&2; exit 2 ;;
   esac
@@ -82,7 +80,11 @@ PY
 [[ ${#etc_paths[@]} == 2 && -f $root${etc_paths[0]} && -d $root${etc_paths[1]} ]]
 cp -- "$root${etc_paths[0]}" "$work/etc.erofs"
 mount -n -t erofs -o loop,ro,nodev,nosuid "$work/etc.erofs" "$work/metadata"
-mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,metacopy=on,lowerdir=$work/metadata::$root${etc_paths[1]}" overlay "$root/etc"
+if ! mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,metacopy=on,lowerdir=$work/metadata::$root${etc_paths[1]}" overlay "$root/etc"; then
+  uname -r >&2
+  dmesg | tail -20 >&2 || true
+  exit 1
+fi
 
 # Native test Python/systemd/D-Bus are test inputs, never product dependencies.
 # Image paths win collisions, so product executables/configuration stay exact.

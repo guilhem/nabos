@@ -25,6 +25,37 @@ func TestKernelSupportsApplianceHardwareAndBundles(t *testing.T) {
 	}
 }
 
+func TestRuntimeRequiresFixedARMHandler(t *testing.T) {
+	script, _, ok := strings.Cut(read(t, filepath.Join(imageDir, "test-runtime.sh")), "\n  [[ -f $2 && -f $3 ]]")
+	if !ok {
+		t.Fatal("runtime preflight missing")
+	}
+	script += "\nfi\n"
+	for _, c := range []struct {
+		name, handler string
+		code          int
+	}{
+		{"ubuntu", "enabled\ninterpreter /usr/libexec/qemu-binfmt/arm-binfmt-P\nflags: OPF\n", 0},
+		{"static", "enabled\ninterpreter /usr/bin/qemu-arm-static\nflags: F\n", 0},
+		{"disabled", "disabled\ninterpreter /usr/bin/qemu-arm-static\nflags: F\n", 1},
+		{"unfixed", "enabled\ninterpreter /usr/bin/qemu-arm-static\nflags: OP\n", 1},
+		{"missing", "", 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			if c.handler != "" {
+				write(t, filepath.Join(tmp, "qemu-arm"), c.handler)
+			}
+			fake := newFakes(t, tmp, map[string]string{"uname": "echo x86_64"})
+			preflight := strings.ReplaceAll(script, "/proc/sys/fs/binfmt_misc", tmp)
+			r := execute(t, "", fake.env(), "bash", "-c", preflight, "--", "zero-armv6", "root.ext4", "data.ext4")
+			if r.code != c.code {
+				t.Fatalf("preflight exit %d, want %d: %s", r.code, c.code, r.stderr)
+			}
+		})
+	}
+}
+
 func TestReleaseUpload(t *testing.T) {
 	workflow := read(t, filepath.Join(repo, ".github/workflows/images.yml"))
 	// Exercise only the release job's upload block, even when later jobs have scripts.
