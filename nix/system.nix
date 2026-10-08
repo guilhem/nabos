@@ -126,10 +126,11 @@ in
       nativeBuildInputs = [ ];
       configureFlags = old.configureFlags ++ [ "--disable-fortran" ];
     });
-  } // lib.optionalAttrs (nabosTarget == "zero-armv6") {
-    # Omit unused RDMA capture and documentation that fail ARMv6 cross builds.
-    libpcap = previous.libpcap.override { withRdma = false; };
+    # Orc's documentation generators cannot run during cross compilation.
     orc = previous.orc.override { buildDevDoc = false; };
+  } // lib.optionalAttrs (nabosTarget == "zero-armv6") {
+    # Omit unused RDMA capture that fails ARMv6 cross builds.
+    libpcap = previous.libpcap.override { withRdma = false; };
   }) ];
   system.stateVersion = "26.05";
   system.nixos.label = "nabos-${nabosVersion}";
