@@ -80,7 +80,8 @@ PY
 [[ ${#etc_paths[@]} == 2 && -f $root${etc_paths[0]} && -d $root${etc_paths[1]} ]]
 cp -- "$root${etc_paths[0]}" "$work/etc.erofs"
 mount -n -t erofs -o loop,ro,nodev,nosuid "$work/etc.erofs" "$work/metadata"
-if ! LIBMOUNT_DEBUG=cxt,hook mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,metacopy=on,lowerdir=$work/metadata::$root${etc_paths[1]}" overlay "$root/etc"; then
+# fsconfig limits string values to 256 bytes; use short paths relative to work.
+if ! (cd "$work" && mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,metacopy=on,lowerdir=metadata::root${etc_paths[1]}" overlay "$root/etc"); then
   uname -r >&2
   dmesg | tail -20 >&2 || true
   exit 1
@@ -100,7 +101,7 @@ systemd=${busctl%/bin/busctl}
 mkdir "$root/run/nabos-image-store"
 mount -n --bind "$root/nix/store" "$root/run/nabos-image-store"
 mount -n -o remount,bind,ro "$root/run/nabos-image-store"
-mount -n -t overlay -o "ro,nodev,nosuid,lowerdir=$root/run/nabos-image-store:/nix/store" overlay "$root/nix/store"
+(cd "$work" && mount -n -t overlay -o "ro,nodev,nosuid,lowerdir=root/run/nabos-image-store:/nix/store" overlay "$root/nix/store")
 ln -s "$system" "$root/run/current-system"
 touch "$root/run/nabos-test-tools/persist.sh"
 mount -n --bind "$repo/nix/runtime/persist.sh" "$root/run/nabos-test-tools/persist.sh"
