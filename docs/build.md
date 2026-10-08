@@ -114,6 +114,7 @@ FFTW conserve son API C pour l’audio, sans interfaces ni documentation Fortran
 LVA réutilise la bibliothèque Fortran embarquée dans son wheel NumPy verrouillé.
 Ces choix évitent de compiler des toolchains Fortran pour les images.
 LVA charge directement `libmpv`, sans le wrapper mpv et ses dépendances yt-dlp/Deno.
+Ses bindings Python utilisent les chemins Nix de MPV et PulseAudio, sans Binutils au runtime.
 
 1. Créer une release GitHub sur le commit voulu, avec un tag `vX.Y.Z`, un titre
    et un changelog ; commencer par une prérelease comme `vX.Y.Z-rc.1`.

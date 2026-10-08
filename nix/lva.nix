@@ -1,6 +1,6 @@
 { lib, stdenvNoCC, stdenv, python313, fetchurl, autoPatchelfHook, makeWrapper,
   alsa-lib, libpulseaudio, mpv-unwrapped, openssl, libffi, zlib,
-  coreutils, binutils, cacert, src, version }:
+  coreutils, cacert, src, version }:
 let
   # Reuse the exact CPython 3.13 aarch64 wheels and checksums already locked by
   # the image build. No Debian ELF or runtime pip/venv installation is involved.
@@ -36,6 +36,15 @@ for filename in sys.argv[2:]:
         wheel.extractall(site)
 PY
     cp -a linux_voice_assistant sounds wakewords version.txt LICENSE.md "$site/"
+    # Match Nixpkgs' MPV/SoundCard patches; no runtime linker tools are needed.
+    test -r ${mpv-unwrapped}/lib/libmpv.so
+    test -r ${libpulseaudio}/lib/libpulse.so
+    substituteInPlace "$site/mpv.py" \
+      --replace-fail "sofile = ctypes.util.find_library('mpv')" \
+        'sofile = "${mpv-unwrapped}/lib/libmpv.so"'
+    substituteInPlace "$site/soundcard/pulseaudio.py" \
+      --replace-fail "_ffi.dlopen('pulse')" \
+        '_ffi.dlopen("${libpulseaudio}/lib/libpulse.so")'
     # Runtime dlopen users (python-mpv and SoundCard) also need their libraries.
     makeWrapper ${python313}/bin/python3 "$out/bin/linux-voice-assistant" \
       --add-flags '-m linux_voice_assistant' \
@@ -48,7 +57,7 @@ PY
       --set XDG_CONFIG_HOME /var/lib/nabos/lva/config \
       --set XDG_CACHE_HOME /var/lib/nabos/lva/cache \
       --set SSL_CERT_FILE ${cacert}/etc/ssl/certs/ca-bundle.crt \
-      --prefix PATH : ${lib.makeBinPath [ coreutils binutils ]} \
+      --prefix PATH : ${lib.makeBinPath [ coreutils ]} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath libraries}
     runHook postInstall
   '';
@@ -57,7 +66,7 @@ PY
     # SoundCard connects to PulseAudio on import; audio-server integration is
     # exercised by the system test, not inside this isolated package builder.
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$out/share/linux-voice-assistant" \
-      PATH=${lib.makeBinPath [ coreutils binutils ]}:$PATH \
+      PATH=${lib.makeBinPath [ coreutils ]}:$PATH \
       LD_LIBRARY_PATH=${lib.makeLibraryPath libraries} python3 - <<'PY'
 import aioesphomeapi, numpy, mpv, pymicro_wakeword, pyopen_wakeword, webrtc_noise_gain
 import ctypes
