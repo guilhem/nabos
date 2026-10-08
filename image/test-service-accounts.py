@@ -366,8 +366,17 @@ def main():
                         core = start(1003, core_command, 'device-core-restart', coreenv, (1005, 1004))
                         wait_for(lambda: call(1001, CORE, ROOT, 'org.freedesktop.DBus.Properties', 'Get',
                             'ss', CORE + '.Manager', 'Ready').stdout.strip() == 'v b true')
-            expect(run(1004, [python, '-B', '-c',
-                "from pathlib import Path; p=Path('/var/lib/nabos/lva/.write-check'); p.touch(); p.unlink()" ]))
+            for uid, own_home, other_home in ((1000, '/var/lib/nabos/admin', '/var/lib/nabos/lva'),
+                                               (1004, '/var/lib/nabos/lva', '/var/lib/nabos/admin')):
+                require(pwd.getpwuid(uid).pw_dir == own_home, f'Wrong home for UID {uid}')
+                expect(run(uid, [python, '-B', '-c',
+                    "from pathlib import Path; import sys; p=Path(sys.argv[1])/'.write-check'; p.touch(); p.unlink()",
+                    own_home]))
+                denied = run(uid, [python, '-B', '-c',
+                    "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
+                    other_home + '/.must-not-write'])
+                require(denied.returncode != 0 and 'PermissionError' in denied.stderr,
+                        f'UID {uid} must not write another account home')
             print('PASS: first-use settings, persistent voice home, restart revision and stable lock inode', flush=True)
             # Use the shipped package's service account; only its authority name is added.
             policy = 'org.freedesktop.PolicyKit1'

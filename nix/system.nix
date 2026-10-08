@@ -152,7 +152,7 @@ in
     root.hashedPassword = "!";
     nabos = {
       uid = 1000; group = "nabos"; isNormalUser = true;
-      home = "/var/lib/nabos"; createHome = false; shell = pkgs.bashInteractive;
+      home = "/var/lib/nabos/admin"; createHome = false; shell = pkgs.bashInteractive;
       hashedPassword = "!"; autoSubUidGidRange = false;
     };
     nab-app = fixedUser 1001 "/data/nabos" [ "nab-media" ];

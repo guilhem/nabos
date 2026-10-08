@@ -146,6 +146,8 @@ chmod 1777 "$root/var/tmp"
 # Initialize the seeded home as boot does, before the UID 1004 write check.
 env -i "PATH=/run/nabos-test-tools:$system/sw/bin" \
   "$(command -v chroot)" "$root" /run/nabos-test-tools/systemd-tmpfiles --create --prefix=/var/lib/nabos
+[[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos") == 0:0:711 ]]
+[[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos/admin") == 1000:1000:700 ]]
 [[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos/lva") == 1004:1004:700 ]]
 env -i "PATH=/run/nabos-test-tools:$system/sw/bin" \
   "NABOS_SYSTEM=$system" "NABOS_TEST_LIBSYSTEMD=$systemd/lib/libsystemd.so.0" \

@@ -198,7 +198,7 @@ func TestLVAUnitAdvertisedOnlyWhenInstalled(t *testing.T) {
 func TestFixedServiceAccounts(t *testing.T) {
 	config := read(t, filepath.Join(repo, "nix/system.nix"))
 	for _, required := range []string{
-		`uid = 1000; group = "nabos";`, `home = "/var/lib/nabos"; createHome = false;`,
+		`uid = 1000; group = "nabos";`, `home = "/var/lib/nabos/admin"; createHome = false;`,
 		`nab-app = fixedUser 1001 "/data/nabos" [ "nab-media" ];`,
 		`device-core = fixedUser 1003 "/data/device-core" [ "nab-media" "nab-audio" ];`,
 		`nab-audio = fixedUser 1004 "/var/lib/nabos/lva" [ "audio" ];`,

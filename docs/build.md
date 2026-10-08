@@ -291,7 +291,8 @@ Nix ; leur présence ne constitue pas un deuxième constructeur.
 
 Les profils réseau, l’horloge, le mixer et `/var/lib/nabos` sont liés à
 `/data/system`. Le home, les préférences et caches LVA restent sous
-`/var/lib/nabos/lva`. Les clés SSH autorisées sont sous `/data/device-core/ssh`,
+`/var/lib/nabos/lva` et le home SSH est `/var/lib/nabos/admin` ; leur parent
+appartient à root, chaque home à son compte. Les clés SSH autorisées sont sous `/data/device-core/ssh`,
 les clés hôtes sous `/data/system/ssh/etc/ssh`. Le secours `/data/.volatile`
 ne garantit aucune persistance. Les temporaires des services restent sous
 `/run` avec `RuntimeDirectory` et `WorkingDirectory` adaptés.
