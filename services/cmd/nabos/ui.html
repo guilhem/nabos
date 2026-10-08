@@ -197,15 +197,15 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <option value="notify"{{if and .System.AutoCheck (not .System.Updates.Automatic)}} selected{{end}}>Proposer les mises à jour chaque jour</option>
 <option value="auto"{{if .System.Updates.Automatic}} selected{{end}}>Installer automatiquement</option>
 </select></label>
-<label>Canal <select name="channel"><option value="stable"{{if eq .System.Updates.Channel "stable"}} selected{{end}}>Stable</option><option value="test"{{if eq .System.Updates.Channel "test"}} selected{{end}}>Test : stables et préversions</option></select></label>
-<p>Le canal choisi s’applique aussi aux installations automatiques. Les préversions sont destinées aux essais.</p>
+<label>Canal <select name="channel"><option value="stable"{{if eq .System.Updates.Channel "stable"}} selected{{end}}>Stable</option><option value="test"{{if eq .System.Updates.Channel "test"}} selected{{end}}>Test : stables et préversions</option><option value="edge"{{if eq .System.Updates.Channel "edge"}} selected{{end}}>Edge : derniers développements</option></select></label>
+<p>Stable propose les versions stables ; Test ajoute les préversions habituelles. Edge propose uniquement les builds automatiques de main. Changer de canal conserve la version installée jusqu’à une version supérieure.</p>
 <label>Début du créneau <input type="time" name="start" value="{{hm .System.Updates.Start}}" required></label>
 <label>Fin du créneau <input type="time" name="end" value="{{hm .System.Updates.End}}" required></label>
 <p>Heure du lapin : {{.System.Timezone}}. En mode automatique, installation et redémarrage attendent ce créneau et la fin des lectures ou interactions.</p>
 <div class="form-actions"><button>Enregistrer les préférences</button></div></form></section>
 {{end}}<section><h2>Nouvelles versions</h2>
 {{range .Data.Releases}}
-<article><h3>{{.Tag}} — {{if .Prerelease}}Test{{else}}Stable{{end}}</h3>
+<article><h3>{{.Tag}} — {{if eq $.System.Updates.Channel "edge"}}Edge{{else if .Prerelease}}Test{{else}}Stable{{end}}</h3>
 {{if .Published}}<p>Publiée le {{date .Published}}</p>{{end}}
 {{if .Notes}}<details><summary>Notes de publication</summary><pre style="white-space:pre-wrap">{{.Notes}}</pre></details>{{end}}
 {{if .Blocked}}<p class="err">Exclue de l’automatique : {{.Blocked}}</p>{{end}}

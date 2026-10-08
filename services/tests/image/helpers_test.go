@@ -1,21 +1,9 @@
-// Package image checks the NabOS OS image files (image/boot, image/rootfs,
-// genimage.cfg, assets).
-//
-// Run: go test ./tests/image (from services/). Nothing here touches host
-// block devices or needs root. The U-Boot tests run the real boot.scr in a
-// sandbox build of the pinned U-Boot and are skipped when NABOS_UBOOT_SANDBOX
-// (default /tmp/nabos-uboot-sandbox) has no u-boot binary:
-//
-//	make O=$NABOS_UBOOT_SANDBOX sandbox_defconfig
-//	scripts/config --file $NABOS_UBOOT_SANDBOX/.config -d SANDBOX_SDL -d TOOLS_MKEFICAPSULE \
-//	    -d UNIT_TEST -d EFI_CAPSULE_AUTHENTICATE -d EFI_CAPSULE_ON_DISK -d CMD_UPL -d UPL
-//	make O=$NABOS_UBOOT_SANDBOX olddefconfig
-//	make O=$NABOS_UBOOT_SANDBOX CONFIG_PYLIBFDT= u-boot tools
-//
-// NABOS_SOURCES (default /tmp/nabos-sources) holds the unpacked locked
-// sources (uboot, sound); NABOS_VENDOR_DTBS the vendor DTBs.
-// image/test.sh supplies NABOS_IMAGE_BOOT, NABOS_IMAGE_ENV, NABOS_IMAGE_TARGET
-// and NABOS_IMAGE_OVERLAYS to exercise the shipped files from its disposable copy.
+// Package image checks NabOS NixOS image inputs and shared runtime policies.
+// Run go test ./tests/image from services/. U-Boot fixtures use the native
+// .#uboot-sandbox package (NABOS_UBOOT_SANDBOX), installed under bin/.
+// NABOS_SOURCES optionally supplies standalone sound/U-Boot sources.
+// Artifact tests supply NABOS_IMAGE_BOOT, NABOS_IMAGE_ENV, NABOS_IMAGE_TARGET,
+// NABOS_IMAGE_OVERLAYS and NABOS_VENDOR_DTBS; missing explicit inputs fail.
 package image
 
 import (
@@ -152,4 +140,82 @@ func (f fakeCommands) calls(t *testing.T) []string {
 		return strings.Split(s, "\n")
 	}
 	return nil
+}
+
+func actualImage() bool {
+	for _, key := range []string{"NABOS_IMAGE_BOOT", "NABOS_IMAGE_ENV", "NABOS_IMAGE_TARGET", "NABOS_IMAGE_OVERLAYS", "NABOS_IMAGE_DISK"} {
+		if _, set := os.LookupEnv(key); set {
+			return true
+		}
+	}
+	return false
+}
+
+func checkImageInputs(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"NABOS_IMAGE_BOOT", "NABOS_IMAGE_ENV", "NABOS_IMAGE_OVERLAYS", "NABOS_IMAGE_DISK", "NABOS_VENDOR_DTBS"} {
+		if path, set := os.LookupEnv(key); set {
+			if path == "" {
+				t.Fatalf("%s is explicitly empty", key)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("%s: %v", key, err)
+			}
+		}
+	}
+	if path, set := os.LookupEnv("NABOS_UBOOT_SANDBOX"); set {
+		for _, name := range []string{"u-boot", "dtc", "mkimage", "mkenvimage"} {
+			binary := filepath.Join(path, "bin", name)
+			if info, err := os.Stat(binary); path == "" || err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+				t.Fatalf("NABOS_UBOOT_SANDBOX missing executable %s (%v)", binary, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(path, "SHA256SUMS")); err != nil {
+			t.Fatalf("NABOS_UBOOT_SANDBOX checksum manifest: %v", err)
+		}
+	}
+	if !actualImage() {
+		return
+	}
+	target := os.Getenv("NABOS_IMAGE_TARGET")
+	dtb, ok := dtbs[target]
+	if !ok {
+		t.Fatalf("unknown NABOS_IMAGE_TARGET %q", target)
+	}
+	for _, key := range []string{"NABOS_IMAGE_BOOT", "NABOS_IMAGE_ENV", "NABOS_IMAGE_OVERLAYS", "NABOS_VENDOR_DTBS", "NABOS_UBOOT_SANDBOX"} {
+		if os.Getenv(key) == "" {
+			t.Fatalf("actual image requires %s", key)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(os.Getenv("NABOS_IMAGE_BOOT"), "boot.scr"),
+		filepath.Join(os.Getenv("NABOS_IMAGE_BOOT"), "boot.env"),
+		filepath.Join(vendorDTBs, dtb),
+		filepath.Join(os.Getenv("NABOS_IMAGE_OVERLAYS"), "tagtagtag-sound.dtbo"),
+	} {
+		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("actual image file missing: %s (%v)", path, err)
+		}
+	}
+}
+
+func TestActualImageInputs(t *testing.T) { checkImageInputs(t) }
+
+func TestRequiredImageInputsRejectMissingPaths(t *testing.T) {
+	for _, key := range []string{"NABOS_IMAGE_BOOT", "NABOS_IMAGE_ENV", "NABOS_IMAGE_OVERLAYS", "NABOS_IMAGE_DISK", "NABOS_VENDOR_DTBS", "NABOS_UBOOT_SANDBOX"} {
+		t.Run(key, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestActualImageInputs$")
+			for _, value := range os.Environ() {
+				name, _, _ := strings.Cut(value, "=")
+				if !strings.HasPrefix(name, "NABOS_IMAGE_") && name != "NABOS_VENDOR_DTBS" && name != "NABOS_UBOOT_SANDBOX" {
+					cmd.Env = append(cmd.Env, value)
+				}
+			}
+			cmd.Env = append(cmd.Env, key+"="+filepath.Join(t.TempDir(), "missing"))
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), key) {
+				t.Fatalf("missing %s must fail: %v\n%s", key, err, output)
+			}
+		})
+	}
 }

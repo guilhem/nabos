@@ -57,9 +57,11 @@ const (
 // a stored environment made only of uboot.env (env import -d wipes
 // everything else, like a real stored environment does).
 type bootFixture struct {
-	t        *testing.T
-	tmp      string
-	overlays map[string]string
+	t            *testing.T
+	tmp          string
+	overlays     map[string]string
+	missing      map[string]string
+	initContents map[string]string
 }
 
 func copyFile(t *testing.T, from, to string) {
@@ -78,9 +80,14 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	os.MkdirAll(filepath.Join(tree, "boot/dtb"), 0o755)
 	os.MkdirAll(filepath.Join(tree, "boot/overlays"), 0o755)
 	write(f.t, filepath.Join(tree, "boot/kernel"), strings.Repeat("not a real kernel", 64))
+	write(f.t, filepath.Join(tree, "boot/initrd"), strings.Repeat("not a real initrd", 64))
+	write(f.t, filepath.Join(tree, "boot/init"), "nabos_init=/nix/store/fixture-"+name+"/init\nnabos_kernel_params=ro rootwait rootfstype=ext4 fsck.mode=skip watchdog.open_timeout=300 panic=10 slot_fixture="+name+"\n")
+	if init, override := f.initContents[name]; override {
+		write(f.t, filepath.Join(tree, "boot/init"), init)
+	}
 	dtb := filepath.Join(vendorDTBs, dtbs[target])
 	if _, err := os.Stat(dtb); err != nil {
-		if os.Getenv("NABOS_IMAGE_BOOT") != "" {
+		if actualImage() || os.Getenv("NABOS_VENDOR_DTBS") != "" {
 			f.t.Fatal(err)
 		}
 		dtb = filepath.Join(f.tmp, "base.dtb")
@@ -91,6 +98,9 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	}
 	if brokenOverlay {
 		write(f.t, filepath.Join(tree, "boot/overlays/tagtagtag-sound.dtbo"), "garbage")
+	}
+	if missing := f.missing[name]; missing != "" {
+		os.Remove(filepath.Join(tree, "boot", missing))
 	}
 	return tree
 }
@@ -202,7 +212,7 @@ func (f *bootFixture) boot(disk, envChanges string, watchdog bool) ([]string, st
 	if watchdog {
 		args = []string{"-d", filepath.Join(f.tmp, "control.dtb")}
 	}
-	cmd := exec.Command(filepath.Join(sandbox, "u-boot"), append(args, "-c", commands)...)
+	cmd := exec.Command(filepath.Join(sandbox, "bin/u-boot"), append(args, "-c", commands)...)
 	cmd.Dir = f.tmp // saveenv and sandbox state belong to this fixture.
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -252,13 +262,17 @@ func (f *bootFixture) boot(disk, envChanges string, watchdog bool) ([]string, st
 }
 
 func newBootFixture(t *testing.T) *bootFixture {
-	if _, err := os.Stat(filepath.Join(sandbox, "u-boot")); err != nil {
-		t.Skip("U-Boot sandbox build not available")
+	checkImageInputs(t)
+	if _, err := os.Stat(filepath.Join(sandbox, "bin/u-boot")); err != nil {
+		if _, set := os.LookupEnv("NABOS_UBOOT_SANDBOX"); set || actualImage() {
+			t.Fatal(err)
+		}
+		t.Skip("Nix U-Boot sandbox not available")
 	}
 	f := &bootFixture{t: t, tmp: t.TempDir(), overlays: map[string]string{}}
-	dtc := filepath.Join(sandbox, "scripts/dtc/dtc")
+	dtc := filepath.Join(sandbox, "bin/dtc")
 	if _, err := os.Stat(dtc); err != nil {
-		dtc = "dtc"
+		t.Fatal(err)
 	}
 	run(t, baseDTS, dtc, "-@", "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "base.dtb"), "-")
 	run(t, controlDTS, dtc, "-I", "dts", "-O", "dtb", "-o", filepath.Join(f.tmp, "control.dtb"), "-")
@@ -269,7 +283,7 @@ func newBootFixture(t *testing.T) *bootFixture {
 		}
 		var dts string
 		if real := find(filepath.Join(sources, repo), name+"-overlay.dts"); len(real) > 0 {
-			// The pinned driver overlays, preprocessed like image/prepare.sh does.
+			// Compile pinned overlays only for standalone source tests.
 			dts = run(t, "", "cpp", "-nostdinc", "-undef", "-D__DTS__", "-x", "assembler-with-cpp", "-P", real[0])
 		} else {
 			dts = fmt.Sprintf(miniOverlay, "i2s")
@@ -282,11 +296,19 @@ func newBootFixture(t *testing.T) *bootFixture {
 		copyFile(t, filepath.Join(boot, "boot.scr"), filepath.Join(f.tmp, "boot.scr"))
 		copyFile(t, os.Getenv("NABOS_IMAGE_ENV"), filepath.Join(f.tmp, "uboot.env.bin"))
 	} else {
-		run(t, "", filepath.Join(sandbox, "tools/mkimage"), "-A", "arm", "-T", "script", "-C", "none",
+		run(t, "", filepath.Join(sandbox, "bin/mkimage"), "-A", "arm", "-T", "script", "-C", "none",
 			"-d", filepath.Join(bootDir, "boot.cmd"), filepath.Join(f.tmp, "boot.scr"))
-		// Same packing as image/build.sh; comment lines must be dropped by mkenvimage.
-		run(t, "", filepath.Join(sandbox, "tools/mkenvimage"), "-r", "-s", "0x10000",
+		// Same redundant packing as the Nix image payload.
+		run(t, "", filepath.Join(sandbox, "bin/mkenvimage"), "-r", "-s", "0x10000",
 			"-o", filepath.Join(f.tmp, "uboot.env.bin"), filepath.Join(bootDir, "uboot.env"))
+	}
+	// A script image has a 64-byte legacy header, then one size and a zero terminator.
+	// Compare the shipped payload too, so source-only tests cannot hide a rewritten boot.cmd.
+	script := []byte(read(t, filepath.Join(f.tmp, "boot.scr")))
+	if len(script) < 72 || binary.BigEndian.Uint32(script[:4]) != 0x27051956 || script[30] != 6 ||
+		binary.BigEndian.Uint32(script[64:68]) != uint32(len(script)-72) || binary.BigEndian.Uint32(script[68:72]) != 0 ||
+		string(script[72:]) != read(t, filepath.Join(bootDir, "boot.cmd")) {
+		t.Fatal("boot.scr must contain exactly the authoritative boot.cmd")
 	}
 	return f
 }
@@ -408,7 +430,7 @@ func testBootScript(t *testing.T, target string) {
 		checkLayout(uint32((bootOffset + bootHalfSize) / 512))
 		checkEnv()
 		lines, _ = f.boot(disk, "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
-		containsAll(t, strings.Fields(booting(t, lines, "B")), "root=/dev/mmcblk0p3", "rauc.slot=B")
+		containsAll(t, strings.Fields(booting(t, lines, "B")), "root=/dev/mmcblk0p3", "rauc.slot=B", "init=/nix/store/fixture-b/init", "slot_fixture=b")
 		containsAll(t, strings.Fields(booting(t, lines, "A")), "root=/dev/mmcblk0p2", "rauc.slot=A")
 	})
 
@@ -422,7 +444,7 @@ func testBootScript(t *testing.T, target string) {
 			t.Error("obsolete ears overlay loaded")
 		}
 		containsAll(t, strings.Fields(booting(t, lines, "A")), "root=/dev/mmcblk0p2", "rauc.slot=A", "ro",
-			"init=/usr/lib/nabos/boot-init", "watchdog.open_timeout=300", "panic=10")
+			"init=/nix/store/fixture-a/init", "slot_fixture=a", "watchdog.open_timeout=300", "panic=10")
 		containsAll(t, lower(lines), "nabos: board revision 0x009000c1")
 		if !strings.Contains(output, "Started watchdog@7e100000") {
 			t.Error("watchdog not started")
@@ -453,11 +475,41 @@ func testBootScript(t *testing.T, target string) {
 		if lines[0] != "nabos: trying slot B, 0 attempts left after this one" {
 			t.Errorf("first line %q", lines[0])
 		}
-		containsAll(t, strings.Fields(booting(t, lines, "B")), "root=/dev/mmcblk0p3", "rauc.slot=B")
+		containsAll(t, strings.Fields(booting(t, lines, "B")), "root=/dev/mmcblk0p3", "rauc.slot=B", "init=/nix/store/fixture-b/init", "slot_fixture=b")
 		if n := strings.Count(output, "Started watchdog@7e100000"); n != 2 {
 			t.Errorf("watchdog started %d times", n)
 		}
 	})
+
+	for _, missing := range []string{"init", "initrd", "kernel", "dtb/" + dtbs[target]} {
+		t.Run("incomplete B falls through to A: "+missing, func(t *testing.T) {
+			f.t = t
+			f.missing = map[string]string{"b": missing}
+			defer func() { f.missing = nil }()
+			lines, _ := f.boot(f.disk(target, true, true, false), "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
+			for _, line := range lines {
+				if strings.HasPrefix(line, "nabos: booting slot B:") {
+					t.Errorf("incomplete slot B reached kernel: %s", line)
+				}
+			}
+			containsAll(t, strings.Fields(booting(t, lines, "A")), "root=/dev/mmcblk0p2", "init=/nix/store/fixture-a/init", "slot_fixture=a")
+		})
+	}
+
+	for _, contents := range []string{"nabos_init=/nix/store/fixture-b/init\n", "nabos_kernel_params=slot_fixture=b\n", ""} {
+		t.Run("incomplete init metadata cannot reuse stored environment: "+contents, func(t *testing.T) {
+			f.t = t
+			f.initContents = map[string]string{"b": contents}
+			defer func() { f.initContents = nil }()
+			lines, _ := f.boot(f.disk(target, true, true, false), "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1; setenv nabos_init /nix/store/stale/init; setenv nabos_kernel_params stale=1;", true)
+			for _, line := range lines {
+				if strings.HasPrefix(line, "nabos: booting slot B:") {
+					t.Errorf("incomplete init metadata booted B: %s", line)
+				}
+			}
+			containsAll(t, strings.Fields(booting(t, lines, "A")), "init=/nix/store/fixture-a/init", "slot_fixture=a")
+		})
+	}
 
 	t.Run("missing watchdog never hands control to kernel", func(t *testing.T) {
 		lines, output := boot(t, false, false, "", false)
@@ -489,4 +541,37 @@ func testBootScript(t *testing.T, target string) {
 		containsAll(t, lines, "nabos: overlay failed, using the plain DTB")
 		booting(t, lines, "A")
 	})
+}
+
+func TestSelectedSlotBootContract(t *testing.T) {
+	script := read(t, filepath.Join(bootDir, "boot.cmd"))
+	for _, file := range []string{"init", "initrd", "kernel", "dtb/${nabos_dtb}"} {
+		want := "${devnum}:${nabos_part} "
+		found := false
+		for _, command := range strings.Split(script, ";") {
+			if strings.Contains(command, "load ${devtype} "+want) && strings.Contains(command, "/boot/"+file) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("/boot/%s must be loaded from the selected root slot", file)
+		}
+	}
+	for _, command := range []string{"booti", "bootz"} {
+		if !strings.Contains(script, command+" ${kernel_addr_r} ${ramdisk_addr_r}:${nabos_initrd_size} ${fdt_addr_r}") {
+			t.Errorf("%s must receive the selected slot initrd", command)
+		}
+	}
+	for _, required := range []string{"nabos_init nabos_kernel_params", "init=${nabos_init}", "${nabos_kernel_params}"} {
+		if !strings.Contains(script, required) {
+			t.Errorf("missing NixOS slot boot metadata: %s", required)
+		}
+	}
+	if strings.Contains(script, "init=/usr/lib/nabos/boot-init") {
+		t.Error("legacy PID1 remains")
+	}
+	payload := read(t, filepath.Join(repo, "nix/image.nix"))
+	if !strings.Contains(payload, `bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);`) {
+		t.Error("payload must compile the authoritative boot.cmd without rewriting it")
+	}
 }

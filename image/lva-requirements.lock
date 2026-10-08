@@ -1,5 +1,5 @@
 # Linux Voice Assistant 1.1.15 dependencies and build backend.
-# CPython 3.13, aarch64, Raspberry Pi OS Trixie (glibc 2.41).
+# CPython 3.13, aarch64; wheel hashes are shared by the NixOS LVA package.
 # Exact wheel URLs and SHA-256 values from the PyPI resolver report.
 aioesphomeapi @ https://files.pythonhosted.org/packages/23/39/af5a91f628e7c8537f506882462d13e5c7b40daa2e61d4abdb418f8315a8/aioesphomeapi-45.3.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl --hash=sha256:eb369e80b8198c467214cd738bcc2a0184eef7d2f56c440ae807b1db892b6dfd
 aiohappyeyeballs @ https://files.pythonhosted.org/packages/71/43/1947f06babed6b3f1d7f38b0c767f52df66bfb2bc10b468c4a7de9eceff2/aiohappyeyeballs-2.7.1-py3-none-any.whl --hash=sha256:9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472

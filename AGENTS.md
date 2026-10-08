@@ -1,25 +1,24 @@
 # Contrainte de fonctionnement : racine en lecture seule
 
 NabOS démarre avec le système racine **en lecture seule**. Cette contrainte
-concerne les applications, les services hérités de Raspberry Pi OS et toutes
+concerne les applications, les services déclarés dans NixOS et toutes
 leurs dépendances, y compris les écritures faites à l'import ou au premier usage.
 Les écritures autorisées pendant la fabrication de l'image ne prouvent pas
 qu'un logiciel fonctionnera sur le lapin.
 
 Avant de modifier un logiciel exécuté sur l'appareil, lire
-`image/rootfs/usr/lib/nabos/boot-init`, `image/rootfs/etc/fstab` et les unités
-systemd du logiciel concerné, y compris celles de ses paquets et leurs overrides.
+`nix/runtime/initrd-persist.sh`, `nix/runtime/persist.sh`, `nix/system.nix` et les
+unités systemd du logiciel concerné, y compris celles de ses paquets et leurs overrides.
 
 - Conserver les données applicatives dans `/data/nabos` ou réutiliser les chemins
-  persistants de `boot-init`, notamment `/var/lib/nabos` pour le home et les
+  persistants de l’initrd, notamment `/var/lib/nabos` pour le home et les
   préférences de LVA. Ces montages viennent de `/data/system` ; `/var/lib` et
   `/etc` ne sont pas globalement inscriptibles. Le mode de secours
   `/data/.volatile` ne garantit aucune persistance après redémarrage.
 - Placer les fichiers temporaires, sockets, FIFO, PID et verrous dans un espace
   volatile adapté, généralement `/run` via `RuntimeDirectory=`. Définir aussi
   `WorkingDirectory=` si une dépendance écrit dans son répertoire courant : un
-  service système démarre sinon dans `/`. C'est le cas rencontré avec lgpio,
-  importé par Comitup, qui crée `.lgd-nfy*` dès son import.
+  service système démarre sinon dans `/`.
 - Vérifier les chemins par défaut de `HOME`, XDG, caches, modèles téléchargés,
   journaux et sous-processus, avec l'utilisateur et les droits réels du service.
   Sous `ProtectSystem=strict`, un montage temporaire accessible sur le système

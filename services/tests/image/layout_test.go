@@ -134,13 +134,17 @@ func TestEnvironmentLocationAgreesEverywhere(t *testing.T) {
 }
 
 func TestAttemptsAndSlotsAgree(t *testing.T) {
-	conf := read(t, filepath.Join(rootfsDir, "etc/rauc/system.conf"))
-	for _, want := range []string{"boot-attempts=3", "boot-attempts-primary=3",
-		"device=/dev/mmcblk0p2\ntype=ext4\nbootname=A", "device=/dev/mmcblk0p3\ntype=ext4\nbootname=B",
-		"[slot.bootloader.0]\ndevice=/dev/mmcblk0\ntype=boot-mbr-switch\nregion-start=4M\nregion-size=512M\ninstall-same=false",
-		"[handlers]\npost-install=/usr/lib/nabos/rauc-post-install"} {
+	conf := read(t, filepath.Join(repo, "nix/system.nix"))
+	for _, want := range []string{
+		`boot-attempts = 3;`, `boot-attempts-primary = 3;`,
+		`"slot.rootfs.0" = { device = "/dev/mmcblk0p2"; type = "ext4"; bootname = "A"; };`,
+		`"slot.rootfs.1" = { device = "/dev/mmcblk0p3"; type = "ext4"; bootname = "B"; };`,
+		`"slot.bootloader.0" = {`, `device = "/dev/mmcblk0";`, `type = "boot-mbr-switch";`,
+		`region-start = "4M";`, `region-size = "512M";`, `install-same = false;`, `handlers.post-install = "${postInstall}";`,
+		`mark-good.enable = false;`, `settings = raucSettings;`,
+	} {
 		if !strings.Contains(conf, want) {
-			t.Errorf("system.conf lacks %q", want)
+			t.Errorf("NixOS RAUC configuration lacks %q", want)
 		}
 	}
 	if !strings.Contains(read(t, filepath.Join(bootDir, "boot.cmd")), "setenv BOOT_A_LEFT 3\nsetenv BOOT_B_LEFT 3\nsaveenv\nreset") {
@@ -363,20 +367,5 @@ func TestRaucInstallerOnlyForDeviceCore(t *testing.T) {
 	}
 	if !install {
 		t.Error("device-core cannot install bundles")
-	}
-}
-
-func TestUnitsParse(t *testing.T) {
-	if _, err := exec.LookPath("systemd-analyze"); err != nil {
-		t.Skip("systemd-analyze not available")
-	}
-	units, _ := filepath.Glob(filepath.Join(rootfsDir, "usr/lib/systemd/system/*.service"))
-	r := execute(t, "", nil, "systemd-analyze", append([]string{"verify", "--man=no", "--generators=no"}, units...)...)
-	noise := []string{"is not executable", "No such file or directory", "Failed to prepare filename",
-		"Unit is bound to inactive", "not found", "Failed to resolve", "Operation not permitted"}
-	for _, line := range strings.Split(r.stdout+r.stderr, "\n") {
-		if strings.TrimSpace(line) != "" && !slices.ContainsFunc(noise, func(n string) bool { return strings.Contains(line, n) }) {
-			t.Error(line)
-		}
 	}
 }

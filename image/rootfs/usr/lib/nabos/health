@@ -12,8 +12,8 @@ INTERVAL=${NABOS_HEALTH_INTERVAL:-5}
 CMDLINE=${NABOS_CMDLINE:-/proc/cmdline}
 MARKER=${NABOS_BOOT_HEALTH:-/run/nabos-boot-health}
 rm -f "$MARKER"
-# DATA and PERSIST: what boot-init mounted before systemd.
-NABOS_BOOT_INIT_LIB=1 . "${NABOS_BOOT_INIT:-/usr/lib/nabos/boot-init}"
+# DATA and PERSIST: what the NixOS initrd mounted before systemd.
+. "${NABOS_PERSIST_LIB:-/usr/lib/nabos/persist.sh}"
 
 slot=
 for arg in $(cat "$CMDLINE"); do
@@ -39,6 +39,15 @@ audio_card() {
 # Never confirm a slot running on ephemeral state: /data must be the real data
 # partition and every persistent path (and the machine id) bound from it.
 persistent() {
+	case $slot in A) root_part=2 ;; B) root_part=3 ;; esac
+	[ "$(findmnt -n -o SOURCE,FSTYPE --mountpoint /)" = "/dev/mmcblk0p$root_part ext4" ] ||
+		{ reason="root is not the booted A/B slot"; return 1; }
+	for readonly in / /etc; do
+		case ,$(findmnt -n -o OPTIONS --mountpoint "$readonly"), in
+			*,ro,*) ;;
+			*) reason="$readonly is not read-only"; return 1 ;;
+		esac
+	done
 	[ "$(findmnt -n -o SOURCE,FSTYPE --mountpoint /data)" = "$DATA ext4" ] && [ ! -e /data/.volatile ] ||
 		{ reason="/data is not the persistent data partition"; return 1; }
 	for path in /etc/machine-id $PERSIST; do

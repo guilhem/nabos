@@ -1,308 +1,436 @@
 # Construire les images NabOS
 
-Les deux cibles partent des images **officielles datées** de Raspberry Pi OS Lite Trixie. `image/sources.lock.json` fixe les URL, empreintes SHA-256 et révisions des pilotes, de U-Boot, de la bibliothèque LED, de Linux Voice Assistant et du dépôt indépendant `device-core`. Le champ `sources.device_core` doit contenir un commit de 40 caractères, son archive GitHub immuable et son SHA-256 ; un pin provisoire ou une branche bloque la fabrication. `genimage` assemble le disque ; RAUC signe le système préparé. Ni pi-gen, ni conteneur applicatif ne sont nécessaires sur le lapin.
+**NixOS est l’unique constructeur d’images NabOS.** `flake.lock` fixe les
+entrées Nixpkgs et nixos-hardware ; `nix/` décrit les paquets, le système et son
+payload. Aucun constructeur Raspberry Pi OS ni rpi-image-gen n’est maintenu.
+Le passage d’une ancienne image à NixOS demande un **nouveau flash SD** :
+sauvegarder les données avant de reflasher. Les identifiants RAUC
+`nabos-nixos-zero-armv6` et `nabos-nixos-zero2-arm64` empêchent les anciennes
+images d’accepter ces bundles. Aucune migration OTA n’est qualifiée.
 
-| Cible | Hôte Ubuntu 24.04 | Système cible |
+## Construire et vérifier
+
+Installer Nix avec les fonctions `nix-command flakes` sur un hôte Linux jetable.
+Prévoir l’espace pour le store, les racines ext4 de 6 Gio, le disque SD, les
+copies de test et la compression ; aucun minimum d’espace constructeur n’est
+attesté sans mesure. Le dev shell fournit les outils d’assemblage et de test.
+
+| Cible | Hôte constructeur | Appareil |
 |---|---|---|
-| `zero-armv6` | x86-64 + QEMU user (`arm1176`) | Raspberry Pi OS ARMv6, Rust `arm-unknown-linux-gnueabihf`, Go `GOARM=6` |
-| `zero2-arm64` | ARM64 natif | Raspberry Pi OS ARM64, voix facultative |
+| `zero-armv6` | x86-64 Linux, compilation croisée ARMv6 | Raspberry Pi Zero W, ARM1176 |
+| `zero2-arm64` | x86-64 Linux, compilation croisée ARM64 | Raspberry Pi Zero 2 W, voix facultative |
 
-L’assemblage propre et sa vérification demandent un hôte disposant de root sans interaction pour les montages, namespaces et périphériques loop. Sans ces droits, seules les archives cross-compilées et les assertions sur les sources peuvent être validées. ARMv6 demande aussi QEMU ARM et binfmt ; ARM64 demande le runner natif indiqué ci-dessus. La séparation nab-hardware/nabos reste à qualifier sur les images complètes et les deux appareils avec leur racine réellement en lecture seule ; les preuves matérielles datées concernent l’architecture livrée à cette date.
-
-## Commandes
-
-Utiliser un hôte jetable avec `sudo` sans interaction, Go 1.27.1 et Rust 1.98.1, avec la cible Rust correspondante installée par `rustup target add`. Pour une compilation locale complète, installer aussi le compilateur U-Boot (`gcc-arm-linux-gnueabihf` pour ARMv6, `gcc-aarch64-linux-gnu` pour ARM64), `bc` et `python3-pyelftools` sur l'hôte. Les scripts sont les mêmes en CI et en local :
+Les mêmes commandes servent en local et en CI :
 
 ```sh
-bash image/host-deps.sh
+make image TARGET=zero-armv6 VERSION=dev-local DEVELOPMENT=1
+# Équivalent :
 bash image/build.sh zero-armv6 dev-local --development
-# Sur un hôte ARM64 :
+# Sur le même hôte x86-64 Linux :
 bash image/build.sh zero2-arm64 dev-local --development
 ```
 
-Les sorties sont dans `dist/<cible>/`. Le travail temporaire est dans `build/iot/`. La fabrication utilise un espace de noms de montage privé (`unshare`) pour isoler le chroot des services de l'hôte. Les images et partitions sont des fichiers creux ; les périphériques loop sont alloués au processus puis libérés, y compris en cas d'erreur. Le script affiche le répertoire de travail conservé pour diagnostic. `disk-usage-<cible>.txt` échantillonne l'espace disque pendant la fabrication.
+Nix réalise le système et U-Boot ; l’assembleur signe **hors du store Nix**,
+amorce la partition de données, assemble le disque et le compresse. Les sorties
+sont dans `dist/<cible>/`. Les révisions externes, dont device-core, les pilotes,
+U-Boot et LVA, restent verrouillées par les expressions Nix et
+`image/sources.lock.json`. Les verrous Cargo et Go fixent leurs dépendances.
+`lib.mkImage` est la fonction d’évaluation commune ; le verrou livré avec chaque
+image fait autorité pour ses entrées. Ces verrous ne promettent pas une image
+ou une signature reproductible bit à bit.
 
-`--development` crée un certificat éphémère valable sept jours. Cette image sert aux essais ; les futures releases officielles ne seront pas acceptées par cette chaîne de confiance. Ne pas diffuser ces images comme des releases utilisables en production.
-
-Pour une release, fournir deux fichiers PEM, en conservant la même autorité de confiance pour les versions suivantes :
+| Fichier dans `dist/<cible>/` | Usage |
+|---|---|
+| `nabos-<cible>.img.xz` | Premier flash SD |
+| `nabos-<cible>.raucb` | Bundle RAUC signé |
+| `ca-<cible>.cert.pem` | Certificat public utilisé pour la signature |
+| `flake-<cible>.lock` | Entrées Nix verrouillées |
+| `boot-<cible>.cmd` | Script de démarrage livré |
+| `cache-roots-<cible>` | Racines store du système, d’U-Boot et des outils de compilation sélectionnés |
+| `build-<cible>.json` | Cible, version, révisions et durées de fabrication |
+| `SHA256SUMS-<cible>` | Empreintes des fichiers livrés |
 
 ```sh
-RAUC_KEY=/chemin/prive/key.pem RAUC_CERT=/chemin/cert.pem \
+(cd dist/zero-armv6 && sha256sum -c SHA256SUMS-zero-armv6)
+EXPECTED_VERSION=dev-local EXPECTED_DEVELOPMENT=true \
+  bash image/test-artifact.sh zero-armv6 dist/zero-armv6
+```
+
+La construction locale lance `image/test.sh` avant compression. Son interface
+prend la cible, le disque, la racine, le démarrage, le bundle et le certificat :
+
+```sh
+# WORK est le répertoire de travail affiché par le constructeur.
+bash image/test.sh zero-armv6 \
+  WORK/images/sdcard.img WORK/images/rootfs.ext4 WORK/images/boot.vfat \
+  dist/zero-armv6/nabos-zero-armv6.raucb \
+  dist/zero-armv6/ca-zero-armv6.cert.pem
+```
+
+Ces contrôles vérifient le partitionnement, le contenu racine/démarrage,
+l’initrd, les propriétaires, les empreintes du bundle et sa signature.
+`image/test-artifact.sh TARGET dist/<cible>` vérifie les fichiers exactement
+téléchargés et exerce des copies jetables, sans modifier les originaux.
+Il exige un checkout propre correspondant au commit livré, la version attendue
+et le flag de développement. Pour une sortie de production, fournir aussi
+`EXPECTED_RAUC_CERT` avec le chemin du certificat public attendu.
+`--defer-tests` reporte les tests à cette étape explicite ; ce flag ne valide
+rien. Les inspections d’artefacts ne démarrent ni un noyau Raspberry Pi ni les
+services sous leurs restrictions réelles sur l’appareil.
+
+## Signature et confiance
+
+La clé publique Cachix permet au **constructeur** de vérifier les binaires Nix.
+La confiance **RAUC sur le lapin** repose sur `/data/rauc/ca.cert.pem`, amorcé
+dans la partition de données au premier flash. Les mises à jour conservent
+cette partition et son autorité de confiance.
+
+`--development` crée une autorité temporaire valable sept jours. Une image
+ainsi flashée rejette les bundles signés par une autre autorité, dont les
+releases officielles. Pour une chaîne durable, conserver l’autorité RAUC et
+fournir deux fichiers PEM :
+
+```sh
+RAUC_KEY=/chemin/prive/key.pem RAUC_CERT=/chemin/public/cert.pem \
   bash image/build.sh zero-armv6 v2.0.0
 ```
 
-La CI utilise les secrets GitHub `RAUC_SIGNING_KEY` et `RAUC_SIGNING_CERT` (contenus PEM). Les constructions hors tag n'ont pas accès à ces secrets.
+La clé privée ne doit jamais entrer dans une dérivation Nix, un cache public
+ou un artefact. Les releases utilisent les secrets GitHub existants
+`RAUC_SIGNING_KEY` et `RAUC_SIGNING_CERT` (contenus PEM) ; les constructions de
+PR utilisent une signature de développement. Les pushes de `main` utilisent
+également cette signature jusqu’à l’activation du canal Edge ; ensuite ils
+utilisent l’autorité officielle.
 
 ## Créer une release
 
-1. Dans GitHub Releases, créer la release avec un tag `vX.Y.Z` (ou un tag SemVer comme `vX.Y.Z-rc.1` pour une préversion) sur le commit voulu, son titre, son changelog et son statut (prérelease ou release stable). Le commit choisi doit contenir ce workflow. Une version portant un suffixe de préversion reste réservée au canal Test même si le statut GitHub est stable.
-2. Publier la release : l'événement `release: published` lance les tests et la fabrication signée pour `zero-armv6` et `zero2-arm64`. Pousser seulement un tag ne lance plus la fabrication.
-3. Après le succès de la fabrication **et des tests d'image** sur les deux cibles, la CI ajoute les artefacts à cette release existante. Elle conserve le titre, le changelog, le statut et le choix de dernière version. Le fichier global `SHA256SUMS` est ajouté en dernier, après les images et bundles.
+Le workflow principal `images.yml` construit automatiquement **les deux cibles**
+sur PR, push et publication de release. Les deux cibles sont compilées sur
+x86-64, comme les constructions locales qui alimentent Cachix. Les dérivations
+croisées diffèrent des dérivations natives ; utiliser le même hôte constructeur
+pour réutiliser le cache. Les tests d’artefacts téléchargent les sorties
+de chaque construction. La publication attend le **succès des constructions et
+des tests d’artefacts des deux cibles**, puis livre ces mêmes fichiers.
 
-Pour une première qualification, choisir une **prérelease**, puis compléter la [fiche matérielle](release-checklist.md) avant de passer en stable. Une release publiée reste visible pendant la fabrication ; attendre la réussite du workflow et la présence de tous les artefacts avant de la diffuser. L'interface des appareils parcourt les releases publiées, les trie par version SemVer et propose celles plus récentes que le système installé. Le canal Stable exclut les préversions ; le canal Test les inclut. Les fichiers incomplets ne sont pas installables. Lorsque l'utilisateur active l'automatique, la version installable la plus élevée du canal choisi est installée pendant son créneau nocturne. Le choix GitHub « latest » ne remplace pas ces règles.
+FFTW conserve son API C pour l’audio, sans interfaces ni documentation Fortran.
+LVA réutilise la bibliothèque Fortran embarquée dans son wheel NumPy verrouillé.
+Ces choix évitent de compiler des toolchains Fortran pour les images.
+LVA charge directement `libmpv`, sans le wrapper mpv et ses dépendances yt-dlp/Deno.
+Ses bindings Python utilisent les chemins Nix de MPV et PulseAudio, sans Binutils au runtime.
 
-GitHub ne déclenche pas Actions lors de la création d'un **brouillon**. Pour le remplir avant publication, créer d'abord le tag Git sur le commit voulu, puis le brouillon associé, et lancer manuellement le workflow sur ce tag existant :
+1. Créer une release GitHub sur le commit voulu, avec un tag `vX.Y.Z`, un titre
+   et un changelog ; commencer par une prérelease comme `vX.Y.Z-rc.1`.
+2. Publier la release pour déclencher la fabrication signée avec l’autorité
+   RAUC officielle.
+3. Attendre le succès du workflow et tous les fichiers et manifestes
+   `SHA256SUMS-<cible>` avant diffusion.
+4. Consigner les essais de la [fiche de qualification](release-checklist.md)
+   sur les deux appareils avant le passage en stable.
 
-```sh
-gh workflow run images.yml --repo guilhem/nabos --ref v0.1.0
+La release peut être visible pendant sa fabrication. Une CI réussie ne vaut
+pas qualification matérielle. Le canal Stable exclut les préversions ; le
+canal Test inclut les préversions habituelles et exclut Edge. Le choix GitHub « latest » ne remplace pas la sélection
+SemVer de l’appareil. L’acceptation des assets par device-core doit aussi être
+vérifiée sur la nouvelle image.
+
+### Canal Edge
+
+Edge propose uniquement les builds automatiques de `main`. Le tag brut
+`edge-X.Y.Z.RUN` reste la version de GitHub, de l’image, du manifeste RAUC et
+du journal de reprise. Le comparateur le traite comme `X.Y.Z-edge.RUN`.
+`X.Y.Z` est le plus grand triplet des releases publiées hors Edge, préversions
+comprises, avec son patch incrémenté ; `RUN` est le numéro du workflow Images.
+Un changement de canal attend une version strictement supérieure : il ne
+réinstalle pas une ancienne version pour revenir vers Stable ou Test.
+
+Avant d’activer la publication automatique :
+
+1. Fusionner les PR des sources device-core et du mixeur, puis NabOS avec leurs
+   commits épinglés ; qualifier le client compatible dans une release Stable
+   ou Test signée officiellement, publiée volontairement.
+2. Installer cette version de base sur les appareils de test et vérifier les
+   trois canaux ainsi que la transition N → N+1 → rollback N avec les données
+   conservées. Les anciennes images Raspberry Pi OS exigent un reflash NixOS.
+3. Définir la variable de dépôt `NABOS_EDGE_ENABLED=true`.
+
+Chaque push de `main` termine sa propre construction, sans annulation par un
+push suivant. Après réussite de tous les tests et des deux images, le job Edge
+crée une release brouillon, y charge les octets testés, puis la publie comme
+préversion. Les événements de release `edge-*` ne relancent pas le constructeur.
+Une publication interrompue conserve son brouillon : relancer les jobs échoués
+du même run réutilise les artefacts précédemment testés. Un asset déjà publié
+est immuable ; une reconstruction différente ne remplace pas ses octets.
+La rétention supprime uniquement les Edge publiées au-delà des 30 versions les
+plus élevées. Stable et Test conservent leur procédure de publication volontaire.
+
+Pour arrêter Edge, retirer la variable puis annuler les jobs de publication
+déjà autorisés : la variable ne révoque pas un job en cours.
+
+## Lire et alimenter Cachix
+
+La lecture de `https://nabos.cachix.org` est publique et anonyme. Configurer Nix
+sur l’hôte constructeur avec un utilisateur autorisé à définir les substituters :
+
+```ini
+extra-substituters = https://nabos.cachix.org
+extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
 ```
 
-Le brouillon reste un brouillon. Sa publication déclenche aussi le workflow. Une relance remplace les artefacts de même nom (`gh release upload --clobber`) ; elle ne modifie pas les informations de la release. L'ancien `SHA256SUMS` est retiré avant le remplacement des fichiers et rétabli seulement si tous les envois réussissent ; la recherche de mise à jour échoue tant que ce manifeste manque. Pour ajouter les artefacts après publication, les releases immuables doivent être désactivées dans les paramètres du dépôt.
+Publier uniquement les racines listées dans `cache-roots-<cible>` : le système,
+les sorties d’exécution demandées pour assembler son profil, U-Boot,
+les en-têtes préparés du noyau, les sorties natives `gtk4.dev` et
+`gobject-introspection.dev` et le compilateur Go, avec leurs dépendances.
+Ces outils et certaines sorties masquées par les collisions du profil sont
+nécessaires à la reconstruction sur un hôte neuf mais absents de la closure
+d’exécution. Cachix ignore les objets déjà présents dans le cache officiel.
+Le payload d’assemblage, les
+images, bundles, certificats et dev shells ne sont pas des racines de
+publication ; les images et releases sont conservées hors Cachix.
+La publication globale du store et `watch-store` ne sont pas utilisés.
+La liste est préparée avant la construction. Même si le packaging échoue,
+la CI publie les racines effectivement réalisées. Un échec Cachix est signalé
+et les images et rapports disponibles restent téléchargeables ; les benchmarks
+continuent d’exiger la disponibilité complète de leur closure.
 
-## Sources et dépendances
+La version de l’image est inscrite dans NabOS et ses métadonnées. Les assets et
+`nab-hardware` gardent une identité indépendante de cette version ; Nix invalide
+leur cache quand leurs sources ou dépendances changent. Changer uniquement la
+version de l’image ne recompile donc pas les deux services Rust.
+Le profil système sélectionne explicitement la sortie d’exécution de chaque
+paquet : les sorties de manuels non installées ne déclenchent pas de compilation.
 
-Les lecteurs RFID/NFC utilisent les crates Rust externes `guilhem/cr14` et
-`guilhem/st25r391x`, issues de leurs branches `codex/i2c-userspace`. Leurs commits
-Git sont fixés par `rev` dans `core/Cargo.toml` et résolus dans `core/Cargo.lock` ;
-`cargo vendor` les archive avec les entrées de `nab-hardware`. Ils n'ont aucune
-archive de source distincte dans `image/sources.lock.json`. Les oreilles utilisent
-`gpiocdev` dans le même processus Rust. Le son WM8960 et les LED WS2812 conservent des modules
-et overlays noyau ; les anciens pilotes et overlays oreilles/CR14/ST25R391x
-et le service de probe `nabos-rfid` sont supprimés.
+Le job `device-integration` lit également ce cache pour les trois paquets natifs
+`device-core-native`, `nab-hardware-native` et `nabos-native`. Après réussite des
+tests, il publie leurs racines sur `main`, lors d’une release, d’un lancement
+manuel sur `main` ou d’une PR issue d’une branche de ce dépôt, et vérifie leur
+disponibilité publique. Les builds d’images publient également leurs racines
+sur les PR internes. Les deux jobs de tests ciblent `core/target` dans leur cache
+Rust ; Go conserve son cache de modules et de compilation. Les fixtures
+d’intégration sont exécutées à chaque run, même lorsque les binaires sont cachés.
 
-Les sources audio viennent du fork `guilhem/wm8960` (branche `nabos-gpio-keys`).
-Son commit et son empreinte sont fixés dans `image/sources.lock.json` ; aucun
-patch audio local n'est appliqué pendant la fabrication. Le fork fournit aussi
-le mixer, son unité systemd et sa règle udev.
+`CACHIX_AUTH_TOKEN` est un secret de publication CI, transmis uniquement à
+l’étape autorisée à écrire dans le cache `nabos`. Sa valeur ne doit jamais
+apparaître dans le dépôt, les documents ou les journaux. Les PR internes peuvent
+publier avec ce secret ; les PR de forks conservent la lecture anonyme. Pour les
+PR Dependabot, ajouter également `CACHIX_AUTH_TOKEN` dans les secrets Dependabot
+du dépôt : GitHub les sépare des secrets Actions. Le jeton est retiré de
+l’environnement avant les vérifications du cache qui appellent Nix. Vérifier les dépendances effectivement
+disponibles dans les caches publics après publication.
 
-Les workflows réutilisables `go.yml`, `rust.yml`, `device-core.yml` et `uboot.yml` ont chacun leur matrice de plateformes `[zero-armv6, zero2-arm64]` : huit jobs indépendants, en parallèle des tests. `actions/setup-go` gère les modules et objets Go avec son cache intégré ; `actions-rust-lang/setup-rust-toolchain` installe Rust et gère le cache Cargo et sysroot ; U-Boot utilise ccache. Les caches sont séparés par cible et chaîne de compilation. Le job d'image attend leurs succès, récupère les archives de la même exécution et vérifie leur cible, leur révision et la version de nabos avant installation. Le manifeste `build-<cible>.json` distingue la révision NabOS, la révision et l’empreinte d’archive device-core et l’empreinte de son binaire. Pour device-core, l’identité de source externe, le SHA-256 de son archive, le verrou Cargo extrait de cette source, l’empreinte du binaire et son architecture ELF sont aussi vérifiés avant installation.
+## Mesurer le cache et les constructions
 
-Go et Rust sont cross-compilés sur x86-64. Les composants Rust utilisent Clang, LLD et llvm-ar ; le wrapper transmet le CPU/sysroot à Cargo et à `CC_<rust_target>` pour les sources C (notamment ring), avec `AR_<rust_target>=llvm-ar`. Rust utilise un petit sysroot dont les quatre paquets sont verrouillés par URL et SHA-256 dans `image/rust-sysroots.lock.json` : libc, fichiers de démarrage et libgcc. Les paquets ARMv6 viennent de Raspbian, jamais de Debian/Ubuntu ARMv7. U-Boot ARMv6 est cross-compilé sur x86-64 avec sa libgcc privée ; U-Boot ARM64 est construit sur un runner ARM64. Ses options A/B et watchdog ainsi que l'architecture de l'ELF sont vérifiées avant publication de l'artefact.
+Les outils canoniques sont `image/benchmark.sh` et `image/cache-report.py`.
+Les résultats sont conservés sous `dist/measurements/`, séparés des images.
+Les phases mesurent **les racines du cache sélectionnées par le constructeur**,
+outils de compilation compris, sans réassembler le SD :
 
-`uboot.yml` construit le firmware ARM livré sur le lapin. `uboot-sandbox.yml` construit séparément le sandbox natif de l'hôte (`sandbox_defconfig`) : il exécute le script de démarrage pour simuler les décisions A/B, sans démarrer le firmware ARM ni un noyau Raspberry Pi. Ce job conserve les exécutables terminés dans un cache lié aux sources, à la configuration et à la chaîne de compilation ; sur un cache valide, aucune recompilation n'a lieu.
-
-La CI sépare ensuite `build` et `image-test`. `build` assemble, signe et compresse avec `--defer-tests`, puis archive les fichiers et leurs entrées. `image-test` télécharge ces mêmes artefacts, vérifie leurs empreintes et leur révision, décompresse l'image en conservant ses zones creuses et teste une copie jetable avec le sandbox déjà construit. Il compare aussi le firmware présent dans l'image à celui de `uboot.yml`. Le job `release` attend le succès des deux jobs pour publier les fichiers originaux ; aucune reconstruction n'a lieu après les tests.
-
-Le job `image-test` conserve les objets Go des tests dans `build/cache/image-tests/<cible>/go`, hors des images. Les modules Go archivés et la copie de test restent jetables ; les tests s'exécutent à chaque fabrication avec `-count=1`. En local, `image/build.sh` conserve par défaut l'assemblage et les tests dans une seule invocation ; le sandbox utilise alors ccache. `NABOS_UBOOT_SANDBOX=/chemin/sandbox` permet d'utiliser un sandbox préconstruit avec son manifeste `SHA256SUMS`.
-
-`image/base-cache.sh` conserve dans `build/cache/base/<cible>/` une archive creuse de la base préparée : paquets runtime, noyau, pilotes, mixer et ressources vocales, avec les paquets et wheels nécessaires au replay. La base est démontée avant archivage, sans les binaires NabOS, le certificat RAUC ni les fichiers de version de la fabrication. Une restauration vérifie son identité et le SHA-256 de l'archive, puis produit une copie indépendante. Une absence ou une corruption provoque une reconstruction.
-
-La clé dépend de la cible, des sources verrouillées, des scripts de préparation, des sources de `nab-image` et de `services/go.mod`, ainsi que de la date UTC : APT est résolu de nouveau chaque jour et lors de ces changements. La CI fixe cette date au début du job pour les builds qui traversent minuit. `NABOS_BASE_CACHE=0 bash image/build.sh ...` force une fabrication sans ce cache ; `--replay` utilise toujours les entrées archivées fournies. Les réglages, binaires applicatifs, versions et signatures sont ajoutés après restauration, puis l'image complète est testée.
-
-La fabrication sans cache sépare compilation, livraison et tests :
-
-1. Une copie jetable de l'image Raspberry Pi reçoit les outils de compilation et les en-têtes du noyau. Elle compile les pilotes, le mixer et les wheels Python, puis est démontée et supprimée. Seuls les modules, overlays, exécutables et ressources nécessaires au fonctionnement sont conservés.
-2. L'image à livrer repart de la base intacte. APT y installe uniquement les paquets nécessaires au fonctionnement depuis le dépôt local archivé par la compilation, avec les mêmes versions de bibliothèques. Les outils de compilation déjà présents dans l'image officielle sont retirés ; les dépendances de nos compilations restent dans la copie jetable. Les wheels sont installés hors ligne, sans compilation ni cache pip. Les versions des paquets communs et du noyau doivent correspondre à celles de l'environnement de compilation ; les en-têtes et le noyau doivent aussi provenir de la même version de paquet.
-3. Après assemblage du disque SD, `image/test.sh` en crée une copie jetable. Les tests d'intégration utilisent les trois binaires (`nab-hardware`, `device-core`, `nabos`) et les ressources de cette copie (QEMU ARM1176 pour ARMv6). Le sandbox natif U-Boot vérifie les scénarios A/B avec les fichiers de démarrage livrés. La copie est démontée et supprimée même si les tests échouent ; l'empreinte de l'original est contrôlée avant et après. En local, la signature et la compression suivent leur succès. En CI, elles précèdent le job séparé de test ; la publication en release attend sa réussite.
-
-Les fichiers constants livrés sont déclarés dans `image/rootfs`, notamment le fuseau horaire et l'état Wi-Fi initial. L'overlay est extrait après les paquets, avec propriétaire et groupe root ; `image-setup` rétablit les permissions nécessaires et conserve les opérations de préparation (nettoyage, identité et activation des services). `boot-init` copie l'état initial sur `/data` au premier démarrage et conserve ensuite les préférences de l'appareil.
-
-Les fichiers constants réservés à la fabrication sont dans `image/build-config`. `prepare.sh` installe `policy-rc.d` en mode `0755` et `99nabos-build` en mode `0644` avant APT dans les deux chroots : les scripts des paquets ne doivent pas démarrer de daemons. Ils sont supprimés de l'image livrée à la fin de `finalize`. Les fichiers dynamiques (versions, manifestes, sommes de contrôle et configuration du dépôt APT de replay) restent générés. L'ajout d'une section setuptools-scm au `pyproject.toml` de LVA reste une ligne dans le builder ARM64 jetable.
-
-Il n'y a pas de deuxième résolution de paquets sur Internet pour l'image livrée, ni de reconstruction après validation. Ces tests exécutent les services en simulation et le script de démarrage dans le sandbox ; ils ne démarrent pas un noyau Raspberry Pi complet. Les essais matériels restent nécessaires. La compression de l'image et des entrées utilise `xz -T0 -6`, avec des horodatages séparés dans les logs.
-
-Les bundles `.raucb` sont signés, au format RAUC `verity`, et utilisent SquashFS avec Zstd niveau 15. Ils contiennent `rootfs.ext4` pour la classe `rootfs`, puis `boot.vfat` pour la classe `bootloader` ; RAUC installe la racine inactive avant de basculer la copie FAT. La fabrication vérifie `CONFIG_SQUASHFS=y` ou `m` et `CONFIG_SQUASHFS_ZSTD=y` dans la configuration des en-têtes correspondant au noyau livré. Pour une mise à jour, le noyau déjà démarré sur le lapin doit aussi prendre en charge SquashFS/Zstd pour ouvrir le bundle ; le support dans le nouveau noyau seul ne suffit pas. Si un futur format de bundle ou une autre exigence du lecteur devient incompatible avec la version installée, publier d'abord une release de transition que l'ancien système peut lire.
-
-Pour assembler des composants déjà construits, placer les quatre fichiers `go-<cible>.tar`, `rust-<cible>.tar`, `device-core-<cible>.tar` et `uboot-<cible>.tar` dans un répertoire, puis passer `--components /chemin/composants` à `image/build.sh`. Rust et les compilateurs cross ne sont alors pas nécessaires au job d'image. Sans cette option, le script appelle les cibles `go`, `rust`, `device-core` et `uboot` du Makefile.
-
-Le Makefile appelle directement `go build`, `cargo build` et le Makefile d'U-Boot, qui gèrent leurs compilations incrémentales. Il prépare aussi les entrées verrouillées et vérifie la compatibilité ARMv6. Les mêmes cibles servent en CI et en local :
-
-```sh
-make go TARGET=zero-armv6 VERSION=dev-local
-make rust TARGET=zero-armv6
-make device-core TARGET=zero-armv6
-make uboot TARGET=zero-armv6
-# Ajouter l'archive pour le job d'assemblage :
-make package-go TARGET=zero-armv6 VERSION=dev-local
-```
-
-Les sorties sont dans `build/<composant>/<cible>/` (`build/device-core-build/<cible>/` pour device-core) et les archives dans `build/components/`. Les cibles `package-rust`, `package-device-core` et `package-uboot` suivent la même convention. `OUT=/chemin/sortie` change le répertoire de sortie ; `INPUTS=/chemin/entrees-archivees` active le replay sans téléchargement des dépendances. La compilation Go utilise `CGO_ENABLED=0`, `GOOS=linux` et `GOARCH=arm GOARM=6` ou `GOARCH=arm64`.
-
-Chaque image archive les `.deb` ajoutés/remplacés avec SHA-256 et inventaire. Les sources des pilotes, les dépendances Cargo/Go, le sysroot Rust, les paquets du compilateur U-Boot et les wheels Python ARM64 sont aussi archivés. Les tests utilisent des bus D-Bus privés, sans toucher au bus système de l’hôte. Les entrées Rust sont séparées dans `inputs/nab-hardware/` et `inputs/device-core/` : chaque binaire possède son propre `Cargo.lock`, `cargo-vendor/` et `cargo-vendor.toml`, et device-core conserve aussi son archive de source et `source-identity.json`. Les sysroots et caches de compilation sont séparés par composant et architecture ; les paquets sysroot verrouillés peuvent être partagés dans l’archive de replay. Les verrous Cargo, Go et sysroot sont vérifiés lors d’une reconstruction. Les caches de téléchargement restent une optimisation : une disparition des anciens paquets des miroirs exige de mettre à jour le verrou ou de fournir les entrées archivées. Le cache de base préparée conserve ensemble l’image de base et les archives APT ; son identité comprend l’architecture, la date et tous les scripts et verrous de préparation. Un cache APT isolé ne doit pas être restauré : son manifeste activerait le mode replay sans prouver l’identité de la base.
-
-Le fichier `cargo-vendor.toml` conserve la configuration complète produite par `cargo vendor`, y compris les remplacements des sources Git CR14/ST25R391x et de crates.io. Le replay recopie ce fichier et le fournit à Cargo avec `--config`, puis remplace uniquement `source.vendored-sources.directory` par le chemin du nouveau répertoire de fabrication. Les compilations utilisent `--locked --offline` ; les sources Git proviennent ainsi du vendor archivé et ne dépendent pas d’un ancien cache Git dans `CARGO_HOME`.
-
-NetworkManager provient directement des paquets Raspberry Pi OS, sans patch ni compilation propre à NabOS. Les paquets et leurs checksums sont archivés avec les autres dépendances APT. Les règles Polkit accordent seulement les opérations requises au compte système dédié `device-core` ; elles ne dépendent plus de l’unité systemd ni du type de sujet envoyé par NetworkManager.
-
-La séparation des comptes réattribue les données persistantes aux nouveaux propriétaires au démarrage, sans effacer leur contenu. **Le retour vers une ancienne image utilisant le compte partagé `nabos` n’est pas compatible** : elle peut ne plus lire ses réglages après cette réattribution, y compris lors d’un repli A/B. Conserver une sauvegarde avant cette transition ; les mécanismes A/B continuent de fonctionner entre images utilisant les nouveaux comptes. Les anciennes variables `DEVICE_CORE_PRESENCE_UNIT` et `DEVICE_CORE_MAINTENANCE_UNITS` sont remplacées par `DEVICE_CORE_PRESENCE_USER` et `DEVICE_CORE_MAINTENANCE_USERS`.
-
-Les dépendances de Linux Voice Assistant et son backend de build sont verrouillés par URL de wheel et SHA-256 dans `image/lva-requirements.lock` (CPython 3.13 ARM64). Le paquet LVA est construit sans résolution supplémentaire ; l'installation dans l'image est ensuite faite hors ligne.
+| Phase | Conditions |
+|---|---|
+| `cold` | Hôte neuf ; cache NabOS désactivé, cache officiel NixOS autorisé |
+| `warm` | Autre hôte neuf ; mêmes commit/version/pin, après publication vérifiée de `cold` |
+| `version` | Hôte neuf ; même pin, version applicative suffixée `.next` |
+| `nixpkgs` | Hôte neuf ; version initiale, nouveau pin Nixpkgs explicite |
 
 ```sh
-bash image/build.sh zero-armv6 v2.0.0 --development \
-  --replay /chemin/build-inputs-zero-armv6.tar.xz
+bash image/benchmark.sh cold zero-armv6 dev-local
+# Sur un AUTRE hôte neuf, après publication des racines cold :
+bash image/benchmark.sh warm zero-armv6 dev-local
+bash image/benchmark.sh version zero-armv6 dev-local.next
 ```
 
-Le code et les fichiers de verrouillage doivent correspondre à cette release. Utiliser la même architecture d'hôte que la CI de la cible pour exécuter le compilateur U-Boot archivé : x86-64 pour ARMv6, ARM64 pour ARM64. L'image Raspberry Pi officielle est retéléchargée et vérifiée. Les compilations des composants et les opérations APT/pip dans le chroot utilisent alors les dépendances archivées, sans résolution sur un dépôt vivant. Les utilitaires de l'hôte restent ceux d'Ubuntu 24.04. Cela reproduit les entrées logicielles ; les horodatages, signatures et identifiants de systèmes de fichiers ne sont pas déclarés reproductibles bit à bit.
+Répéter sur x86-64 pour `zero2-arm64`. Le nom de phase n’isole pas un store
+déjà rempli : conserver des hôtes neufs pour comparer. Pour `nixpkgs`, modifier
+explicitement le pin dans un checkout de mesure et conserver le verrou utilisé.
+Sans nouveau pin, aucune mesure de changement Nixpkgs n’est possible.
+`.next` mesure un changement de version, pas une modification de logique métier.
 
-## Partitionnement et démarrage
+Chaque phase conserve le manifeste `build-<cible>.json`, le verrou, les sorties
+Nix et les journaux. Son `build_seconds` mesure les racines sélectionnées ; celui d’une
+image complète mesure le **payload Nix**, génération ext4/FAT comprise.
+Le rapport des images distingue également `durations_seconds.nix_build`,
+`sd_assembly`, `rauc_bundle`, `xz` et `tests`. Une valeur `tests: null` signifie
+que les tests sont différés. Le job de test conserve son propre rapport
+`test-<cible>.json`, sans modifier les fichiers testés ; la publication Cachix
+conserve `cache-timings-<cible>.json`. Relever aussi le pic disque des jobs.
+
+Les images utilisent XZ 3 et Zstd RAUC 6. La comparaison locale du 8 octobre
+2026, avec huit threads sur un i7-1265U et les mêmes octets d'entrée par cible,
+a donné les résultats suivants :
+
+| Cible | XZ 6 → 3 | Zstd 15 → 6 | Taille image / bundle supplémentaire |
+| --- | --- | --- | --- |
+| ARMv6 | 140 → 74 s | 33 → 19 s | +5,8 % / +4,9 % |
+| ARM64 | 131 → 81 s | 41 → 19 s | +5,9 % / +4,8 % |
+
+Les hashes des images décompressées et des payloads extraits des bundles
+correspondent aux sources ; les signatures sont vérifiées. Ces mesures sur un
+hôte partagé ne prédisent pas la durée CI. Le format XZ et les bundles verity
+restent identiques ; les tests complets des artefacts et la limite de 2 Gio
+restent obligatoires.
+
+```sh
+python3 image/cache-report.py --self-test
+python3 image/cache-report.py dist/zero-armv6/cache-roots-zero-armv6 \
+  --output dist/measurements/cache-before-zero-armv6.json
+# Après publication autorisée des racines :
+python3 image/cache-report.py dist/zero-armv6/cache-roots-zero-armv6 \
+  --require-published --output dist/measurements/cache-after-zero-armv6.json
+```
+
+Le rapport interroge la closure locale et les métadonnées publiques `.narinfo` :
+
+- `closure_nar_bytes` additionne les tailles NAR des chemins store distincts ;
+  ce n’est ni la taille ext4 ni une taille compressée.
+- `upstream_missing_path_count` compte les chemins absents du cache officiel.
+- `cachix_compressed_bytes` additionne les `FileSize` publiés, dédupliqués par
+  URL NAR. `unpublished_paths` et `publication_complete` signalent les manques ;
+  aucune taille absente n’est extrapolée depuis `narSize`.
+
+Fusionner les rapports **après publication** pour mesurer les deux cibles ou
+plusieurs versions, plutôt qu’additionner leurs totaux :
+
+```sh
+python3 image/cache-report.py --merge \
+  dist/measurements/cache-after-zero-armv6.json \
+  dist/measurements/cache-after-zero2-arm64.json \
+  --output dist/measurements/cache-union.json
+```
+
+La fusion réinterroge les caches et détecte les objets évincés ou supprimés
+avec `previously_cached_missing_paths`. Seul HTTP 404 représente une absence ;
+une erreur réseau fait échouer la mesure. Cette union décrit les fichiers
+référencés à cet instant, pas l’ensemble du compte Cachix ni sa facturation.
+
+## Maintenance des pins
+
+Les merges applicatifs conservent `flake.lock`. La configuration native
+`.github/dependabot.yml` regroupe les inputs Nixpkgs et nixos-hardware dans une
+seule PR mensuelle, avec une seule PR de mise à jour ouverte à la fois. Les
+révisions actuellement verrouillées restent inchangées dans cette optimisation.
+Un correctif urgent peut avancer la mise à jour avec
+`nix flake update nixpkgs nixos-hardware`.
+
+Dependabot déclenche directement la CI de PR ; aucun workflow de création de
+PR, permission Actions d’approbation ni dispatch spécifique n’est nécessaire.
+Exiger les checks avant la review ou le merge.
+Les builds compilent et testent les deux cibles, publient leurs racines Cachix
+et comparent leur union avec les derniers rapports réussis de `main`.
+Ces rapports sont conservés 45 jours. Si les rapports de référence ont expiré,
+la comparaison échoue explicitement ; reconstruire la référence avant d’accepter
+la mise à jour. Relever le volume compressé et les évictions de la closure
+courante avec le candidat avant d’accepter cette PR.
+La rétention de versions anciennes augmente l’occupation. Ajouter des
+toolchains au cache seulement si les journaux montrent des recompilations
+coûteuses, puis mesurer leur coût compressé.
+
+**Les mesures cold/warm/version/nixpkgs ne sont pas encore complètes.** Les
+timings locaux et les CI avec cache ne suffisent pas à établir la rétention de
+plusieurs générations dans une enveloppe de 5 Go.
+
+## Partitionnement, persistance et responsabilités
 
 | Zone | Contenu au premier flash |
 |---|---|
-| 1 Mio et 2 Mio, hors partitions | Deux copies identiques de l'environnement U-Boot, 64 Kio chacune |
-| 4–516 Mio | Deux copies FAT de 256 Mio, initialement identiques : 4–260 Mio et 260–516 Mio |
-| Partition 1 | Entrée MBR pointant vers la copie FAT à 4 Mio ou à 260 Mio ; initialement 4 Mio |
-| Partition 2, à partir de 516 Mio | Racine A ext4, 6 Gio, préremplie |
-| Partition 3, à partir de 6660 Mio | Racine B ext4, 6 Gio, vide jusqu'à sa première installation RAUC |
-| Partition 4, à partir de 12804 Mio | Données ext4, 1 Gio puis agrandies au premier démarrage |
+| 1 et 2 Mio, hors partitions | Environnements U-Boot redondants de 64 Kio |
+| 4–516 Mio | Deux copies FAT de 256 Mio, initialement identiques |
+| Partition 1 | Entrée MBR vers la copie FAT à 4 ou 260 Mio |
+| Partition 2, à 516 Mio | Racine A ext4 de 6 Gio, préremplie |
+| Partition 3, à 6660 Mio | Racine B ext4 de 6 Gio, pour installation RAUC |
+| Partition 4, à 12804 Mio | `/data`, 1 Gio puis agrandie au premier démarrage |
 
-RAUC utilise nativement [`boot-mbr-switch`](https://rauc.readthedocs.io/en/v1.11.3/advanced.html#update-bootloader-partition-in-mbr) sur la région 4–516 Mio : il écrit la copie FAT inactive, puis change l'entrée MBR de la partition 1. Le handler de fin d'installation exécute `sync /dev/mmcblk0` ; une erreur fait échouer l'installation. Les deux copies contiennent le firmware Raspberry Pi, U-Boot, sa configuration et les DTB nécessaires avant Linux ; elles peuvent être mises à jour par bundle. U-Boot lit ensuite le noyau et le Device Tree dans la racine A ou B choisie. Les modules et overlays Linux restent dans cette même racine. À la fabrication, ce Device Tree reçoit le profil `image/nabos-overlay.dts`, qui désactive Bluetooth (UART0), VCHIQ, framebuffer, USB et régulateurs caméra ; la copie FAT garde le DTB d'origine pour U-Boot. La partition de démarrage n'est jamais montée sous Linux.
+Le bundle RAUC `verity`, SquashFS/Zstd, contient `rootfs.ext4` puis `boot.vfat`.
+RAUC écrit la racine inactive, puis `boot-mbr-switch` écrit la copie FAT inactive
+et bascule l’entrée MBR. Le lecteur déjà installé doit savoir ouvrir le prochain
+bundle ; le support dans le nouveau noyau seul ne suffit pas. Un changement de
+partitionnement nécessite un nouveau flash.
 
-L'état RAUC est conservé dans `/data`. Un nouveau slot racine n'est confirmé qu'après le contrôle local des services essentiels ; un échec de démarrage consomme une tentative puis ramène au dernier slot valide. Ce contrôle ne valide pas le firmware partagé : une copie FAT défectueuse peut empêcher le démarrage des deux racines et nécessiter une réparation de la carte SD. Avant chaque future release, tester les combinaisons ancien/nouveau démarrage × ancienne/nouvelle racine, car une coupure peut survenir avant ou après le changement de l'entrée MBR. Ce plan concerne le premier flash et les mises à jour de ce format ; aucune migration d'un ancien partitionnement n'est prévue. Changer le partitionnement nécessite un nouveau flash.
+U-Boot charge le noyau, l’initrd et le DTB depuis le slot racine sélectionné ;
+les modules et overlays correspondent à ce noyau. Le démarrage FAT n’est pas
+monté sous Linux. Le contrôle de santé confirme le slot seulement avec les
+unités essentielles actives, les propriétés Ready D-Bus de device-core et
+nab-hardware, la santé de nabos et les périphériques audio. Il ne garantit pas
+la récupération d’un firmware FAT défectueux avant Linux : prévoir la
+réparation SD et qualifier les combinaisons ancien/nouveau démarrage avec
+ancienne/nouvelle racine.
 
-Le système racine est monté en lecture seule ; identité, connexion réseau, réglages et calibration restent sur `/data`. Journaux et fichiers temporaires sont volatils. Aucun serveur SQL n'est installé : la configuration applicative est un fichier JSON versionné écrit atomiquement. Cette extraction crée `/data/device-core/settings.json` pour Linux et `/data/nabos/application.json` pour les applications. Aucun ancien format ni endpoint n’est migré ou conservé.
+`nix/system.nix` et `nix/runtime/initrd-persist.sh` déclarent la racine en lecture
+seule, `/etc` immuable, `/var` volatile et les montages persistants avant les
+services. Les unités et politiques applicatives encore utilisées dans
+`image/rootfs/` sont des sources déclaratives partagées, adaptées aux chemins
+Nix ; leur présence ne constitue pas un deuxième constructeur.
 
-SSH utilise le service OpenSSH fourni par Raspberry Pi OS, conditionné par un fichier `/data/device-core/ssh/authorized_keys` non vide et des données persistantes disponibles. L’interface authentifiée délègue à device-core, qui valide les clés avec `ssh-keygen`, écrit ce fichier atomiquement et demande uniquement `start` ou `stop` sur `ssh.service` via Polkit. Les clés hôtes sont créées dans `/data/system/ssh/etc/ssh` au premier démarrage du service ; la configuration OpenSSH reste dans le slot pour recevoir les mises à jour. Le compte `nabos` a un shell, conserve son mot de passe verrouillé et dispose de sudo sans mot de passe. Gérer ses clés permet donc d'accorder un accès administrateur au système. Le flag voix est `/data/device-core/voice-enabled` ; les préférences et téléchargements LVA restent dans `/var/lib/nabos/lva`, dont le montage persistant existant provient de `/data/system`.
+| Propriétaire | État et permissions |
+|---|---|
+| `nab-hardware` | GPIO, LED sysfs, I²C CR14/ST25R391x ; aucune capability ni accès aux données applicatives |
+| `device-core` | Services Linux, réseau, audio, SSH, voix, mises à jour ; `/data/device-core/settings.json`, sans capability matérielle |
+| `nabos`, compte `nab-app` | États, médias, chorégraphies, interface ; `/data/nabos/application.json`, HTTP avec `CAP_NET_BIND_SERVICE` |
+| `nab-audio` | PipeWire/WirePlumber et LVA ARM64, sans permissions système |
+| `nabos`, compte SSH | Administration par clé, sudo sans mot de passe |
 
-`nab-hardware.service` possède seulement le matériel et publie [NabHardware1](hardware-dbus.md), avec `Type=notify` et `NotifyAccess=main`, sans capability. Seul le groupe `gpio` est ajouté à cette unité. Les règles udev donnent au groupe `nab-hardware` l’écriture des attributs `brightness`, `multi_intensity` des cinq LED et `sync` de la première ; l’unité attend ces périphériques et limite ses chemins sysfs inscriptibles à ces attributs. `nabos.service` porte les états, médias et chorégraphies en Go, sert HTTP sur 80 avec `CAP_NET_BIND_SERVICE`, et utilise `PrivateDevices=yes`, `/data/nabos` et `/run/nabos`. Le matériel n’a aucune exception d’écriture vers les données applicatives. Aucun paquet ou service Mosquitto n’est livré ; son installation sur l’hôte sert uniquement aux fixtures Home Assistant.
+Les profils réseau, l’horloge, le mixer et `/var/lib/nabos` sont liés à
+`/data/system`. Le home, les préférences et caches LVA restent sous
+`/var/lib/nabos/lva` et le home SSH est `/var/lib/nabos/admin` ; leur parent
+appartient à root, chaque home à son compte. Les clés SSH autorisées sont sous `/data/device-core/ssh`,
+les clés hôtes sous `/data/system/ssh/etc/ssh`. Le secours `/data/.volatile`
+ne garantit aucune persistance. Les temporaires des services restent sous
+`/run` avec `RuntimeDirectory` et `WorkingDirectory` adaptés.
 
-Le profil DTB Linux du slot active `i2c1` sur GPIO 2/3, partagé avec le codec
-audio, et `/etc/modules-load.d/nabos.conf` charge `i2c-dev` au démarrage.
-Une règle udev attribue exclusivement `/dev/i2c-1` au groupe privé `nab-hardware`
-en mode `0660`, avec des affectations finales pour empêcher les règles Raspberry
-Pi OS ultérieures de rétablir le groupe général `i2c`. Les autres comptes de
-service ne reçoivent pas ce groupe. `nab-hardware` détecte et pilote directement
-le lecteur à l'adresse `0x50` ; aucun overlay n'est chargé à l'exécution.
-Le tag udev `systemd` expose `dev-i2c\x2d1.device`. `nab-hardware.service`
-requiert cette unité et démarre après son activation, une fois les permissions
-udev appliquées. Le bus 1 est nécessaire au codec audio, même sans lecteur
-répondant à `0x50` ; cette dépendance porte sur le bus, pas sur le lecteur.
-Les assertions d'image vérifient l'absence des anciens modules, overlays et
-probe, l'activation du bus dans le DTB et les règles d'accès. Le test des comptes
-utilise un fichier témoin dans un `/dev` privé pour exercer les permissions avec
-les UID réels ; il ne teste pas le contrôleur I²C. La qualification des deux
-lecteurs sur les appareils, avec racine en lecture seule et confinement systemd
-effectif, reste nécessaire.
+D-Bus et Polkit séparent les propriétaires et réservent les opérations système
+à device-core ; RAUC reste accessible à root pour le contrôle de santé.
+PipeWire est partagé via son socket audio ; Mosquitto sert uniquement aux
+fixtures Home Assistant, aucun broker n’est livré. Ne pas rendre la racine
+inscriptible ni retirer le confinement pour résoudre un chemin erroné :
+`ReadWritePaths` ne rend pas inscriptible un système de fichiers monté en lecture
+seule. Vérifier aussi HOME, XDG, caches et écritures des sous-processus.
 
-`device-core.service` utilise le compte `device-core` et `HOME=/data/device-core`, sans capability matérielle. Ses temporaires restent dans `/run/device-core` (`RuntimeDirectory` et `WorkingDirectory`). Ses seuls chemins inscriptibles sous `ProtectSystem=strict` sont `/data/device-core`, `/run/device-core` et `/run/lock/device-core`. Le verrou `/run/lock/device-core/network` est créé sans troncature par tmpfiles, sans nettoyage par âge, dans un répertoire root : le daemon ne peut ni le supprimer ni remplacer son inode. Les FD transmis gardent leur verrou partagé après un redémarrage du daemon.
+## Tests locaux et qualification
 
-Les comptes sans connexion interactive `nab-app` (UID 1001), `nab-hardware` (1002), `device-core` (1003) et `nab-audio` (1004) séparent les permissions. `nabos` (1000) reste le compte d’administration SSH. D-Bus réserve chaque nom public à son propriétaire et les callbacks `Acquire`, `Abort`, `Release` au compte `device-core`. Les clients vérifient l’UID fourni par le bus et conservent le nom unique du propriétaire pendant les opérations ; une reconnexion ne reprend jamais une ancienne activité. La présence physique reste réservée à `nab-hardware`, et les agents de maintenance sont `nab-app` puis `nab-hardware`.
+Les sorties flake natives `device-core-native`, `nab-hardware-native`,
+`nabos-native` et `uboot-sandbox` servent aux tests sur l’hôte. Elles sont
+distinctes des exécutables ARM livrés ; les simulations utilisent un bus D-Bus
+privé et Mosquitto uniquement pour Home Assistant. Le sandbox U-Boot exécute le
+script A/B sans démarrer le firmware ARM ou le noyau Raspberry Pi.
 
-Polkit autorise uniquement `device-core` à modifier le réseau, l’alimentation, l’heure et les jobs SSH/NTP/LVA autorisés. La policy RAUC garde l’accès root pour le contrôle de santé et réserve `InstallBundle` au compte `device-core`. Le confinement systemd et `NoNewPrivileges` restent actifs. SSH lit les clés avec `AuthorizedKeysCommandUser=device-core`, sans ouvrir les réglages privés aux autres comptes.
+Le check `.#checks.x86_64-linux.audio-boot` démarre le module audio partagé avec
+systemd PID 1 dans une VM x86-64 : racine et `/etc` en lecture seule, `/var`
+volatile, linger déclaratif et aucune connexion utilisateur. Il attend les
+trois processus et sockets audio, puis vérifie leurs droits et
+`NoNewPrivileges`. Ce test complète les contrôles des unités composées dans
+chaque image ; il ne qualifie pas les pilotes ni le démarrage des Raspberry Pi.
 
-PipeWire et WirePlumber utilisent la session persistante `user@1004` de `nab-audio`. L’assistant vocal partage cette identité audio, sans permissions système. `device-core` accède à PipeWire par le socket `/run/nabos-audio/pipewire-0`, accessible au groupe `nab-audio`. Le groupe `nab-media` lui donne uniquement la lecture des médias sous `/data/nabos/media`. Les états audio et vocaux restent sous `/var/lib/nabos/lva`, dans le montage persistant existant.
+```sh
+nix develop
+mkdir -p build
+nix build .#device-core-native --out-link build/device-core-native
+nix build .#nab-hardware-native --out-link build/nab-hardware-native
+nix build .#nabos-native --out-link build/nabos-native
+nix build .#uboot-sandbox --out-link build/uboot-sandbox
+```
 
-Le contrôle de santé exige les trois unités actives, `Manager.Ready` par D-Bus au chemin `/io/github/guilhem/DeviceCore1`, `NabHardware1.Ready` au chemin `/io/github/guilhem/NabHardware1`, `/healthz` de nabos et les périphériques audio réels. Il ne dépend jamais du HTTP de device-core, désactivé par défaut.
+Utiliser les exécutables natifs pour `DEVICE_CORE_BIN`, `NABOS_HARDWARE_BIN`,
+`NABOS_BIN` et `NABOS_UBOOT_SANDBOX` selon le test. Le scénario d’intégration
+complet avec trois UID et les installations RAUC sur loop demandent root,
+des namespaces privés et un hôte jetable ; les inspections d’image seules ne
+prouvent pas l’exécution de ces scénarios.
 
-À la sortie réussie de `nabos-health.service`, systemd déclenche `nabos-board-led-off.service` via `OnSuccess`, sans délai fixe. Cette unité éteint uniquement la LED ACT du Raspberry Pi si elle existe et si `/run/nabos-boot-health` contient `good A` ou `good B`, écrit après confirmation RAUC. Cette action cosmétique est indépendante du contrôle de santé : son échec ne remet pas en cause la confirmation du slot. Les LED du lapin restent pilotées par `nab-hardware`.
-
-### LED Linux
-
-La source de [bcm2835-ws2812](https://github.com/guilhem/bcm2835-ws2812) est
-verrouillée par commit et SHA-256 dans `image/sources.lock.json`. Le module est
-compilé dans la copie de fabrication contre les en-têtes et `Module.symvers` du
-noyau livré, pour ARMv6 et ARM64. Son overlay est fusionné à la fabrication avec
-le DTB Linux du slot, avant que U-Boot applique l’overlay audio. Il réserve le bloc
-PWM, GPIO13 et une voie DMAengine ; aucun processus n’accède à `/dev/mem` ou
-`/dev/vcio` pour les LED.
-
-`nab-hardware` écrit dans `/sys/class/leds/multi:indicator-{0..4}`. Il lit
-`multi_index` pour retrouver les canaux RGB, puis règle `multi_intensity` et
-`brightness`. Les animations restent en Rust. `Clear` met les cinq luminosités à
-zéro et écrit `1` dans `multi:indicator-0/sync`, qui attend les travaux LED en
-cours et retransmet l’état complet. Une erreur de transmission fait échouer
-l’extinction et empêche d’annoncer la quiescence de maintenance. Les écritures de
-couleur ordinaires restent asynchrones selon l’API LED Linux.
-
-La qualification physique reste nécessaire sur les deux cartes : couleurs et
-ordre des cinq LED, luminosité, pulses, animations, extinction en maintenance,
-SIGTERM et SIGKILL avec `ExecStopPost`, puis réactivation après maintenance.
-Vérifier la racine en lecture seule et les restrictions de l’unité réelle ; les
-tests sysfs sur fichiers et la compilation des modules ne mesurent pas le signal
-GPIO13, le temps de reset WS2812 ou la concurrence audio/DMA.
+La [fiche de release](release-checklist.md) couvre le premier démarrage avec
+`/data` vierge, la persistance, Wi-Fi, SSH, audio, LED, oreilles, les deux lecteurs,
+LVA ARM64, la mémoire disponible, RAUC A/B, les coupures et le rollback.
+Les [essais du 30 septembre](qualification-zero2-2026-09-30.md) concernent une
+ancienne image Raspberry Pi OS : **ils ne qualifient pas NixOS**.
 
 ### Qualification des oreilles userspace
 
-Les oreilles sont intégrées en Rust dans `nab-hardware` avec `gpiocdev`, via
-`/dev/gpiochip*` et le groupe `gpio` déjà attribué à l’unité. L’image ne télécharge
-ni ne compile `tagtagtag-ears`, ne livre plus son patch, son module ou son DTBO,
-et U-Boot ne charge que l’overlay du son. Aucune règle `/dev/ear*` ni nouveau
-paquet n’est nécessaire. Les modules WM8960 et LED WS2812 restent dans le noyau.
+Sur les deux appareils, avec l’image réelle, la racine en lecture seule et les
+restrictions systemd effectives : exercer les 17 positions dans les deux sens,
+chaque oreille puis les deux, au repos et sous charge ; vérifier calibration
+et temporisations. Interrompre par `SIGKILL`, `SIGABRT`, `SIGSTOP` et pendant
+la calibration ; vérifier watchdog, helper d’arrêt et redémarrage avec
+`initializing` et `Ready=false`. Tester aussi `SIGTERM` pendant une écriture NFC
+admise. Mesurer l’état électrique des sorties moteurs après fermeture des FD
+puis après le helper : leur succès logiciel ne prouve pas l’arrêt physique.
 
-L’unité requiert `dbus.socket`, `dev-i2c\x2d1.device` et les cinq périphériques LED, et démarre après tmpfiles,
-le mixer, device-core et ces périphériques. Son watchdog de 1 seconde utilise
-`SIGKILL` et `KillMode=control-group`. La calibration ne démarre qu’après
-confirmation de l’activation du watchdog : la notification de démarrage systemd
-est distincte de la propriété D-Bus `Ready`, qui reste fausse avec les oreilles
-`initializing` jusqu’à la réussite de leur initialisation. Le nom D-Bus reste
-`io.github.guilhem.NabHardware1`, sans directive systemd `BusName=`.
-
-Sur `SIGTERM`, les moteurs sont coupés et les LED éteintes ; une écriture NFC indivisible déjà admise
-peut encore se terminer, dans une limite de 5 secondes. Après la sortie du
-processus, `ExecStopPost=/usr/bin/nab-hardware --stop-hardware` demande directement
-les GPIO moteurs à l’état bas et retransmet une trame LED noire, sans initialiser D-Bus ou le NFC. Les deux arrêts sont tentés même si l’un échoue.
-`TimeoutStopSec=6s` borne l’arrêt systemd et `Restart=always` relance le service.
-La fermeture des FD GPIO ne garantit pas un état électrique bas ; ni le délai
-du watchdog ni le succès du helper ne constituent à eux seuls une mesure de
-l’arrêt des moteurs. `HOME`, le répertoire courant et les temporaires restent
-dans `/run/nab-hardware`, sous `ProtectSystem=strict`, sans écriture applicative
-sur la racine en lecture seule.
-
-Les tests locaux et les assertions d’image vérifient la suppression de l’ancien
-pilote et le contrat de supervision. La simulation ne prouve ni le mouvement,
-ni la calibration, ni l’état électrique après arrêt. La qualification restante
-sur Zero ARMv6 et Zero 2 ARM64 doit utiliser l’image réelle, sa racine en lecture
-seule, les montages de `boot-init`, le compte et le confinement effectifs du
-service :
-
-- Exercer les 17 positions dans les deux sens, chaque oreille puis les deux
-  simultanément, au repos et sous charge ; vérifier la calibration, les
-  positions physiques et les réglages de temporisation sur les appareils.
-- Interrompre le processus par `SIGKILL`, `SIGABRT` et `SIGSTOP`, bloquer un worker
-  et tuer le processus pendant la calibration ; vérifier le déclenchement du
-  watchdog, le helper et le redémarrage. Vérifier aussi `SIGTERM` pendant une
-  écriture NFC admise, avec la coupure des oreilles et la fin bornée de l’écriture.
-- Mesurer les sorties moteurs après fermeture des FD puis après le helper,
-  y compris après plusieurs arrêts et redémarrages consécutifs ; vérifier que
-  chaque reprise repasse par `initializing` et `Ready=false` avant calibration.
-
-Recueillir les journaux volatils avant l’arrêt, ou préparer leur collecte sur
-`/data`. Ces essais physiques restent à réaliser ; les contrôles de sources,
-les tests Go et une simulation U-Boot ne les valident pas.
-
-## Validation locale
-
-Les outils propres au dépôt sont regroupés dans `services/cmd/nab-image`.
-`image/build.sh` compile cet utilitaire Go sur l'hôte pour lire les verrous,
-télécharger et vérifier les entrées, puis extraire les archives. Seul le binaire de device-core et ses notices entrent dans le système livré ; sources, Cargo, Go et caches restent dans les archives ou espaces de travail de fabrication.
-
-```sh
-cargo test --locked --manifest-path core/Cargo.toml
-DEVICE_CORE_BIN=/chemin/absolu/device-core cargo test --locked --manifest-path core/Cargo.toml -- --ignored
-(cd services && go test -race ./...)
-(cd services && NABOS_INTEGRATION=1 go test -count=1 -skip '^TestEndToEnd$' ./tests/integration)
-```
-
-Les tests de clients Rust et les tests d’intégration Go utilisent `DEVICE_CORE_BIN`
-pour lancer le binaire externe sur un bus privé. Le test d’intégration requiert
-aussi Mosquitto et ses clients pour les seules fixtures Home Assistant ; `image/test.sh` fournit `NABOS_HARDWARE_BIN`, `DEVICE_CORE_BIN` et `NABOS_BIN` avec
-le chargeur de l’image. En CI, le job de tests compile la source verrouillée et
-transmet son binaire par `GITHUB_ENV` avant les tests NabOS ; il exécute aussi les
-tests de clients marqués `ignored` avec `-- --ignored`. `package-rust` et son
-archive Cargo vendor restent indépendants de ce binaire et du checkout externe.
-Le scénario complet `TestEndToEnd` exige root et trois UID distincts. La CI et
-`image/test.sh` compilent son exécutable sur l’hôte puis le lancent dans un espace
-de montage et de réseau privé, avec les comptes dédiés et un bus EXTERNAL privé.
-Les comptes de l’hôte ne sont pas modifiés.
-Pour tester la source externe verrouillée :
-
-```sh
-make device-core-source
-source=$(cat build/device-core-source/source-path)
-cargo test --locked --manifest-path "$source/Cargo.toml"
-cargo build --locked --manifest-path "$source/Cargo.toml" --target-dir "$PWD/build/cargo/device-core-tests"
-DEVICE_CORE_BIN="$PWD/build/cargo/device-core-tests/debug/device-core" cargo test --locked --manifest-path core/Cargo.toml -- --ignored
-```
-
-Le checkout indépendant `build/device-core` n’est jamais une entrée implicite de la fabrication. Pour l’outillage Go local, `GO="$PWD/build/tools/go/bin/go" make ...` ou `GO=... bash image/build.sh ...` sélectionne le compilateur fourni. Les tests de simulation ne remplacent pas les essais des pilotes, de l'audio, de l'alimentation et du rollback sur de vrais appareils.
-
-Pour vérifier les sources verrouillées et les pilotes séparément :
-
-```sh
-(cd services && go build -o ../build/nab-image ./cmd/nab-image)
-build/nab-image fetch image/sources.lock.json zero-armv6 build/inputs --sources-only
-build/nab-image drivers image/sources.lock.json --archives build/inputs
-# Ajouter --kernel CHEMIN_DES_ENTETES pour vérifier aussi les modules.
-```
-
-Les tests d'image sont inclus dans `go test ./...`. Pour exécuter aussi le script
-de démarrage dans le sandbox U-Boot, fournir `NABOS_UBOOT_SANDBOX`,
-`NABOS_SOURCES` et `NABOS_VENDOR_DTBS` ; la fabrication des images le fait
-automatiquement.
-
-La CI exécute aussi `TestRaucBootMBRIntegration` avec
-`NABOS_RAUC_INTEGRATION=1`, sous root dans un espace de montage privé : RAUC
-installe de vrais bundles signés sur un périphérique loop jetable, avec les
-environnements U-Boot et le partitionnement du dépôt. Ce test couvre les bascules
-dans les deux sens et les refus d'installation ; il ne simule pas les propriétés
-électriques d'une carte SD ni le démarrage du firmware Raspberry Pi.
+Pour chaque preuve, préciser commit, cible, runner ou carte, protocole et
+rapports. Distinguer inspection des sources, tests locaux, CI et exécution
+matérielle. Recueillir les journaux volatils avant arrêt ou préparer leur
+collecte sur `/data`. Aucune qualification matérielle NixOS n’est attestée ici.

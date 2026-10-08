@@ -2,7 +2,6 @@
 /dist/
 /core/target/
 /services/nab-service
-/services/nab-image
 __pycache__/
 *.py[cod]
 .env
