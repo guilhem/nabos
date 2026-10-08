@@ -211,9 +211,10 @@ d’intégration sont exécutées à chaque run, même lorsque les binaires sont
 `CACHIX_AUTH_TOKEN` est un secret de publication CI, transmis uniquement à
 l’étape autorisée à écrire dans le cache `nabos`. Sa valeur ne doit jamais
 apparaître dans le dépôt, les documents ou les journaux. Les PR internes peuvent
-publier avec ce secret ; les PR de forks et celles ouvertes par Dependabot
-conservent la lecture anonyme. Le jeton est retiré de l’environnement avant les
-vérifications du cache qui appellent Nix. Vérifier les dépendances effectivement
+publier avec ce secret ; les PR de forks conservent la lecture anonyme. Pour les
+PR Dependabot, ajouter également `CACHIX_AUTH_TOKEN` dans les secrets Dependabot
+du dépôt : GitHub les sépare des secrets Actions. Le jeton est retiré de
+l’environnement avant les vérifications du cache qui appellent Nix. Vérifier les dépendances effectivement
 disponibles dans les caches publics après publication.
 
 ## Mesurer le cache et les constructions
@@ -302,16 +303,16 @@ référencés à cet instant, pas l’ensemble du compte Cachix ni sa facturatio
 
 ## Maintenance des pins
 
-Les merges applicatifs conservent `flake.lock`. Le workflow `nix-update.yml`
-propose chaque mois une PR brouillon actualisant ensemble Nixpkgs et
-nixos-hardware ; son lancement manuel permet d’avancer un correctif de sécurité.
-Les révisions actuellement verrouillées restent inchangées dans cette
-optimisation. La branche `codex/nix-inputs-update` appartient à ce workflow.
+Les merges applicatifs conservent `flake.lock`. La configuration native
+`.github/dependabot.yml` regroupe les inputs Nixpkgs et nixos-hardware dans une
+seule PR mensuelle, avec une seule PR de mise à jour ouverte à la fois. Les
+révisions actuellement verrouillées restent inchangées dans cette optimisation.
+Un correctif urgent peut avancer la mise à jour avec
+`nix flake update nixpkgs nixos-hardware`.
 
-La création de PR exige le réglage GitHub autorisant GitHub Actions à créer des
-pull requests. La CI Images est également déclenchée explicitement sur cette
-branche ; approuver les workflows de PR ordinaires s’ils attendent une
-autorisation GitHub, et exiger leurs checks avant la review ou le merge.
+Dependabot déclenche directement la CI de PR ; aucun workflow de création de
+PR, permission Actions d’approbation ni dispatch spécifique n’est nécessaire.
+Exiger les checks avant la review ou le merge.
 Les builds compilent et testent les deux cibles, publient leurs racines Cachix
 et comparent leur union avec les derniers rapports réussis de `main`.
 Ces rapports sont conservés 45 jours. Si les rapports de référence ont expiré,

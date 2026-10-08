@@ -96,7 +96,6 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     doCheck = native;
     env = { CGO_ENABLED = 0; GOARM = board.goarm; };
     ldflags = [ "-s" "-w" "-X main.version=${version}" ];
-    nativeBuildInputs = [ pkgs.makeWrapper ];
     nativeCheckInputs = [ dbusForTests ];
     preCheck = ''
       # NewApp reads /etc/machine-id directly, which the Nix sandbox lacks.
@@ -113,9 +112,6 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     postInstall = ''
       install -Dm644 ${../LICENSE} "$out/share/doc/nabos/LICENSE"
       install -m644 ${../NOTICE} "$out/share/doc/nabos/NOTICE"
-      wrapProgram "$out/bin/nabos" \
-        --set-default NABOS_SOUNDS_DIRS "${assets}/share/nabos/sounds:/data/nabos/media/sounds" \
-        --set-default NABOS_CHOREOGRAPHIES_DIRS "${assets}/share/nabos/choreographies:/data/nabos/media/choreographies"
     '';
   };
 

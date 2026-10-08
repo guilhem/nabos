@@ -120,7 +120,7 @@ jobs:
     if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'edge-')
     uses: ./.github/workflows/tests.yml
     secrets:
-      CACHIX_AUTH_TOKEN: ${{ github.repository == 'guilhem/nabos' && ((github.event_name == 'workflow_dispatch') || ((github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.action == 'published')) && github.event_name != 'pull_request') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && secrets.CACHIX_AUTH_TOKEN || '' }}
+      CACHIX_AUTH_TOKEN: ${{ github.repository == 'guilhem/nabos' && ((github.event_name == 'workflow_dispatch') || ((github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.action == 'published')) && github.event_name != 'pull_request') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && secrets.CACHIX_AUTH_TOKEN || '' }}
   build:
     if: github.event_name != 'workflow_dispatch' || inputs.mode == 'build'
     needs: check
@@ -144,7 +144,7 @@ jobs:
             extra-substituters = https://nabos.cachix.org
             extra-trusted-public-keys = nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
+        if: github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
         with:
           name: nabos
           skipPush: true
@@ -183,7 +183,7 @@ jobs:
       - name: Publish selected cache roots
         id: cache
         continue-on-error: true
-        if: ${{ !cancelled() && steps.cache-roots.outcome == 'success' && github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
+        if: ${{ !cancelled() && steps.cache-roots.outcome == 'success' && github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHE: ${{ vars.CACHIX_CACHE }}
@@ -291,7 +291,7 @@ jobs:
         run: bash image/test-artifact.sh "$TARGET" "dist/$TARGET"
       - name: Publish tested native U-Boot sandbox root
         continue-on-error: true
-        if: ${{ !cancelled() && hashFiles(format('build/nix-tmp/uboot-cache-root-{0}', matrix.target)) != '' && github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
+        if: ${{ !cancelled() && hashFiles(format('build/nix-tmp/uboot-cache-root-{0}', matrix.target)) != '' && github.repository == 'guilhem/nabos' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'published' && needs.check.outputs.production == 'true') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
@@ -494,7 +494,7 @@ jobs:
   cache-compare:
     if: >-
       always() && github.repository == 'guilhem/nabos' && needs.build.result == 'success' &&
-      (github.ref == 'refs/heads/codex/nix-inputs-update' || github.head_ref == 'codex/nix-inputs-update')
+      github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
     needs: [check, build]
     runs-on: ubuntu-24.04
     permissions:
