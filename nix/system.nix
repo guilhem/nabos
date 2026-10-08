@@ -319,7 +319,8 @@ in
     "user@1004" = { after = [ "systemd-tmpfiles-setup.service" ]; serviceConfig.NoNewPrivileges = true; };
     linux-voice-assistant = mkIf hasVoice {
       wantedBy = [ "multi-user.target" ];
-      path = [ pkgs.coreutils pkgs.alsa-utils pkgs.pipewire pkgs.mpv ];
+      # LVA loads libmpv directly; the CLI wrapper pulls in unused yt-dlp/Deno.
+      path = [ pkgs.coreutils pkgs.alsa-utils pkgs.pipewire ];
       environment = {
         PYTHONDONTWRITEBYTECODE = "1";
         XDG_CACHE_HOME = "/var/lib/nabos/lva/cache";
