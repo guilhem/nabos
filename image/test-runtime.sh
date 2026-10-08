@@ -87,6 +87,7 @@ if ! (cd "$work" && mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,meta
   exit 1
 fi
 
+ln -s "$system" "$root/run/current-system"
 bash "$repo/image/test-generated-units.sh" "$1" "$root"
 
 # Native test Python/systemd/D-Bus are test inputs, never product dependencies.
@@ -104,7 +105,6 @@ mkdir "$root/run/nabos-image-store"
 mount -n --bind "$root/nix/store" "$root/run/nabos-image-store"
 mount -n -o remount,bind,ro "$root/run/nabos-image-store"
 (cd "$work" && mount -n -t overlay -o "ro,nodev,nosuid,lowerdir=root/run/nabos-image-store:/nix/store" overlay "$root/nix/store")
-ln -s "$system" "$root/run/current-system"
 touch "$root/run/nabos-test-tools/persist.sh"
 mount -n --bind "$repo/nix/runtime/persist.sh" "$root/run/nabos-test-tools/persist.sh"
 mount -n -o remount,bind,ro "$root/run/nabos-test-tools/persist.sh"

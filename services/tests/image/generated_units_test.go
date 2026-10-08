@@ -27,11 +27,11 @@ func TestGeneratedUnitVerifier(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			body := `test "${SYSTEMD_UNIT_PATH-}" != /must-not-use-host-units`
+			body := `test "${SYSTEMD_UNIT_PATH-}" = /etc/systemd/system || test "${SYSTEMD_UNIT_PATH-}" = /etc/systemd/user:/etc/systemd/system`
 			if c.fail {
 				body = "exit 1"
 			}
-			fake := newFakes(t, tmp, map[string]string{"systemd-analyze": body})
+			fake := newFakes(t, tmp, map[string]string{"chroot": body})
 			r := execute(t, "", fake.env("SYSTEMD_UNIT_PATH=/must-not-use-host-units"), "bash",
 				filepath.Join(imageDir, "test-generated-units.sh"), c.target, root)
 			if c.fail {
@@ -48,7 +48,7 @@ func TestGeneratedUnitVerifier(t *testing.T) {
 				t.Fatalf("expected system and user verification: %v", calls)
 			}
 			for _, call := range calls {
-				for _, flag := range []string{"verify", "--root=" + root, "--man=no", "--generators=no", "--recursive-errors=yes"} {
+				for _, flag := range []string{root, "/run/current-system/systemd/bin/systemd-analyze", "verify", "--man=no", "--generators=no", "--recursive-errors=yes"} {
 					if !strings.Contains(call, flag) {
 						t.Errorf("missing %s: %s", flag, call)
 					}

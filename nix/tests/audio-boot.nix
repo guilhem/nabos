@@ -59,5 +59,23 @@ pkgs.testers.runNixOSTest {
     for name in ("pipewire", "pipewire-pulse", "wireplumber"):
         machine.succeed(f"grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/$(pgrep -u 1004 -x {name})/status")
     machine.succeed("grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/$(systemctl show user@1004.service -p MainPID --value)/status")
+    # Absolute directory and fragment links must resolve in the guest-only root.
+    root = "/run/unit-probe"
+    machine.succeed(f"mkdir -p {root}/{{etc/systemd,nix/store,opt/units,opt/fragments,run,tmp}}")
+    machine.succeed(f"mount --bind /nix/store {root}/nix/store")
+    machine.succeed(f"ln -s /opt/units {root}/etc/systemd/system; ln -s /opt/fragments/probe.service {root}/opt/units/probe.service")
+    machine.succeed(f"ln -s ${pkgs.coreutils}/bin/true {root}/probe")
+    machine.succeed(f"printf '[Unit]\\nDefaultDependencies=no\\n[Service]\\nExecStart=/probe\\n' > {root}/opt/fragments/probe.service")
+    verify = "env -i SYSTEMD_UNIT_PATH=/etc/systemd/system ${pkgs.coreutils}/bin/chroot " + root + " ${pkgs.systemd}/bin/systemd-analyze verify --man=no --generators=no --recursive-errors=yes probe.service"
+    machine.succeed(verify)
+    machine.succeed(f"rm {root}/probe")
+    machine.fail(verify)
+    machine.succeed(f"ln -s ${pkgs.coreutils}/bin/true {root}/probe; sed -i '/DefaultDependencies/a Requires=missing-probe.service' {root}/opt/fragments/probe.service")
+    machine.fail(verify)
+    machine.succeed(f"sed -i '/Requires=missing-probe.service/d' {root}/opt/fragments/probe.service")
+    machine.succeed(verify)
+    machine.succeed(f"rm {root}/opt/fragments/probe.service")
+    machine.fail(verify)
+    machine.succeed(f"umount {root}/nix/store")
   '';
 }
