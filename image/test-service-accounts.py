@@ -385,7 +385,7 @@ def main():
             conf.write_text(config.replace('</busconfig>',
                 '<include>' + bus_policy('org.freedesktop.PolicyKit1.conf') + '</include></busconfig>'))
             expect(call(0, 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'ReloadConfig'))
-            polkit = pwd.getpwnam('polkitd')
+            polkit = pwd.getpwnam(unit_values(system_units, 'polkit', 'User')[-1])
             env = base | {'DBUS_SYSTEM_BUS_ADDRESS': address, 'HOME': polkit.pw_dir, 'TMPDIR': str(work)}
             # The package's primary GID need not equal its UID.
             with (work / 'polkit.log').open('w') as log:
