@@ -110,6 +110,10 @@ pour réutiliser le cache. Les tests d’artefacts téléchargent les sorties
 de chaque construction. La publication attend le **succès des constructions et
 des tests d’artefacts des deux cibles**, puis livre ces mêmes fichiers.
 
+FFTW conserve son API C pour l’audio, sans interfaces ni documentation Fortran.
+LVA réutilise la bibliothèque Fortran embarquée dans son wheel NumPy verrouillé.
+Ces choix évitent de compiler des toolchains Fortran pour les images.
+
 1. Créer une release GitHub sur le commit voulu, avec un tag `vX.Y.Z`, un titre
    et un changelog ; commencer par une prérelease comme `vX.Y.Z-rc.1`.
 2. Publier la release pour déclencher la fabrication signée avec l’autorité

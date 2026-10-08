@@ -1,5 +1,5 @@
 { lib, stdenvNoCC, stdenv, python313, fetchurl, autoPatchelfHook, makeWrapper,
-  alsa-lib, libpulseaudio, mpv-unwrapped, openssl, libffi, zlib, gfortran,
+  alsa-lib, libpulseaudio, mpv-unwrapped, openssl, libffi, zlib,
   coreutils, binutils, cacert, src, version }:
 let
   # Reuse the exact CPython 3.13 aarch64 wheels and checksums already locked by
@@ -12,7 +12,8 @@ let
       url = builtins.elemAt parts 0;
       sha256 = builtins.elemAt parts 1;
     }) lines;
-  libraries = [ stdenv.cc.cc.lib gfortran.cc.lib zlib openssl libffi alsa-lib libpulseaudio mpv-unwrapped ];
+  # NumPy's locked wheel already includes its matching libgfortran.
+  libraries = [ stdenv.cc.cc.lib zlib openssl libffi alsa-lib libpulseaudio mpv-unwrapped ];
 in
 assert stdenv.hostPlatform.system == "aarch64-linux";
 stdenvNoCC.mkDerivation {

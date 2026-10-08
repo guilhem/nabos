@@ -120,12 +120,17 @@ in
     { assertion = builtins.elem nabosTarget [ "zero-armv6" "zero2-arm64" ]; message = "Unknown NabOS target"; }
     { assertion = nabosTarget != "zero-armv6" || packages.lva == null; message = "LVA is ARM64-only"; }
   ];
-  # Omit unused RDMA capture and documentation that fail ARMv6 cross builds.
-  # Keep ARM64 on the official package defaults.
-  nixpkgs.overlays = lib.optional (nabosTarget == "zero-armv6") (_final: previous: {
+  nixpkgs.overlays = [ (_final: previous: {
+    # Audio consumers use the C API; avoid building a Fortran toolchain.
+    fftw = (previous.fftw.override { withDoc = false; }).overrideAttrs (old: {
+      nativeBuildInputs = [ ];
+      configureFlags = old.configureFlags ++ [ "--disable-fortran" ];
+    });
+  } // lib.optionalAttrs (nabosTarget == "zero-armv6") {
+    # Omit unused RDMA capture and documentation that fail ARMv6 cross builds.
     libpcap = previous.libpcap.override { withRdma = false; };
     orc = previous.orc.override { buildDevDoc = false; };
-  });
+  }) ];
   system.stateVersion = "26.05";
   system.nixos.label = "nabos-${nabosVersion}";
   system.nixos-init.enable = true;
