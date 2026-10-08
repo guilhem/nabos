@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The caller mounts the artifact's root and immutable /etc before adding test tools.
 set -euo pipefail
-[[ $# == 2 && -d $2/etc/systemd/system && -d $2/etc/systemd/user ]] || {
+[[ $# == 2 && -d $2/etc ]] || {
   echo 'Usage: bash image/test-generated-units.sh TARGET COMPOSED_ROOT' >&2; exit 2;
 }
 case $1 in zero-armv6|zero2-arm64) ;; *) echo "Unknown target: $1" >&2; exit 2 ;; esac
@@ -9,8 +9,7 @@ root=$(realpath "$2")
 system_units=(nabos.service nab-hardware.service device-core.service nabos-health.service
   nabos-board-led-off.service nabos-rauc-manual.service tagtagtag-mixerd.service
   user@1004.service linger-users.service NetworkManager.service rauc.service ssh.service sshd-keygen.service)
-if [[ -e $root/etc/systemd/system/linux-voice-assistant.service ]]; then
-  [[ $1 == zero2-arm64 ]] || { echo 'LVA must not be installed on ARMv6' >&2; exit 1; }
+if [[ $1 == zero2-arm64 ]]; then
   system_units+=(linux-voice-assistant.service)
 fi
 # Native verifier resolves absolute store paths inside the supplied image root.

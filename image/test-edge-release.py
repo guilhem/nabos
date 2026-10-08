@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -215,6 +216,12 @@ class Publishing(unittest.TestCase):
             digest, name = line.split("  ")
             self.assertEqual("sha256:" + digest, assets[name]["digest"])
         self.assertEqual(len([args for args, _ in self.fake.calls if "--paginate" in args and "releases?" in args[1]]), 2)
+
+    def test_missing_target_directory_never_mutates(self):
+        shutil.rmtree(self.directory / "nabos-zero2-arm64")
+        with self.assertRaisesRegex(ValueError, "missing artifact directory"):
+            self.publish()
+        self.assertEqual(self.fake.calls, [])
 
     def test_interrupted_draft_reused_without_replacing_assets(self):
         self.fake.fail_upload = 4

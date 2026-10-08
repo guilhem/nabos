@@ -15,7 +15,7 @@ fi
 : "${EXPECTED_VERSION:?Expected version required}" "${EXPECTED_DEVELOPMENT:?Expected development flag required}"
 report="$repo/build/nix-tmp/test-$target.json"
 rm -f "$report"
-started=$(date +%s)
+SECONDS=0
 (cd "$artifacts" && sha256sum --check --strict "SHA256SUMS-$target")
 jq -e --arg target "$target" --arg revision "$(git -C "$repo" rev-parse HEAD)" \
   --arg version "$EXPECTED_VERSION" --argjson development "$EXPECTED_DEVELOPMENT" \
@@ -56,6 +56,6 @@ printf '%s\n' "$sandbox" > "$repo/build/nix-tmp/uboot-cache-root-$target"
 bash "$repo/image/test-runtime.sh" "$target" "$work/rootfs.ext4" "$work/data.ext4"
 jq -n --arg target "$target" --arg version "$EXPECTED_VERSION" \
   --arg revision "$(git -C "$repo" rev-parse HEAD)" \
-  --argjson seconds "$(( $(date +%s) - started ))" \
+  --argjson seconds "$SECONDS" \
   '{target:$target,version:$version,source_revision:$revision,durations_seconds:{tests:$seconds}}' > "$report"
 echo "Artifact test measurements: $report"

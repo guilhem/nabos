@@ -188,9 +188,8 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHE: ${{ vars.CACHIX_CACHE }}
         run: |
-          # shellcheck disable=SC2034 # Used by the EXIT timing trap.
-          started=$(date +%s)
-          trap 'printf "{\"cachix_seconds\":%s}\n" "$(( $(date +%s) - started ))" > "dist/$TARGET/cache-timings-$TARGET.json"' EXIT
+          SECONDS=0
+          trap 'printf "{\"cachix_seconds\":%s}\n" "$SECONDS" > "dist/$TARGET/cache-timings-$TARGET.json"' EXIT
           test "$CACHE" = nabos
           test -n "$CACHIX_AUTH_TOKEN"
           # The cache's official-cache exclusion omits cache.nixos.org paths.
@@ -562,12 +561,8 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: nabos-zero-armv6
-          path: dist/nabos-zero-armv6
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: nabos-zero2-arm64
-          path: dist/nabos-zero2-arm64
+          pattern: nabos-zero*
+          path: dist
       - name: Publish tested bytes through a draft, then retain 30 Edge versions
         env:
           GH_TOKEN: ${{ github.token }}

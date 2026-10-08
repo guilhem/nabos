@@ -38,19 +38,18 @@ payload_expr='let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE"); in
     version = builtins.getEnv "NABOS_VERSION"; }).payload'
 # Keep selected roots available even when building or packaging the payload fails.
 rm -f "$out/cache-roots-$target"
-nix --extra-experimental-features 'nix-command flakes' eval --impure --json \
-  --apply 'roots: map builtins.toString roots' --expr "($payload_expr).cacheRoots" \
-  > "$work/cache-roots.json"
-jq -er '.[]' "$work/cache-roots.json" > "$work/cache-roots"
+nix --extra-experimental-features 'nix-command flakes' eval --impure --raw \
+  --apply 'roots: builtins.concatStringsSep "\n" (map builtins.toString roots) + "\n"' \
+  --expr "($payload_expr).cacheRoots" > "$work/cache-roots"
 install -m644 "$work/cache-roots" "$out/cache-roots-$target"
-started=$(date +%s)
+SECONDS=0
 payload=$(nix --extra-experimental-features 'nix-command flakes' build --impure \
   --no-link --print-out-paths \
   --option extra-substituters https://nabos.cachix.org \
   --option extra-trusted-public-keys 'nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=' \
   --expr "$payload_expr")
-seconds=$(( $(date +%s) - started ))
-started=$(date +%s)
+seconds=$SECONDS
+SECONDS=0
 mkdir -p "$work/images" "$work/data/rauc" "$work/bundle" "$work/empty"
 if $development; then
   mkdir -m700 "$work/signing"
@@ -73,8 +72,8 @@ fakeroot bash -c 'chown -R 0:0 "$1"; exec mkfs.ext4 -q -F -L nabos-data -d "$1" 
   -- "$work/data" "$work/images/data.ext4"
 GENIMAGE_SHELL="$(command -v bash)" genimage --config "$repo/image/genimage.cfg" --rootpath "$work/empty" \
   --inputpath "$work/images" --outputpath "$work/images" --tmppath "$work/genimage-tmp"
-sd_seconds=$(( $(date +%s) - started ))
-started=$(date +%s)
+sd_seconds=$SECONDS
+SECONDS=0
 ln "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$work/bundle/"
 compatible=$(jq -er --arg target "$target" '.targets[$target].compatible' "$repo/image/sources.lock.json")
 sed -e "s/@COMPATIBLE@/$compatible/g" -e "s/@VERSION@/$version/g" \
@@ -84,18 +83,18 @@ rauc bundle --mksquashfs-args="-comp zstd -Xcompression-level $zstd_level" \
   --cert="$signing_cert" --key="$signing_key" "$work/bundle" "$out/nabos-$target.raucb"
 test "$(stat -c %s "$out/nabos-$target.raucb")" -le 2147483648
 install -m644 "$signing_cert" "$out/ca-$target.cert.pem"
-rauc_seconds=$(( $(date +%s) - started ))
+rauc_seconds=$SECONDS
 chmod a-w "$work/images/"{sdcard.img,rootfs.ext4,boot.vfat}
 test_seconds=null
 if ! $defer_tests; then
-  started=$(date +%s)
+  SECONDS=0
   EXPECTED_VERSION="$version" bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" \
     "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$out/nabos-$target.raucb" "$out/ca-$target.cert.pem"
-  test_seconds=$(( $(date +%s) - started ))
+  test_seconds=$SECONDS
 fi
-started=$(date +%s)
+SECONDS=0
 xz -T0 "-$xz_level" --stdout "$work/images/sdcard.img" > "$out/nabos-$target.img.xz"
-xz_seconds=$(( $(date +%s) - started ))
+xz_seconds=$SECONDS
 cp "$repo/flake.lock" "$out/flake-$target.lock"
 install -m644 "$payload/boot.cmd" "$out/boot-$target.cmd"
 dirty=false

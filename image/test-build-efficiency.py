@@ -27,14 +27,14 @@ def failed(stage):
 if name == 'nix':
     assert not any('key.pem' in arg or 'cert.pem' in arg for arg in args)
     if 'eval' in args:
-        if '--raw' in args:
+        expr = args[args.index('--expr') + 1]
+        if expr == 'builtins.currentSystem':
             print('x86_64-linux')
         else:
-            expr = args[args.index('--expr') + 1]
             assert expr.startswith('(let ') and expr.endswith(').cacheRoots'), expr
-            assert args[args.index('--apply') + 1] == 'roots: map builtins.toString roots'
+            assert '--raw' in args
             failed('eval')
-            print(json.dumps(roots))
+            print('\n'.join(roots))
     elif 'build' in args:
         if any(arg.endswith('#uboot-sandbox') for arg in args):
             print(repo / 'sandbox')
@@ -47,11 +47,6 @@ if name == 'nix':
             print(repo / 'payload')
     else:
         raise AssertionError(args)
-elif name == 'date':
-    tick = repo / 'tick'
-    value = int(tick.read_text()) + 1 if tick.exists() else 100
-    tick.write_text(str(value))
-    print(value)
 elif name == 'git':
     if 'rev-parse' in args:
         print('a' * 40)
@@ -125,7 +120,7 @@ class BuildEfficiency(unittest.TestCase):
         mock = bin_dir / 'mock'
         mock.write_text(MOCK)
         mock.chmod(0o755)
-        for command in ('nix', 'date', 'git', 'openssl', 'fakeroot', 'genimage', 'rauc', 'xz',
+        for command in ('nix', 'git', 'openssl', 'fakeroot', 'genimage', 'rauc', 'xz',
                         'dd', 'mcopy', 'debugfs', 'go', 'fixture-test', 'fixture-runtime'):
             (bin_dir / command).symlink_to(mock)
         self.env = os.environ | {'PATH': str(bin_dir) + ':' + os.environ['PATH'],
@@ -153,8 +148,12 @@ class BuildEfficiency(unittest.TestCase):
     def test_defaults_timings_links_and_checksum_layout(self):
         self.build()
         report = json.loads((self.out / f'build-{TARGET}.json').read_text())
-        self.assertEqual(report['build_seconds'], 1)
-        self.assertEqual(report['durations_seconds'], dict(nix_build=1, sd_assembly=1, rauc_bundle=1, xz=1, tests=1))
+        durations = report['durations_seconds']
+        self.assertEqual(report['build_seconds'], durations['nix_build'])
+        self.assertEqual(set(durations), {'nix_build', 'sd_assembly', 'rauc_bundle', 'xz', 'tests'})
+        for seconds in durations.values():
+            self.assertIsInstance(seconds, int)
+            self.assertGreaterEqual(seconds, 0)
         self.assertEqual(report['compression'], dict(xz=3, rauc_zstd=6))
         self.assertIn('-3', self.calls('xz')[0])
         self.assertIn('--mksquashfs-args=-comp zstd -Xcompression-level 6', self.calls('rauc')[0])
@@ -204,8 +203,11 @@ class BuildEfficiency(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({p.name: p.read_bytes() for p in self.out.iterdir()}, before)
         report = self.repo / 'build/nix-tmp' / f'test-{TARGET}.json'
-        self.assertEqual(json.loads(report.read_text()), dict(
-            target=TARGET, version='dev-local', source_revision=REVISION, durations_seconds={'tests': 1}))
+        measurements = json.loads(report.read_text())
+        seconds = measurements.pop('durations_seconds')['tests']
+        self.assertIsInstance(seconds, int)
+        self.assertGreaterEqual(seconds, 0)
+        self.assertEqual(measurements, dict(target=TARGET, version='dev-local', source_revision=REVISION))
         result = self.run_script('test-artifact.sh', TARGET, str(self.out), fail='runtime')
         self.assertEqual(result.returncode, 42, result.stderr)
         self.assertFalse(report.exists())

@@ -3,7 +3,7 @@ let
   inherit (lib) mkForce mkIf;
   rootfs = ../image/rootfs;
   packages = nabosPackages;
-  hasVoice = nabosTarget == "zero2-arm64" && packages.lva != null;
+  hasVoice = nabosTarget == "zero2-arm64";
   lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
   compatible = lock.targets.${nabosTarget}.compatible;
   persistLibrary = pkgs.writeText "nabos-persist-library" (builtins.readFile ./runtime/persist.sh);
@@ -66,14 +66,6 @@ let
       install-same = false;
     };
   };
-  fixedUser = uid: home: groups: {
-    inherit uid home;
-    isSystemUser = true;
-    createHome = false;
-    group = (builtins.elemAt [ "nab-app" "nab-hardware" "device-core" "nab-audio" ] (uid - 1001));
-    extraGroups = groups;
-    hashedPassword = "!";
-  };
 in
 {
   imports = [
@@ -135,9 +127,21 @@ in
       home = "/var/lib/nabos/admin"; createHome = false; shell = pkgs.bashInteractive;
       hashedPassword = "!"; autoSubUidGidRange = false;
     };
-    nab-app = fixedUser 1001 "/data/nabos" [ "nab-media" ];
-    nab-hardware = fixedUser 1002 "/run/nab-hardware" [ "gpio" ];
-    device-core = fixedUser 1003 "/data/device-core" [ "nab-media" "nab-audio" ];
+    nab-app = {
+      uid = 1001; group = "nab-app"; home = "/data/nabos";
+      isSystemUser = true; createHome = false; hashedPassword = "!";
+      extraGroups = [ "nab-media" ];
+    };
+    nab-hardware = {
+      uid = 1002; group = "nab-hardware"; home = "/run/nab-hardware";
+      isSystemUser = true; createHome = false; hashedPassword = "!";
+      extraGroups = [ "gpio" ];
+    };
+    device-core = {
+      uid = 1003; group = "device-core"; home = "/data/device-core";
+      isSystemUser = true; createHome = false; hashedPassword = "!";
+      extraGroups = [ "nab-media" "nab-audio" ];
+    };
   };
   users.groups = {
     nabos.gid = 1000; nab-app.gid = 1001; nab-hardware.gid = 1002;

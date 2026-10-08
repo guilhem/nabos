@@ -10,24 +10,22 @@ import (
 func TestGeneratedUnitVerifier(t *testing.T) {
 	for _, c := range []struct {
 		name, target string
-		voice, fail  bool
+		fail         bool
 	}{
-		{"armv6", "zero-armv6", false, false},
-		{"arm64-with-voice", "zero2-arm64", true, false},
-		{"arm64-without-voice", "zero2-arm64", false, false},
-		{"voice-on-armv6", "zero-armv6", true, false},
-		{"invalid-unit", "zero-armv6", false, true},
+		{"armv6", "zero-armv6", false},
+		{"arm64", "zero2-arm64", false},
+		{"invalid-unit", "zero-armv6", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			tmp := t.TempDir()
 			root := filepath.Join(tmp, "root")
-			for _, path := range []string{"etc/systemd/system", "etc/systemd/user"} {
-				if err := os.MkdirAll(filepath.Join(root, path), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(root, "etc/systemd"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"system", "user"} {
+				if err := os.Symlink("/nix/store/unavailable-on-host-"+name, filepath.Join(root, "etc/systemd", name)); err != nil {
 					t.Fatal(err)
 				}
-			}
-			if c.voice {
-				write(t, filepath.Join(root, "etc/systemd/system/linux-voice-assistant.service"), "[Service]\n")
 			}
 			body := `test "${SYSTEMD_UNIT_PATH-}" != /must-not-use-host-units`
 			if c.fail {
@@ -36,7 +34,7 @@ func TestGeneratedUnitVerifier(t *testing.T) {
 			fake := newFakes(t, tmp, map[string]string{"systemd-analyze": body})
 			r := execute(t, "", fake.env("SYSTEMD_UNIT_PATH=/must-not-use-host-units"), "bash",
 				filepath.Join(imageDir, "test-generated-units.sh"), c.target, root)
-			if c.fail || c.voice && c.target == "zero-armv6" {
+			if c.fail {
 				if r.code == 0 {
 					t.Fatal("invalid generated units accepted")
 				}
@@ -57,7 +55,7 @@ func TestGeneratedUnitVerifier(t *testing.T) {
 				}
 			}
 			if !strings.Contains(calls[0], "user@1004.service") || !strings.Contains(calls[1], "pipewire.socket") ||
-				strings.Contains(calls[0], "linux-voice-assistant.service") != c.voice {
+				strings.Contains(calls[0], "linux-voice-assistant.service") != (c.target == "zero2-arm64") {
 				t.Fatalf("incomplete generated-unit scope: %v", calls)
 			}
 		})

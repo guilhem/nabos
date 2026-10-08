@@ -113,7 +113,7 @@ class GitHub:
             run_gh(["api", f"{self.root}/releases/assets/{asset['id']}",
                     "-H", "Accept: application/octet-stream"], stdout=output)
             output.seek(0)
-            return hash_file(output)
+            return hashlib.file_digest(output, "sha256").hexdigest()
 
 
 def context():
@@ -158,16 +158,9 @@ def choose_version(releases, run, sha):
     return tag
 
 
-def hash_file(file):
-    digest = hashlib.sha256()
-    for block in iter(lambda: file.read(1024 * 1024), b""):
-        digest.update(block)
-    return digest.hexdigest()
-
-
 def file_digest(path):
     with path.open("rb") as file:
-        return hash_file(file)
+        return hashlib.file_digest(file, "sha256").hexdigest()
 
 
 def regular_file(path):
