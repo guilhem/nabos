@@ -75,7 +75,8 @@ GENIMAGE_SHELL="$(command -v bash)" genimage --config "$repo/image/genimage.cfg"
 sd_seconds=$SECONDS
 SECONDS=0
 ln "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$work/bundle/"
-compatible=$(jq -er --arg target "$target" '.targets[$target].compatible' "$repo/image/sources.lock.json")
+install -m755 "$repo/image/rauc-hook.sh" "$work/bundle/rauc-hook.sh"
+compatible="nabos-$target"
 sed -e "s/@COMPATIBLE@/$compatible/g" -e "s/@VERSION@/$version/g" \
   "$repo/image/manifest.raucm.in" > "$work/bundle/manifest.raucm"
 rm -f "$out/nabos-$target.raucb"

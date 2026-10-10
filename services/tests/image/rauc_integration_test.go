@@ -25,7 +25,7 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("NABOS_RAUC_INTEGRATION=1 requires root")
 	}
-	for _, name := range []string{"rauc", "genimage", "losetup", "udevadm", "dbus-daemon", "dbus-send", "mkenvimage", "fw_printenv", "fw_setenv", "mkfs.vfat", "mkfs.ext4", "mcopy", "openssl", "sync"} {
+	for _, name := range []string{"rauc", "genimage", "losetup", "udevadm", "dbus-daemon", "dbus-send", "mkenvimage", "fw_printenv", "fw_setenv", "mkfs.vfat", "mkfs.ext4", "mcopy", "openssl", "sync", "mount", "umount", "findmnt", "mksquashfs"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +48,13 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(settingsDir, "settings.json"), "{\"rauc_integration_sentinel\":true}\n")
+	write(t, filepath.Join(settingsDir, "application.json"), "{\"rauc_integration_sentinel\":true}\n")
+	if err := os.Chmod(filepath.Join(settingsDir, "application.json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(filepath.Join(settingsDir, "application.json"), 1001, 1001); err != nil {
+		t.Fatal(err)
+	}
 	run(t, "", "mkfs.ext4", "-q", "-F", "-L", "nabos-data", "-d", filepath.Join(dir, "data-fixture"), data)
 	raBoot(t, bootA, "initial")
 	run(t, "", "mkenvimage", "-r", "-s", "0x10000", "-o", filepath.Join(images, "uboot.env"), filepath.Join(bootDir, "uboot.env"))
@@ -74,9 +80,33 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	if err := syscall.Flock(int(diskDevice.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []string{"p2", "p3"} {
+	for _, n := range []string{"p2", "p3", "p4"} {
 		if _, err := os.Stat(loop + n); err != nil {
 			t.Fatalf("loop partition %s: %v", loop+n, err)
+		}
+	}
+	dataMount := filepath.Join(dir, "data")
+	run(t, "", "mount", "-t", "ext4", loop+"p4", dataMount)
+	t.Cleanup(func() {
+		if r := execute(t, "", nil, "umount", dataMount); r.code != 0 {
+			t.Errorf("unmount disposable data: %s", r.stderr)
+		}
+	})
+	settings := filepath.Join(dataMount, "nabos", "application.json")
+	settingsContent := read(t, settings)
+	settingsInfo, err := os.Stat(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertData := func() {
+		t.Helper()
+		info, err := os.Stat(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, after := settingsInfo.Sys().(*syscall.Stat_t), info.Sys().(*syscall.Stat_t)
+		if read(t, settings) != settingsContent || info.Mode() != settingsInfo.Mode() || !info.ModTime().Equal(settingsInfo.ModTime()) || after.Uid != before.Uid || after.Gid != before.Gid || after.Ino != before.Ino {
+			t.Fatal("update changed persistent settings, ownership, permissions or identity")
 		}
 	}
 
@@ -108,13 +138,12 @@ region-start=4M
 region-size=512M
 install-same=false
 `
-	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-nixos-rauc-integration")
+	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-nixos-zero2-arm64")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", loop+"p2")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", loop+"p3")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0", loop)
 	config = strings.ReplaceAll(config, "/run/rauc", filepath.Join(dir, "mount"))
-	config = strings.ReplaceAll(config, "/data/rauc", filepath.Join(dir, "data"))
-	config = strings.ReplaceAll(config, filepath.Join(dir, "data", "ca.cert.pem"), filepath.Join(dir, "trusted.crt"))
+	config = strings.ReplaceAll(config, "/data/rauc", filepath.Join(dataMount, "rauc"))
 	config = strings.ReplaceAll(config, "/usr/lib/nabos/rauc-post-install", filepath.Join(dir, "post-install"))
 	conf := filepath.Join(dir, "system.conf")
 	write(t, conf, config)
@@ -130,12 +159,20 @@ install-same=false
 	syncBin, _ := exec.LookPath("sync")
 	failSync := filepath.Join(dir, "fail-sync")
 	syncReached := filepath.Join(dir, "sync-reached")
-	raExecutable(t, filepath.Join(bin, "sync"), fmt.Sprintf("#!/bin/sh\nif [ -e %q ]; then : > %q; exit 42; fi\nexec %q \"$@\"\n", failSync, syncReached, syncBin))
+	raExecutable(t, filepath.Join(bin, "sync"), fmt.Sprintf("#!/bin/sh\nif [ \"$*\" = %q ] && [ -e %q ]; then : > %q; exit 42; fi\nexec %q \"$@\"\n", loop, failSync, syncReached, syncBin))
 	pathEnv := "PATH=" + bin + ":" + os.Getenv("PATH")
 
 	key := filepath.Join(dir, "trusted.key")
 	cert := filepath.Join(dir, "trusted.crt")
 	raCert(t, key, cert)
+	// Only fixture paths differ: the signed install-check still reads real sysfs
+	// geometry, checks the mounted data partition and migrates the existing trust.
+	hook := strings.NewReplacer(
+		"/sys/class/block/mmcblk0", "/sys/class/block/"+filepath.Base(loop),
+		"/dev/mmcblk0", loop,
+		"/etc/rauc/ca.cert.pem", cert,
+		"/data", dataMount,
+	).Replace(read(t, filepath.Join(imageDir, "rauc-hook.sh")))
 	badKey := filepath.Join(dir, "untrusted.key")
 	badCert := filepath.Join(dir, "untrusted.crt")
 	raCert(t, badKey, badCert)
@@ -148,10 +185,13 @@ install-same=false
 	bootC := filepath.Join(dir, "boot-c.vfat")
 	raFile(t, bootC, 256*MiB)
 	raBoot(t, bootC, "return")
-	bundleB := raBundle(t, dir, "b", "nabos-nixos-rauc-integration", rootB, bootB, key, cert)
-	bundleA := raBundle(t, dir, "a", "nabos-nixos-rauc-integration", rootA, bootC, key, cert)
-	badCompatible := raBundle(t, dir, "wrong", "wrong-compatible", rootB, bootB, key, cert)
-	untrusted := raBundle(t, dir, "untrusted", "nabos-nixos-rauc-integration", rootB, bootB, badKey, badCert)
+	bundleB := raBundle(t, dir, "b", "nabos-zero2-arm64", rootB, bootB, key, cert, hook)
+	bundleA := raBundle(t, dir, "a", "nabos-zero2-arm64", rootA, bootC, key, cert, hook)
+	badCompatible := raBundle(t, dir, "wrong", "nabos-zero-armv6", rootB, bootB, key, cert, hook)
+	untrusted := raBundle(t, dir, "untrusted", "nabos-zero2-arm64", rootB, bootB, badKey, badCert, hook)
+	legacyBundle := raBundle(t, dir, "legacy", "nabos-zero2-arm64", rootA, bootA, key, cert, "")
+	unsigned := filepath.Join(dir, "unsigned.raucb")
+	run(t, "", "mksquashfs", filepath.Join(dir, "bundle-b"), unsigned, "-noappend", "-comp", "zstd", "-processors", "2")
 
 	bus := filepath.Join(dir, "bus")
 	busLog := filepath.Join(dir, "bus.log")
@@ -208,45 +248,55 @@ install-same=false
 	if got := raP1Start(initialMBR); got != boot0 {
 		t.Fatalf("initial p1 start %d, want %d", got, boot0)
 	}
-	dataHash := raRangeHash(t, disk, dataOff, rootSize)
 	activeRootA := raRangeHash(t, disk, root0, rootSize)
 	initialBoot := raRangeHash(t, disk, boot0, bootSize)
 	if initialBoot != raRangeHash(t, disk, boot1, bootSize) {
 		t.Fatal("genimage did not prefill both boot copies")
 	}
 	assertEnv("A B", "A")
-	// The same trusted bundle must be rejected by the pre-NixOS identity.
-	write(t, conf, strings.ReplaceAll(config, "nabos-nixos-rauc-integration", "nabos-rauc-integration"))
-	stopLegacy := startService("A")
-	beforeLegacy := raFileHash(t, disk)
-	install(bundleB, false)
-	if after := raFileHash(t, disk); after != beforeLegacy {
-		t.Fatal("legacy identity accepted a NixOS bundle or changed the disk")
-	}
-	stopLegacy()
-	write(t, conf, config)
+	// The old system trusts its root certificate; install-check durably copies it
+	// to the persistent path consumed after booting NixOS.
+	legacyConfig := strings.ReplaceAll(config, "nabos-nixos-zero2-arm64", "nabos-zero2-arm64")
+	legacyConfig = strings.ReplaceAll(legacyConfig, filepath.Join(dataMount, "rauc", "ca.cert.pem"), cert)
+	write(t, conf, legacyConfig)
 	stopA := startService("A")
 	install(bundleB, true)
 	raOrder(t, read(t, serviceLog), "rootfs.1", "bootloader.0")
-	raLayout(t, disk, initialMBR, boot1, root0, root1, dataOff, rootSize, bootSize, activeRootA, raFileHash(t, rootB), dataHash, initialBoot, raFileHash(t, bootB))
+	raLayout(t, disk, initialMBR, boot1, root0, root1, rootSize, bootSize, activeRootA, raFileHash(t, rootB), initialBoot, raFileHash(t, bootB))
+	assertData()
+	anchor := filepath.Join(dataMount, "rauc", "ca.cert.pem")
+	anchorInfo, err := os.Lstat(anchor)
+	if err != nil || anchorInfo.Mode().Perm() != 0o600 || !anchorInfo.Mode().IsRegular() || read(t, anchor) != read(t, cert) {
+		t.Fatalf("existing trust anchor was not migrated safely: %v, %v", anchorInfo, err)
+	}
 	assertEnv("B A", "B")
 	stopA()
+	write(t, conf, config)
 	stopB := startService("B")
 	install(bundleA, true)
 	raOrder(t, read(t, serviceLog), "rootfs.0", "bootloader.0")
-	raLayout(t, disk, initialMBR, boot0, root1, root0, dataOff, rootSize, bootSize, raFileHash(t, rootB), raFileHash(t, rootA), dataHash, raFileHash(t, bootB), raFileHash(t, bootC))
+	raLayout(t, disk, initialMBR, boot0, root1, root0, rootSize, bootSize, raFileHash(t, rootB), raFileHash(t, rootA), raFileHash(t, bootB), raFileHash(t, bootC))
+	assertData()
 	assertEnv("A B", "A")
 	t.Log("RAUC A -> B -> A: both MBR switches, root images, boot copies and /data verified")
 
 	// These fail during bundle verification, before any slot or environment write.
-	before := raFileHash(t, disk)
+	before := raRangeHash(t, disk, 0, dataOff)
 	install(badCompatible, false)
-	if after := raFileHash(t, disk); after != before {
+	if after := raRangeHash(t, disk, 0, dataOff); after != before {
 		t.Fatal("incompatible signed bundle changed the disk")
 	}
 	install(untrusted, false)
-	if after := raFileHash(t, disk); after != before {
+	if after := raRangeHash(t, disk, 0, dataOff); after != before {
 		t.Fatal("untrusted bundle changed the disk")
+	}
+	install(unsigned, false)
+	if after := raRangeHash(t, disk, 0, dataOff); after != before {
+		t.Fatal("unsigned bundle changed the disk")
+	}
+	install(legacyBundle, false)
+	if after := raRangeHash(t, disk, 0, dataOff); after != before {
+		t.Fatal("old bundle without install-check changed the NixOS disk")
 	}
 	oversized := filepath.Join(dir, "oversized.vfat")
 	raFile(t, oversized, 257*MiB)
@@ -254,10 +304,14 @@ install-same=false
 	if r.code == 0 || !strings.Contains(r.stdout+r.stderr+read(t, serviceLog), "does not fit") {
 		t.Fatalf("oversized boot image was not rejected by boot-mbr-switch: %d %s%s", r.code, r.stdout, r.stderr)
 	}
-	if after := raFileHash(t, disk); after != before {
+	if after := raRangeHash(t, disk, 0, dataOff); after != before {
 		t.Fatal("oversized boot image changed the disk")
 	}
-	t.Log("Wrong target, untrusted signature and oversized boot rejected without changing the disk")
+	assertData()
+	if read(t, anchor) != read(t, cert) {
+		t.Fatal("rejected updates replaced the trust anchor")
+	}
+	t.Log("Wrong target, untrusted/unsigned bundles, old hookless bundle and oversized boot rejected without changing slots or data")
 	stopB()
 	stopA = startService("A")
 	write(t, failSync, "fail")
@@ -269,6 +323,7 @@ install-same=false
 		t.Fatalf("sync failure did not propagate through RAUC post-install: %s%s\n%s", r.stdout, r.stderr, read(t, serviceLog))
 	}
 	t.Log("Post-install sync failure propagated by RAUC")
+	assertData()
 	stopA()
 }
 
@@ -311,7 +366,7 @@ func raCert(t *testing.T, key, cert string) {
 	run(t, "", "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=NabOS RAUC integration/", "-keyout", key, "-out", cert)
 }
 
-func raBundle(t *testing.T, dir, name, compatible, root, boot, key, cert string) string {
+func raBundle(t *testing.T, dir, name, compatible, root, boot, key, cert, hook string) string {
 	t.Helper()
 	input := filepath.Join(dir, "bundle-"+name)
 	if err := os.Mkdir(input, 0o755); err != nil {
@@ -323,6 +378,11 @@ func raBundle(t *testing.T, dir, name, compatible, root, boot, key, cert string)
 		}
 	}
 	manifest := read(t, filepath.Join(imageDir, "manifest.raucm.in"))
+	if hook == "" {
+		manifest = strings.ReplaceAll(manifest, "[hooks]\nfilename=rauc-hook.sh\nhooks=install-check\n\n", "")
+	} else {
+		raExecutable(t, filepath.Join(input, "rauc-hook.sh"), hook)
+	}
 	manifest = strings.ReplaceAll(manifest, "@COMPATIBLE@", compatible)
 	manifest = strings.ReplaceAll(manifest, "@VERSION@", name)
 	write(t, filepath.Join(input, "manifest.raucm"), manifest)
@@ -431,7 +491,7 @@ func raOrder(t *testing.T, log, root, boot string) {
 	}
 }
 
-func raLayout(t *testing.T, disk string, initialMBR []byte, bootStart, activeRoot, updatedRoot, dataStart, rootSize, bootSize int64, activeRootHash, updatedRootHash, dataHash, oldBootHash, newBootHash [32]byte) {
+func raLayout(t *testing.T, disk string, initialMBR []byte, bootStart, activeRoot, updatedRoot, rootSize, bootSize int64, activeRootHash, updatedRootHash, oldBootHash, newBootHash [32]byte) {
 	t.Helper()
 	mbr := raMBR(t, disk)
 	if raP1Start(mbr) != bootStart || !bytes.Equal(mbr[:446], initialMBR[:446]) || !bytes.Equal(mbr[462:], initialMBR[462:]) ||
@@ -446,7 +506,6 @@ func raLayout(t *testing.T, disk string, initialMBR []byte, bootStart, activeRoo
 	}{
 		{"active root", activeRoot, rootSize, activeRootHash},
 		{"updated root", updatedRoot, rootSize, updatedRootHash},
-		{"data", dataStart, rootSize, dataHash},
 		{"active boot", bootStart, bootSize, newBootHash},
 		{"previous boot", 264*MiB - bootStart, bootSize, oldBootHash},
 	} {

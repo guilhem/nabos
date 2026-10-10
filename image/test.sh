@@ -45,7 +45,7 @@ for path in /rauc /rauc/ca.cert.pem; do
   mode=0600; [[ $path != /rauc ]] || mode=0700
   grep -Eq "Mode:[[:space:]]+$mode" <<< "$stat"
 done
-compatible=$(jq -er --arg target "$target" '.targets[$target].compatible' "$repo/image/sources.lock.json")
+compatible="nabos-$target"
 rauc info --keyring="$certificate" --output-format=json "$bundle" |
   jq -e --arg compatible "$compatible" --arg version "${EXPECTED_VERSION:-}" \
     --arg rootfs "$(sha256sum "$rootfs" | cut -d' ' -f1)" \
@@ -53,5 +53,9 @@ rauc info --keyring="$certificate" --output-format=json "$bundle" |
     '.compatible == $compatible and ($version == "" or .version == $version) and
      (.images | length) == 2 and .images[0].rootfs.checksum == $rootfs and
      .images[1].bootloader.checksum == $boot'
+unsquashfs -cat "$bundle" rauc-hook.sh | cmp - "$repo/image/rauc-hook.sh"
+unsquashfs -cat "$bundle" manifest.raucm > "$work/manifest.raucm"
+grep -qx 'filename=rauc-hook.sh' "$work/manifest.raucm"
+grep -Eq '^hooks=install-check;?$' "$work/manifest.raucm"
 [[ "$before" == "$(sha256sum "$disk" "$rootfs" "$boot")" ]]
 echo 'Verified SD partitions, redundant boot copies, NixOS payload and signed RAUC bundle; originals unchanged'

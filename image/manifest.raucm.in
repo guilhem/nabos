@@ -5,6 +5,10 @@ version=@VERSION@
 [bundle]
 format=verity
 
+[hooks]
+filename=rauc-hook.sh
+hooks=install-check
+
 # Install Linux before changing the shared firmware.
 [image.rootfs]
 filename=rootfs.ext4

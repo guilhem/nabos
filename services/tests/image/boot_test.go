@@ -60,7 +60,9 @@ type bootFixture struct {
 	t            *testing.T
 	tmp          string
 	overlays     map[string]string
-	missing      map[string]string
+	legacy       map[string]bool // Slot present in this map is Debian; value enables its ears overlay.
+	kernel       []byte
+	missing      map[string][]string
 	initContents map[string]string
 }
 
@@ -80,8 +82,23 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	os.MkdirAll(filepath.Join(tree, "boot/dtb"), 0o755)
 	os.MkdirAll(filepath.Join(tree, "boot/overlays"), 0o755)
 	write(f.t, filepath.Join(tree, "boot/kernel"), strings.Repeat("not a real kernel", 64))
+	if f.kernel != nil {
+		if err := os.WriteFile(filepath.Join(tree, "boot/kernel"), f.kernel, 0o644); err != nil {
+			f.t.Fatal(err)
+		}
+	}
 	write(f.t, filepath.Join(tree, "boot/initrd"), strings.Repeat("not a real initrd", 64))
 	write(f.t, filepath.Join(tree, "boot/init"), "nabos_init=/nix/store/fixture-"+name+"/init\nnabos_kernel_params=ro rootwait rootfstype=ext4 fsck.mode=skip watchdog.open_timeout=300 panic=10 slot_fixture="+name+"\n")
+	if ears, legacy := f.legacy[name]; legacy {
+		os.Remove(filepath.Join(tree, "boot/init"))
+		os.Remove(filepath.Join(tree, "boot/initrd"))
+		os.MkdirAll(filepath.Join(tree, "usr/lib/nabos"), 0o755)
+		write(f.t, filepath.Join(tree, "usr/lib/nabos/boot-init"), "#!/bin/sh\n")
+		if ears {
+			run(f.t, fmt.Sprintf(miniOverlay, "gpio"), filepath.Join(sandbox, "bin/dtc"),
+				"-@", "-I", "dts", "-O", "dtb", "-o", filepath.Join(tree, "boot/overlays/tagtagtag-ears.dtbo"), "-")
+		}
+	}
 	if init, override := f.initContents[name]; override {
 		write(f.t, filepath.Join(tree, "boot/init"), init)
 	}
@@ -99,7 +116,7 @@ func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	if brokenOverlay {
 		write(f.t, filepath.Join(tree, "boot/overlays/tagtagtag-sound.dtbo"), "garbage")
 	}
-	if missing := f.missing[name]; missing != "" {
+	for _, missing := range f.missing[name] {
 		os.Remove(filepath.Join(tree, "boot", missing))
 	}
 	return tree
@@ -481,10 +498,95 @@ func testBootScript(t *testing.T, target string) {
 		}
 	})
 
+	for _, slot := range []string{"A", "B"} {
+		for _, ears := range []bool{false, true} {
+			t.Run(fmt.Sprintf("Debian slot %s ears=%t", slot, ears), func(t *testing.T) {
+				f.t = t
+				f.legacy = map[string]bool{strings.ToLower(slot): ears}
+				defer func() { f.legacy = nil }()
+				env := fmt.Sprintf("setenv BOOT_ORDER %s; setenv BOOT_%s_LEFT 1;", slot, slot)
+				lines, output := f.boot(f.disk(target, slot == "A", slot == "B", false), env, true)
+				part := "2"
+				if slot == "B" {
+					part = "3"
+				}
+				args := strings.Fields(booting(t, lines, slot))
+				containsAll(t, args, "root=/dev/mmcblk0p"+part, "rauc.slot="+slot, "ro", "rootwait",
+					"rootfstype=ext4", "fsck.mode=skip", "init=/usr/lib/nabos/boot-init", "watchdog.open_timeout=300", "panic=10")
+				containsAll(t, lower(lines), "nabos: board revision 0x009000c1")
+				containsAll(t, lines, "nabos: overlay tagtagtag-sound applied")
+				if strings.Contains(output, "nabos: overlay tagtagtag-ears applied") != ears {
+					t.Errorf("ears overlay does not match the selected slot: %q", lines)
+				}
+				if !strings.Contains(output, bootFailure) || strings.Count(output, "Started watchdog@7e100000") != 1 {
+					t.Errorf("Debian kernel was not handed off with watchdog:\n%s", output)
+				}
+			})
+		}
+	}
+
+	for _, primary := range []string{"A", "B"} {
+		t.Run("failed NixOS "+primary+" returns to Debian with the same boot FAT", func(t *testing.T) {
+			f.t = t
+			fallback, part := "B", "3"
+			if primary == "B" {
+				fallback, part = "A", "2"
+			}
+			f.legacy = map[string]bool{strings.ToLower(fallback): true}
+			defer func() { f.legacy = nil }()
+			disk := f.disk(target, true, true, false)
+			env := fmt.Sprintf("setenv BOOT_ORDER '%s %s'; setenv BOOT_%s_LEFT 1; setenv BOOT_%s_LEFT 2;", primary, fallback, primary, fallback)
+			lines, output := f.boot(disk, env, true)
+			containsAll(t, lines, "nabos: trying slot "+primary+", 0 attempts left after this one",
+				"nabos: slot "+primary+" did not boot", "nabos: trying slot "+fallback+", 1 attempts left after this one")
+			containsAll(t, strings.Fields(booting(t, lines, primary)), "init=/nix/store/fixture-"+strings.ToLower(primary)+"/init")
+			args := booting(t, lines, fallback)
+			containsAll(t, strings.Fields(args), "root=/dev/mmcblk0p"+part, "rauc.slot="+fallback, "ro", "init=/usr/lib/nabos/boot-init")
+			if strings.Contains(args, "slot_fixture=") || strings.Contains(args, "/nix/store/") {
+				t.Errorf("Debian reused NixOS metadata: %s", args)
+			}
+			if strings.Count(output, "Started watchdog@7e100000") != 2 || strings.Count(output, "nabos: overlay tagtagtag-ears applied") != 1 {
+				t.Errorf("mixed slots did not load their own overlays/watchdog:\n%s", output)
+			}
+			// A later reset with exhausted NixOS attempts must skip it entirely.
+			env = fmt.Sprintf("setenv BOOT_ORDER '%s %s'; setenv BOOT_%s_LEFT 0; setenv BOOT_%s_LEFT 1;", primary, fallback, primary, fallback)
+			lines, _ = f.boot(disk, env, true)
+			containsAll(t, lines, "nabos: slot "+primary+" has no attempts left",
+				"nabos: trying slot "+fallback+", 0 attempts left after this one")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "nabos: booting slot "+primary+":") {
+					t.Errorf("exhausted NixOS slot booted: %s", line)
+				}
+			}
+			containsAll(t, strings.Fields(booting(t, lines, fallback)), "init=/usr/lib/nabos/boot-init")
+		})
+	}
+
+	if target == "zero-armv6" {
+		// Sandbox parses the real bootz ramdisk/FDT arguments with this header,
+		// then returns instead of executing Linux. It does not relocate ramdisks.
+		for _, legacy := range []bool{false, true} {
+			t.Run(fmt.Sprintf("kernel handoff has initrd=%t", !legacy), func(t *testing.T) {
+				f.t = t
+				f.kernel = make([]byte, 4096)
+				binary.LittleEndian.PutUint32(f.kernel[0x24:], 0x016f2818)
+				binary.LittleEndian.PutUint32(f.kernel[0x2c:], uint32(len(f.kernel)))
+				if legacy {
+					f.legacy = map[string]bool{"a": false}
+				}
+				defer func() { f.kernel, f.legacy = nil, nil }()
+				_, output := boot(t, false, false, "", true)
+				if !strings.Contains(output, "sandbox: continuing, as we cannot run Linux") {
+					t.Fatalf("kernel preparation did not finish:\n%s", output)
+				}
+			})
+		}
+	}
+
 	for _, missing := range []string{"init", "initrd", "kernel", "dtb/" + dtbs[target]} {
 		t.Run("incomplete B falls through to A: "+missing, func(t *testing.T) {
 			f.t = t
-			f.missing = map[string]string{"b": missing}
+			f.missing = map[string][]string{"b": {missing}}
 			defer func() { f.missing = nil }()
 			lines, _ := f.boot(f.disk(target, true, true, false), "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
 			for _, line := range lines {
@@ -508,6 +610,35 @@ func testBootScript(t *testing.T, target string) {
 				}
 			}
 			containsAll(t, strings.Fields(booting(t, lines, "A")), "init=/nix/store/fixture-a/init", "slot_fixture=a")
+		})
+	}
+
+	t.Run("missing NixOS metadata and initrd do not imply Debian", func(t *testing.T) {
+		f.t = t
+		f.missing = map[string][]string{"b": {"init", "initrd"}}
+		defer func() { f.missing = nil }()
+		lines, _ := f.boot(f.disk(target, true, true, false), "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
+		for _, line := range lines {
+			if strings.HasPrefix(line, "nabos: booting slot B:") {
+				t.Errorf("unknown slot B reached kernel: %s", line)
+			}
+		}
+		booting(t, lines, "A")
+	})
+
+	for _, contents := range []string{"", "nabos_init=/nix/store/fixture-b/init\n", "nabos_init=/nix/store/fixture-b/init\nnabos_kernel_params=ro slot_fixture=b\n"} {
+		t.Run("NixOS metadata failure cannot use a legacy PID1: "+contents, func(t *testing.T) {
+			f.t = t
+			f.legacy = map[string]bool{"b": false}
+			f.initContents = map[string]string{"b": contents}
+			defer func() { f.legacy, f.initContents = nil, nil }()
+			lines, _ := f.boot(f.disk(target, true, true, false), "setenv BOOT_ORDER 'B A'; setenv BOOT_B_LEFT 1;", true)
+			for _, line := range lines {
+				if strings.HasPrefix(line, "nabos: booting slot B:") {
+					t.Errorf("damaged NixOS contract booted B as Debian: %s", line)
+				}
+			}
+			containsAll(t, strings.Fields(booting(t, lines, "A")), "init=/nix/store/fixture-a/init")
 		})
 	}
 
@@ -558,8 +689,8 @@ func TestSelectedSlotBootContract(t *testing.T) {
 		}
 	}
 	for _, command := range []string{"booti", "bootz"} {
-		if !strings.Contains(script, command+" ${kernel_addr_r} ${ramdisk_addr_r}:${nabos_initrd_size} ${fdt_addr_r}") {
-			t.Errorf("%s must receive the selected slot initrd", command)
+		if !strings.Contains(script, command+" ${kernel_addr_r} ${nabos_ramdisk} ${fdt_addr_r}") {
+			t.Errorf("%s must receive the selected slot ramdisk argument", command)
 		}
 	}
 	for _, required := range []string{"nabos_init nabos_kernel_params", "init=${nabos_init}", "${nabos_kernel_params}"} {
@@ -567,8 +698,10 @@ func TestSelectedSlotBootContract(t *testing.T) {
 			t.Errorf("missing NixOS slot boot metadata: %s", required)
 		}
 	}
-	if strings.Contains(script, "init=/usr/lib/nabos/boot-init") {
-		t.Error("legacy PID1 remains")
+	for _, required := range []string{"setenv nabos_ramdisk ${ramdisk_addr_r}:${filesize}", "setenv nabos_ramdisk -"} {
+		if !strings.Contains(script, required) {
+			t.Errorf("missing slot ramdisk contract: %s", required)
+		}
 	}
 	payload := read(t, filepath.Join(repo, "nix/image.nix"))
 	if !strings.Contains(payload, `bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);`) {

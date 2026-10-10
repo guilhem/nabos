@@ -92,7 +92,7 @@ class BuildEfficiency(unittest.TestCase):
         image = self.repo / 'image'
         image.mkdir(parents=True)
         for file in ('build.sh', 'test-artifact.sh', 'benchmark.sh', 'manifest.raucm.in',
-                     'sources.lock.json', 'genimage.cfg'):
+                     'sources.lock.json', 'genimage.cfg', 'rauc-hook.sh'):
             shutil.copy2(IMAGE / file, image / file)
         (image / 'boot').mkdir()
         shutil.copy2(IMAGE / 'boot/boot.cmd', image / 'boot/boot.cmd')

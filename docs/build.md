@@ -3,10 +3,47 @@
 **NixOS est l’unique constructeur d’images NabOS.** `flake.lock` fixe les
 entrées Nixpkgs et nixos-hardware ; `nix/` décrit les paquets, le système et son
 payload. Aucun constructeur Raspberry Pi OS ni rpi-image-gen n’est maintenu.
-Le passage d’une ancienne image à NixOS demande un **nouveau flash SD** :
-sauvegarder les données avant de reflasher. Les identifiants RAUC
-`nabos-nixos-zero-armv6` et `nabos-nixos-zero2-arm64` empêchent les anciennes
-images d’accepter ces bundles. Aucune migration OTA n’est qualifiée.
+Les images NabOS A/B compatibles peuvent passer à NixOS par le bundle RAUC
+habituel, sans nouveau flash. Le constructeur conserve leur partitionnement,
+leur autorité de signature et leurs données ; voir les conditions ci-dessous.
+
+## Migration sans reflash
+
+Cette migration vise les images NabOS qui ont déjà deux copies FAT de 256 Mio
+à 4 et 260 Mio, les racines A/B de 6 Gio à 516 et 6660 Mio, et `/data` à
+12804 Mio. `/data` peut déjà occuper le reste de la carte. Les images plus
+anciennes avec une seule copie FAT sont refusées avant toute écriture de slot ;
+elles nécessitent un nouveau flash après sauvegarde.
+
+Installer le bundle `nabos-<cible>.raucb` comme une mise à jour habituelle,
+signée par l'autorité **déjà approuvée sur l'appareil**. Le hook standard RAUC
+`install-check` vérifie la cible, le partitionnement et le montage persistant
+de `/data`. Il copie atomiquement l'ancien certificat
+`/etc/rauc/ca.cert.pem` vers `/data/rauc/ca.cert.pem` seulement si ce dernier
+n'existe pas ; il ne remplace jamais une autorité existante. Aucun réglage,
+profil Wi-Fi, média ni clé SSH n'est réinitialisé par la migration.
+
+Les bundles portent les identifiants matériels `nabos-zero-armv6` et
+`nabos-zero2-arm64`. Le système NixOS conserve son identifiant `nabos-nixos-*` :
+le hook autorise la transition pour la même cible, tandis qu'un ancien bundle
+Debian sans ce hook reste refusé. La vérification de signature reste celle
+de RAUC ; un bundle de développement ne devient pas une mise à jour officielle.
+
+RAUC écrit la racine inactive puis la copie FAT inactive, sans reformater
+`/data`. Le script de démarrage reconnaît le contrat du slot sélectionné :
+noyau/DTB/initrd et `/boot/init` pour NixOS, ou `boot-init` sans initrd pour
+Debian. Le contrôle de santé continue de confirmer le slot ; après un échec
+NixOS, le même script peut revenir sur la racine Debian restée dans l'autre
+slot. Une mise à jour suivante peut remplacer ce dernier slot.
+
+Tant que ce slot Debian sert de secours, conserver le canal Stable ou Test :
+son ancien client ne sait pas lire le réglage Edge. Activer Edge seulement
+après une seconde mise à jour NixOS réussie, lorsque les deux slots sont NixOS.
+
+Les tests de fabrication et de simulation ne remplacent pas la qualification
+sur les deux appareils : Debian → NixOS → rollback Debian, conservation des
+données et coupures pendant les écritures. Une panne du firmware ou de U-Boot
+avant l'exécution du script ne bénéficie pas du rollback des racines.
 
 ## Construire et vérifier
 
@@ -150,7 +187,7 @@ Avant d’activer la publication automatique :
    ou Test signée officiellement, publiée volontairement.
 2. Installer cette version de base sur les appareils de test et vérifier les
    trois canaux ainsi que la transition N → N+1 → rollback N avec les données
-   conservées. Les anciennes images Raspberry Pi OS exigent un reflash NixOS.
+   conservées, y compris la migration depuis une image NabOS A/B compatible.
 3. Définir la variable de dépôt `NABOS_EDGE_ENABLED=true`.
 
 Chaque push de `main` termine sa propre construction, sans annulation par un

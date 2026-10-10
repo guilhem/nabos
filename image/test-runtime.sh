@@ -151,6 +151,113 @@ env -i "PATH=/run/nabos-test-tools:$system/sw/bin" \
 [[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos") == 0:0:711 ]]
 [[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos/admin") == 1000:1000:700 ]]
 [[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos/lva") == 1004:1004:700 ]]
+# Debian rc6 used the same backing paths and fixed service identities. Exercise
+# existing state through NixOS tmpfiles and both mount maps, without copying it.
+legacy_persist='/etc/NetworkManager/system-connections /var/lib/NetworkManager /var/lib/systemd/timesync /var/lib/tagtagtag-sound /var/lib/nabos'
+[[ $PERSIST == "$legacy_persist" ]] || { echo 'Debian persistence map changed; migration needs qualification' >&2; exit 1; }
+ssh-keygen -q -t ed25519 -N '' -f "$work/legacy-host-key"
+cat > "$work/legacy-state.py" <<'PY'
+import hashlib, json, os, stat, sys
+from pathlib import Path
+
+mode, root, snapshot = sys.argv[1:]
+root, snapshot = Path(root), Path(snapshot)
+if mode == 'seed':
+    settings = {'version': 1, 'settings': {'locale': 'fr_FR', 'timezone': 'Europe/Paris',
+        'volume': 42, 'auto_check_updates': True, 'voice_enabled': False,
+        'updates': {'automatic': False, 'channel': 'test',
+            'start': {'hour': 3, 'min': 0}, 'end': {'hour': 5, 'min': 0}}}}
+    files = [
+        ('/etc/NetworkManager/system-connections/home.nmconnection', 0, 0, 0o600,
+         '[connection]\nid=home\nuuid=dc5b93e3-d6ac-430a-a0fe-7f8c094229c7\ntype=wifi\n[wifi]\nssid=Home\n[wifi-security]\nkey-mgmt=wpa-psk\npsk=saved-wifi-secret\n'),
+        ('/var/lib/NetworkManager/NetworkManager.state', 0, 0, 0o600,
+         '[main]\nNetworkingEnabled=true\nWirelessEnabled=false\n'),
+        ('/var/lib/systemd/timesync/clock', 0, 0, 0o644, 'saved-clock\n'),
+        ('/var/lib/tagtagtag-sound/mixer.conf', 0, 0, 0o644, 'headphone-low=220\nlineout-mode=headphone\n'),
+        ('/var/lib/nabos/lva/preferences.json', 1004, 1004, 0o600,
+         '{"active_wake_words":["okay_nabu"],"volume":0.42}\n'),
+        ('/var/lib/nabos/.bash_history', 1000, 1000, 0o600, 'legacy-admin-history\n'),
+        ('/data/nabos/application.json', 1001, 1001, 0o600,
+         '{"version":1,"ears":[3,10],"home_assistant":{"host":"192.168.1.20","username":"legacy","password":"saved-secret"}}\n'),
+        ('/data/nabos/media/sounds/user/legacy.wav', 1001, 1005, 0o640, 'saved-upload\n'),
+        ('/data/device-core/settings.json', 1003, 1003, 0o600, json.dumps(settings) + '\n'),
+        ('/data/device-core/updates/state.json', 1003, 1003, 0o600,
+         '{"pending":null,"target":"v0.1.0-rc6","last_window":"2026-10-01","last_result":"","suspended":"","blocked":{"v0.1.0-rc5":"failed"}}\n'),
+        ('/data/device-core/ssh/authorized_keys', 1003, 1003, 0o600,
+         (snapshot.parent / 'legacy-host-key.pub').read_text()),
+        ('/data/system/ssh/etc/ssh/ssh_host_ed25519_key', 0, 0, 0o600,
+         (snapshot.parent / 'legacy-host-key').read_text()),
+        ('/data/system/.data-grown', 0, 0, 0o644, ''),
+        ('/data/system/machine-id', 0, 0, 0o644, '0123456789abcdef0123456789abcdef\n'),
+    ]
+    for name, uid, gid, permissions, contents in files:
+        path = root / (('data/system' + name) if name.startswith(('/etc/', '/var/')) else name.lstrip('/'))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents)
+        path.chmod(permissions)
+        os.chown(path, uid, gid)
+    home = root / 'data/system/var/lib/nabos'
+    home.chmod(0o711)
+    os.chown(home, 1000, 1000)
+    names = [row[0] for row in files] + ['/etc/machine-id', '/data/rauc/ca.cert.pem']
+else:
+    names = list(json.loads(snapshot.read_text()))
+state = {}
+for name in names:
+    path = root / name.lstrip('/')
+    info = path.stat()
+    state[name] = [hashlib.sha256(path.read_bytes()).hexdigest(),
+                   stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid, info.st_ino]
+if mode == 'seed':
+    snapshot.write_text(json.dumps(state))
+else:
+    for name, expected in json.loads(snapshot.read_text()).items():
+        assert state[name] == expected, (name, state[name], expected)
+    # Read under the old numeric accounts, inside each root view; ancestor
+    # directory permissions matter as well as the files' own metadata.
+    for name, (_, _, uid, _, _) in state.items():
+        child = os.fork()
+        if child == 0:
+            os.chroot(root)
+            os.chdir('/')
+            os.setgroups([1005] if uid in (1001, 1003) else [])
+            os.setgid(uid)
+            os.setuid(uid)
+            Path(name).read_bytes()
+            os._exit(0)
+        assert os.waitpid(child, 0)[1] == 0, 'Legacy account cannot read ' + name
+PY
+python3 "$work/legacy-state.py" seed "$root" "$work/legacy-state.json"
+[[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos") == 1000:1000:711 ]]
+for path in $PERSIST; do umount -n "$root$path"; done
+bind_state
+# shellcheck disable=SC2016
+env -i "PATH=/run/nabos-test-tools:$system/sw/bin" \
+  NABOS_PERSIST_LIB=/run/nabos-test-tools/persist.sh \
+  "$(command -v chroot)" "$root" /run/nabos-test-tools/sh -ec \
+  '. "$NABOS_PERSIST_LIB"; media_permissions'
+env -i "PATH=/run/nabos-test-tools:$system/sw/bin" \
+  "$(command -v chroot)" "$root" /run/nabos-test-tools/systemd-tmpfiles --create \
+  --prefix=/data/nabos --prefix=/data/device-core --prefix=/data/rauc --prefix=/var/lib/nabos
+[[ $(stat -c '%u:%g:%a' "$root/var/lib/nabos") == 0:0:711 ]]
+python3 "$work/legacy-state.py" verify "$root" "$work/legacy-state.json"
+# A RO rollback view uses Debian's original mounts, sharing the same p4 bytes.
+# This proves the data contract, not execution of Debian services or its init.
+rollback=$root/run/nabos-rollback
+mkdir -p "$rollback/data" "$rollback/etc"
+touch "$rollback/etc/machine-id"
+for path in $legacy_persist; do mkdir -p "$rollback$path"; done
+mount -n --bind "$rollback" "$rollback"
+mount -n -o remount,bind,ro "$rollback"
+mount -n --bind "$root/data" "$rollback/data"
+for path in $legacy_persist; do
+  mount -n --bind "$root/data/system$path" "$rollback$path"
+done
+mount -n --bind "$id" "$rollback/etc/machine-id"
+mount -n -o remount,bind,ro "$rollback/etc/machine-id"
+python3 "$work/legacy-state.py" verify "$rollback" "$work/legacy-state.json"
+umount -n --recursive "$rollback"
+echo 'PASS: legacy Wi-Fi, preferences, application data, SSH, trust and identity retain bytes/owners/modes through NixOS and rollback mappings'
 env -i "PATH=/run/nabos-test-tools:$system/sw/bin" \
   "NABOS_SYSTEM=$system" "NABOS_TEST_LIBSYSTEMD=$systemd/lib/libsystemd.so.0" \
   "NABOS_RUNTIME_TARGET=$1" \
