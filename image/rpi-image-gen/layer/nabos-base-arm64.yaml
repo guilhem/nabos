@@ -1,0 +1,57 @@
+# METABEGIN
+# X-Env-Layer-Name: nabos-base-arm64
+# X-Env-Layer-Category: prototype
+# X-Env-Layer-Desc: NabOS ARM64 runtime package base; no application or boot layout.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: debian-trixie-arm64,rpi-debian-trixie,systemd-min
+# METAEND
+---
+mmdebstrap:
+  packages:
+    - ca-certificates
+    - curl
+    - dbus
+    - dbus-user-session
+    - polkitd
+    - systemd-timesyncd
+    - openssl
+    - openssh-server
+    - pipewire
+    - pipewire-pulse
+    - pipewire-alsa
+    - wireplumber
+    - pulseaudio-utils
+    - alsa-utils
+    - libasound2t64
+    - libmpg123-0t64
+    - mpg123
+    - network-manager
+    - wpasupplicant
+    - dnsmasq-base
+    - nftables
+    - avahi-daemon
+    - rauc
+    - rauc-service
+    - u-boot-tools
+    - libubootenv-tool
+    - util-linux
+    - fdisk
+    - e2fsprogs
+    - python3
+    - python3-venv
+    - libmpv2
+    - libgomp1
+    - device-tree-compiler
+    - linux-image-rpi-v8
+    - raspi-firmware
+    - firmware-brcm80211
+    - wireless-regdb
+  customize-hooks:
+    - |-
+      set -eu
+      test "$(chroot "$1" dpkg --print-architecture)" = arm64
+      # Per-device identities are created by NabOS during first boot.
+      rm -f "$1"/etc/ssh/ssh_host_* "$1"/var/lib/systemd/random-seed
+      : > "$1/etc/machine-id"
+      mkdir -p "$1/usr/share/nabos-prototype"
+      printf '%s\n' 'base-generation prototype; not a bootable NabOS image' > "$1/usr/share/nabos-prototype/scope"
