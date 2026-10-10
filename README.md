@@ -17,7 +17,7 @@ La qualification NixOS du démarrage, des pilotes et du rollback sur les deux ma
 3. Démarrer le lapin, rejoindre son point d'accès Nabaztag et ouvrir `http://10.41.0.1`. Appuyer sur le bouton quand le formulaire le demande, puis configurer le Wi-Fi.
 4. Ouvrir `http://nabaztag.local` et terminer la configuration de l'administration avec le bouton du lapin.
 
-Le passage d’une ancienne image à NixOS demande un nouveau flash SD, après sauvegarde des données. L'administration locale utilise HTTP sur le réseau de confiance.
+Les images NabOS A/B avec deux copies de démarrage peuvent passer à NixOS par un bundle RAUC signé, sans reflasher ni reformater les données. Les cartes avec un autre partitionnement demandent un nouveau flash ; voir les [conditions de migration](docs/build.md#migration-sans-reflash). L'administration locale utilise HTTP sur le réseau de confiance.
 
 ### Connexion SSH
 
@@ -39,7 +39,7 @@ L'automatique attend le créneau réglable (03:00–05:00 par défaut, dans le f
 
 RAUC vérifie la signature et la compatibilité, écrit le slot inactif, puis le contrôle de santé confirme le nouveau système. Les données et réglages sont conservés. Après un rollback, la version fautive est exclue de l'automatique ; un réessai manuel reste possible. Une coupure au résultat indéterminé suspend l'automatique jusqu'à une reprise manuelle. Firmware Raspberry Pi et U-Boot sont livrés dans les deux copies FAT mises à jour par RAUC.
 
-NixOS utilise les contrats et fichiers de configuration séparés de device-core et nabos. Aucune migration des anciens réglages ni rétrocompatibilité des anciennes API n’est fournie. Le système racine reste en lecture seule ; le home et les préférences LVA restent sous `/var/lib/nabos`, lié à `/data/system` au démarrage.
+NixOS conserve les fichiers de configuration séparés de device-core et nabos, ainsi que les données des images NabOS A/B compatibles. Les anciennes API ne sont pas réintroduites. Le système racine reste en lecture seule ; le home et les préférences LVA restent sous `/var/lib/nabos`, lié à `/data/system` au démarrage.
 
 ## Composants
 

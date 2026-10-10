@@ -82,7 +82,7 @@
         let pkgs = nixpkgs.legacyPackages.${buildSystem};
         in { default = pkgs.mkShellNoCC {
           packages = with pkgs; [ nix cachix rauc genimage e2fsprogs dosfstools
-            mtools ubootTools openssl xz zstd jq python3 fakeroot shellcheck dtc
+            mtools ubootTools openssl xz zstd jq python3 fakeroot shellcheck dtc squashfsTools
             go_1_27 rustc cargo pkg-config dbus systemd util-linux ];
         }; });
     };
