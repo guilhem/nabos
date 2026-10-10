@@ -41,7 +41,7 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	data := filepath.Join(images, "data.ext4")
 	bootA := filepath.Join(images, "boot.vfat")
 	raFile(t, rootA, 16*MiB)
-	raFile(t, data, 16*MiB)
+	raFile(t, data, 1024*MiB)
 	raFile(t, bootA, 256*MiB)
 	run(t, "", "mkfs.ext4", "-q", "-F", "-L", "nabos-root", rootA)
 	settingsDir := filepath.Join(dir, "data-fixture", "nabos")
@@ -60,6 +60,7 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	run(t, "", "mkenvimage", "-r", "-s", "0x10000", "-o", filepath.Join(images, "uboot.env"), filepath.Join(bootDir, "uboot.env"))
 	run(t, "", "genimage", "--config", filepath.Join(imageDir, "genimage.cfg"), "--rootpath", filepath.Join(dir, "empty"), "--inputpath", images, "--outputpath", images, "--tmppath", filepath.Join(dir, "genimage-tmp"))
 	disk := filepath.Join(images, "sdcard.img")
+	checkInitialCard(t, disk)
 	loop := strings.TrimSpace(run(t, "", "losetup", "--find", "--show", "--partscan", disk))
 	if !strings.HasPrefix(loop, "/dev/loop") {
 		t.Fatalf("unexpected disposable loop device %q", loop)
