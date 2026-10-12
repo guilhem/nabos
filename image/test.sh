@@ -34,6 +34,8 @@ PY
 e2fsck -fn "$rootfs"
 debugfs -R 'cat /boot/init' "$rootfs" 2>/dev/null | grep -Eq '^nabos_init=/nix/store/.+/init$'
 debugfs -R 'stat /boot/initrd' "$rootfs" 2>/dev/null | grep -Eq 'Size: [1-9][0-9]+'
+debugfs -R "dump /boot/initrd $work/initrd" "$rootfs" 2>/dev/null
+python3 "$repo/image/test-initrd.py" "$work/initrd"
 debugfs -R 'stat /nix/store' "$rootfs" 2>/dev/null | grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0'
 mdir -i "$boot" ::/boot.scr >/dev/null
 dd if="$disk" of="$work/data.ext4" bs=1M skip=12804 count=1024 conv=sparse status=none

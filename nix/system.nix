@@ -18,7 +18,7 @@ let
     chmod 0711 $out/var/lib/nabos
   '';
   persist = pkgs.writeShellScript "nabos-initrd-persist" ''
-    export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.gnugrep pkgs.findutils ]}
+    export PATH=/bin:/sbin
     export NABOS_PERSIST_LIB=${persistLibrary}
     export NABOS_STATE_SEEDS=${stateSeeds}
     ${builtins.readFile ./runtime/initrd-persist.sh}
@@ -203,10 +203,19 @@ in
     before = [ "initrd-switch-root.service" ];
     after = [ "sysroot.mount" "sysroot-etc.mount" "sysroot-var.mount" ];
     requires = [ "sysroot.mount" "sysroot-etc.mount" "sysroot-var.mount" ];
-    unitConfig.DefaultDependencies = false;
+    # Bypass the failed initrd graph; systemd-shutdown syncs and unmounts before fallback.
+    unitConfig = { DefaultDependencies = false; FailureAction = "reboot-force"; };
     serviceConfig = { Type = "oneshot"; RemainAfterExit = true; ExecStart = "${persist}"; };
   };
-  boot.initrd.systemd.storePaths = [ persist stateSeeds ];
+  boot.initrd.systemd.storePaths = [ persist persistLibrary stateSeeds ];
+  boot.initrd.systemd.initrdBin = [ pkgs.gnugrep pkgs.findutils ];
+  boot.initrd.systemd.extraBin = {
+    mountpoint = "${pkgs.util-linux}/bin/mountpoint";
+    sfdisk = "${pkgs.util-linux}/bin/sfdisk";
+    partx = "${pkgs.util-linux}/bin/partx";
+    e2fsck = "${pkgs.e2fsprogs}/bin/e2fsck";
+    resize2fs = "${pkgs.e2fsprogs}/bin/resize2fs";
+  };
   boot.initrd.systemd.settings.Manager = { RuntimeWatchdogSec = "14s"; RebootWatchdogSec = "2min"; };
   systemd.settings.Manager = { RuntimeWatchdogSec = "14s"; RebootWatchdogSec = "2min"; };
 
