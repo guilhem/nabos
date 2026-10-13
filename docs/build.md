@@ -47,6 +47,9 @@ avant l'exécution du script ne bénéficie pas du rollback des racines.
 
 ## Construire et vérifier
 
+For startup failures and logs retained after rollback, see
+[boot diagnostics](boot-diagnostics.md).
+
 Installer Nix avec les fonctions `nix-command flakes` sur un hôte Linux jetable.
 Prévoir l’espace pour le store, les racines ext4 de 6 Gio, le disque SD, les
 copies de test et la compression ; aucun minimum d’espace constructeur n’est

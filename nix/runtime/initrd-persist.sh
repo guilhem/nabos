@@ -10,15 +10,23 @@ while [ ! -b "$DATA" ] && [ "$tries" -lt 50 ]; do
     tries=$((tries + 1))
 done
 mkdir -p /data
+data_ready=false
 if mount_data && mkdir -p /data/system && touch /data/system/.write-test; then
     rm /data/system/.write-test
-    [ -e "$GROWN" ] || grow_data
+    data_ready=true
 else
     log "data partition unusable, /data is volatile for this boot"
     if mountpoint -q /data; then umount /data; fi
     mount -t tmpfs -o mode=0755,size=64M,nosuid,nodev tmpfs /data
     : > /data/.volatile
     mkdir -p /data/system
+fi
+# A shared initrd root cannot move a child mount; bind it into the real root.
+mount --bind /data /sysroot/data
+if "$data_ready"; then
+    timeout --signal=KILL 3s systemctl --no-block start nabos-initrd-log.service || log "initrd log collector unavailable"
+    timeout --signal=KILL 3s nabos-initrd-log journal || log "persistent journal unavailable"
+    [ -e "$GROWN" ] || grow_data
 fi
 
 # Seed only once, atomically; never overwrite a device's profiles or preferences.
@@ -46,6 +54,4 @@ mount -o remount,bind,ro /sysroot/etc/machine-id
 # Keep the initrd's file and the real root's identity coherent at switch-root.
 cp "$id" /etc/machine-id
 media_permissions
-# A shared initrd root cannot move a child mount; bind it into the real root.
-mount --bind /data /sysroot/data
 umount /data

@@ -70,6 +70,12 @@
       checks.x86_64-linux.audio-boot = import ./nix/tests/audio-boot.nix {
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
       };
+      checks.x86_64-linux.network-boot = import ./nix/tests/network-boot.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      };
+      checks.x86_64-linux.boot-logs = import ./nix/tests/boot-logs.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      };
       packages = forSystems (buildSystem:
         nixpkgs.lib.genAttrs targets (target:
           (mkImage { inherit buildSystem target; }).payload) // {

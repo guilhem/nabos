@@ -117,9 +117,11 @@ jobs:
               --no-update-lock-file ".#$package-native" --out-link "build/$package-native" \
               --print-out-paths >> build/native-test-cache-roots
           done
-          nix --extra-experimental-features 'nix-command flakes' build \
-            --no-update-lock-file .#checks.x86_64-linux.audio-boot \
-            --out-link build/audio-boot-test --print-out-paths >> build/native-test-cache-roots
+          for check in audio-boot network-boot boot-logs; do
+            nix --extra-experimental-features 'nix-command flakes' build \
+              --no-update-lock-file ".#checks.x86_64-linux.$check" \
+              --out-link "build/$check-test" --print-out-paths >> build/native-test-cache-roots
+          done
           {
             printf 'DEVICE_CORE_BIN=%s/build/device-core-native/bin/device-core\n' "$PWD"
             printf 'NABOS_HARDWARE_BIN=%s/build/nab-hardware-native/bin/nab-hardware\n' "$PWD"

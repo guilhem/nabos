@@ -71,6 +71,8 @@ in
   imports = [
     "${modulesPath}/profiles/image-based-appliance.nix"
     ./audio.nix
+    ./network.nix
+    ./diagnostics.nix
     {
       # buildEnv otherwise requests meta.outputsToInstall (including manuals),
       # even though the appliance never links their directories into its profile.
@@ -238,7 +240,6 @@ in
   };
   services.avahi = { enable = true; nssmdns4 = true; publish = { enable = true; addresses = true; }; };
   services.timesyncd.enable = true;
-  services.journald.settings.Journal = { Storage = "volatile"; RuntimeMaxUse = "16M"; };
   hardware.bluetooth.enable = false;
   hardware.firmware = [ pkgs.raspberrypiWirelessFirmware ];
   nixpkgs.config.allowUnfreePredicate = package:
