@@ -36,6 +36,8 @@ if name == 'nix':
             failed('eval')
             print('\n'.join(roots))
     elif 'build' in args:
+        if '--expr' in args:
+            assert args[args.index('always-allow-substitutes') + 1] == 'true'
         if any(arg.endswith('#uboot-sandbox') for arg in args):
             print(repo / 'sandbox')
         elif '--json' in args:

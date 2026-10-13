@@ -57,10 +57,31 @@ def check(archive):
                          if line.startswith('PERSIST='))
             for path in shlex.split(paths)[0].split():
                 included(exports['NABOS_STATE_SEEDS'] + path)
+            assert 'journal' not in paths and 'boot-logs' not in paths, 'logging must not gate boot health'
+
+        collector_unit_path = included('/etc/systemd/system/nabos-initrd-log.service')
+        assert collector_unit_path is not None, 'missing optional initrd log collector'
+        collector_unit = configparser.ConfigParser(interpolation=None, strict=False)
+        collector_unit.read(collector_unit_path)
+        collector_path = included(shlex.split(collector_unit['Service']['ExecStart'])[0], executable=True)
+        assert collector_path is not None, 'missing collector script'
+        included(collector_path.read_text().splitlines()[0].removeprefix('#!'), executable=True)
+        included('/bin/nabos-initrd-log', executable=True)
+        assert collector_unit['Unit']['DefaultDependencies'] == 'false'
+        assert 'systemd-journald.service' in collector_unit['Unit']['After'].split()
+        assert 'shutdown.target' in collector_unit['Unit']['Conflicts'].split()
+        assert 'shutdown.target' in collector_unit['Unit']['Before'].split()
+        assert 'FailureAction' not in collector_unit['Unit']
+        assert collector_unit['Service']['Restart'] == 'no'
+        assert collector_unit['Service']['TimeoutStopSec'] == '2s'
+        assert collector_unit['Service']['LimitFSIZE'] == '4194304'
+        assert collector_unit['Service']['LimitCORE'] == '0'
+        assert not (root / 'etc/systemd/system/initrd-switch-root.service.requires/nabos-initrd-log.service').exists()
 
         for command in ('sleep', 'mkdir', 'touch', 'rm', 'cat', 'sfdisk', 'partx',
                         'resize2fs', 'e2fsck', 'mount', 'mountpoint', 'umount',
-                        'cp', 'mv', 'grep', 'tr', 'chmod', 'find'):
+                        'cp', 'mv', 'grep', 'tr', 'chmod', 'find', 'systemctl',
+                        'timeout', 'journalctl', 'findmnt', 'stat', 'readlink', 'install'):
             candidates = [root / directory.lstrip('/') / command
                           for directory in exports['PATH'].split(':')]
             found = next((path for path in candidates if path.is_file() and
@@ -71,7 +92,7 @@ def check(archive):
             errors.append('persistence failure must reboot to consume a U-Boot slot attempt')
         if errors:
             raise AssertionError('\n'.join(errors))
-    print(f'PASS: {archive}: persistence library, seeds, interpreter, commands and failure action')
+    print(f'PASS: {archive}: persistence, optional bounded logging, commands and failure policy')
 
 
 if __name__ == '__main__':

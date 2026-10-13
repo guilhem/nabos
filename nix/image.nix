@@ -9,7 +9,13 @@ let
   cacheRoots = lib.unique ([ config.system.build.toplevel packages.uboot kernel.dev
     pkgs.gtk4.dev pkgs.gobject-introspection.dev pkgs.go_1_27 ]
     # Profile collisions can discard references to outputs it still must build.
-    ++ lib.concatMap (entry: entry.paths) config.system.path.chosenOutputs);
+    ++ lib.concatMap (entry: entry.paths) config.system.path.chosenOutputs
+    # The compressed initrd discards its references, including generated udev rules.
+    ++ [ (pkgs.closureInfo {
+      rootPaths = map (entry: entry.source) (lib.filter (entry: entry.enable &&
+        !(lib.elem entry.source config.boot.initrd.systemd.suppressedStorePaths))
+        config.boot.initrd.systemd.storePaths);
+    }) ]);
   bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);
   rootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-ext4-fs.nix") {
     storePaths = [ config.system.build.toplevel ];

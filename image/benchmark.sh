@@ -15,7 +15,7 @@ mkdir -p "$TMPDIR"
 out="$PWD/dist/measurements/$target/$phase"
 mkdir -p "$out"
 export NABOS_FLAKE="git+file://$PWD" NABOS_TARGET="$target" NABOS_VERSION="$version"
-nix_cmd=(nix --extra-experimental-features 'nix-command flakes')
+nix_cmd=(nix --extra-experimental-features 'nix-command flakes' --option always-allow-substitutes true)
 build_system=$("${nix_cmd[@]}" eval --impure --raw --expr builtins.currentSystem)
 export NABOS_BUILD_SYSTEM="$build_system"
 expr='let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE");
