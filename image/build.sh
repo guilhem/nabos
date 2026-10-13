@@ -22,6 +22,7 @@ mkdir -p "$repo/build/nix-tmp"
 export TMPDIR="$repo/build/nix-tmp"
 if [[ ${NABOS_NIX_SHELL:-} != 1 ]]; then
   exec nix --extra-experimental-features 'nix-command flakes' develop "$repo" \
+    --option always-allow-substitutes true \
     --command env NABOS_NIX_SHELL=1 bash "$0" "$target" "$version" "$@"
 fi
 export NABOS_FLAKE="git+file://$repo" NABOS_TARGET="$target" NABOS_VERSION="$version"
@@ -45,6 +46,7 @@ install -m644 "$work/cache-roots" "$out/cache-roots-$target"
 SECONDS=0
 payload=$(nix --extra-experimental-features 'nix-command flakes' build --impure \
   --no-link --print-out-paths \
+  --option always-allow-substitutes true \
   --option extra-substituters https://nabos.cachix.org \
   --option extra-trusted-public-keys 'nabos.cachix.org-1:jLoce+DvPr6ejhFfvmEKXznQLVKxZ6zCP5N7dirR/JQ=' \
   --expr "$payload_expr")

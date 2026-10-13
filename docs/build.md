@@ -223,6 +223,12 @@ les en-têtes préparés du noyau, les sorties natives `gtk4.dev` et
 Ces outils et certaines sorties masquées par les collisions du profil sont
 nécessaires à la reconstruction sur un hôte neuf mais absents de la closure
 d’exécution. Cachix ignore les objets déjà présents dans le cache officiel.
+The selected roots also include the enabled NixOS initrd sources, since the
+compressed archive discards their references. This preserves generated udev
+rules and avoids rebuilding their development dependencies on a fresh runner.
+Image and benchmark commands set `always-allow-substitutes=true` so Nix can
+reuse these generated outputs even when NixOS marks them for local rebuilding.
+Trusted-cache signature verification remains enabled.
 Le payload d’assemblage, les
 images, bundles, certificats et dev shells ne sont pas des racines de
 publication ; les images et releases sont conservées hors Cachix.
