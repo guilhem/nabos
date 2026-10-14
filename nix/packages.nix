@@ -48,6 +48,7 @@ let
       runHook postBuild
     '';
     doCheck = native;
+    nativeCheckInputs = lib.optional (name == "led") pkgs.buildPackages.python3;
     checkPhase = if name == "sound" then ''
       $CC -Wall -Werror -DTEST tagtagtag-mixerd.c -lasound -lpthread -o tagtagtag-mixerd-test
       ./tagtagtag-mixerd-test

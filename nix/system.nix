@@ -29,8 +29,12 @@ let
       [ "/usr/lib/nabos/persist.sh" ] [ "${persistLibrary}" ]
       (builtins.readFile (rootfs + "/usr/lib/nabos/health"))}
   '';
+  # Gnulib otherwise disables O_NOFOLLOW when cross-compiling for Linux.
+  manualCoreutils = pkgs.coreutils.overrideAttrs (old: {
+    configureFlags = old.configureFlags ++ [ "gl_cv_header_working_fcntl_h=yes" ];
+  });
   manual = pkgs.writeShellScript "nabos-rauc-manual" ''
-    export PATH=${lib.makeBinPath (tools ++ [ pkgs.openssl ])}
+    export PATH=${lib.makeBinPath ([ manualCoreutils ] ++ tools ++ [ pkgs.openssl ])}
     ${builtins.readFile (rootfs + "/usr/lib/nabos/rauc-manual")}
   '';
   postInstall = pkgs.writeShellScript "nabos-rauc-post-install" ''
@@ -172,7 +176,7 @@ in
       GPIO_CDEV = yes; KEYBOARD_GPIO = module; INPUT_EVDEV = module;
       I2C = yes; I2C_CHARDEV = module; I2C_BCM2835 = module;
       SND = module; SND_SOC = module; SND_BCM2835_SOC_I2S = module;
-      SND_SOC_WM8960 = no;
+      SND_SOC_WM8960 = no; SND_SOC_MAX9759 = no;
       LEDS_CLASS_MULTICOLOR = module; DMA_BCM2835 = yes;
       OVERLAY_FS_METACOPY = yes; OVERLAY_FS_REDIRECT_DIR = yes;
       SQUASHFS = module; SQUASHFS_ZSTD = yes; EROFS_FS = module; OVERLAY_FS = module;
@@ -238,7 +242,6 @@ in
     allowedUDPPorts = [ 53 67 ];
     allowedTCPPorts = [ 53 ];
   };
-  services.avahi = { enable = true; nssmdns4 = true; publish = { enable = true; addresses = true; }; };
   services.timesyncd.enable = true;
   hardware.bluetooth.enable = false;
   hardware.firmware = [ pkgs.raspberrypiWirelessFirmware ];

@@ -27,15 +27,15 @@
     },
     "sound": {
       "repository": "guilhem/wm8960",
-      "commit": "10eb69493bf053ec1f6095feafa8d7f563bdb68c",
-      "url": "https://codeload.github.com/guilhem/wm8960/tar.gz/10eb69493bf053ec1f6095feafa8d7f563bdb68c",
-      "sha256": "8f47044292097df06e2576434ded9af9616ce790cc04809d261e637c13512cd4"
+      "commit": "e0d7744cb2def0b7c375d1f35bd43d769db22fd8",
+      "url": "https://codeload.github.com/guilhem/wm8960/tar.gz/e0d7744cb2def0b7c375d1f35bd43d769db22fd8",
+      "sha256": "f2ce3e680775c0eeef670a9394f22f3aa98663127a560804e8b99e0ed00ed623"
     },
     "led": {
       "repository": "guilhem/bcm2835-ws2812",
-      "commit": "d6c515fe18ca5c74b9f41442fc5d569b9b61ed8e",
-      "url": "https://codeload.github.com/guilhem/bcm2835-ws2812/tar.gz/d6c515fe18ca5c74b9f41442fc5d569b9b61ed8e",
-      "sha256": "5b722aac9594a5cc2b7606d1dd3a2e6cbcbae2a8fc76a51fdce71a15225b1879"
+      "commit": "2b1adcea38adc0b73763055d832de9c7f9e3c004",
+      "url": "https://codeload.github.com/guilhem/bcm2835-ws2812/tar.gz/2b1adcea38adc0b73763055d832de9c7f9e3c004",
+      "sha256": "e80c18460e9ba13ceeca33337988ea5ed55dcb1424eb257d43d38d47b9d0fd89"
     },
     "uboot": {
       "repository": "u-boot/u-boot",
