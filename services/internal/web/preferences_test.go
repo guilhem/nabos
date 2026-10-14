@@ -43,7 +43,7 @@ func TestPreferencesPersistence(t *testing.T) {
 		t.Fatalf("private file: %v %v", info, err)
 	}
 	for _, tc := range []Preferences{
-		{Name: "", SessionHours: 1}, {Name: "a\nb", SessionHours: 1}, {Name: strings.Repeat("x", 65), SessionHours: 1},
+		{Name: "", SessionHours: 1}, {Name: "a\nb", SessionHours: 1}, {Name: "bad\ufffd", SessionHours: 1}, {Name: strings.Repeat("x", 65), SessionHours: 1},
 		{Name: "lapin", SessionHours: 2}, {Name: "lapin", SessionHours: 1, AllowedDomains: []string{"https://example.com"}},
 		{Name: "lapin", SessionHours: 1, AllowedDomains: []string{"*.example.com"}},
 	} {
@@ -69,7 +69,8 @@ func TestPreferencesPersistence(t *testing.T) {
 }
 
 func TestPreferencesInvalidLoad(t *testing.T) {
-	for _, raw := range []string{"", "{}", "null", `{"name":"Rabbit","session_hours":2}`, `{"name":"Rabbit","session_hours":1,"unknown":true}`, `{"name":"Rabbit","session_hours":1} {}`, strings.Repeat("x", maxPreferences+1)} {
+	for _, raw := range []string{"", "{}", "null", `{"name":"Rabbit","session_hours":2}`, `{"name":"Rabbit","session_hours":1,"unknown":true}`, `{"name":"Rabbit","session_hours":1} {}`, strings.Repeat("x", maxPreferences+1),
+		"{\"name\":\"bad\xff\",\"session_hours\":1}", `{"name":"\ud800","session_hours":1}`, `{"name":"\udc00","session_hours":1}`, `{"name":"\ufffd","session_hours":1}`} {
 		path := filepath.Join(t.TempDir(), "preferences.json")
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatal(err)
@@ -77,6 +78,15 @@ func TestPreferencesInvalidLoad(t *testing.T) {
 		p := LoadPreferences(path)
 		if _, err := p.Current(); err == nil || p.valid {
 			t.Fatalf("invalid file accepted: %q", raw[:min(len(raw), 80)])
+		}
+		proxy, _ := NewProxy("")
+		h := proxy.Middleware(p.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })))
+		for _, host := range []string{"rabbit.local", "192.0.2.20"} {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, domainRequest(host, "192.0.2.30:1", "192.0.2.20", "/"))
+			if (w.Code == http.StatusNoContent) != (host == "192.0.2.20") {
+				t.Fatalf("corrupt preferences did not restrict access: %s %d", host, w.Code)
+			}
 		}
 		if stored, err := os.ReadFile(path); err != nil || string(stored) != raw {
 			t.Fatal("invalid file changed")
@@ -87,6 +97,17 @@ func TestPreferencesInvalidLoad(t *testing.T) {
 	}
 	if p := LoadPreferences(t.TempDir()); p.valid || p.err == nil {
 		t.Fatal("unreadable file enabled unrestricted access")
+	}
+}
+
+func TestPreferencesValidSurrogatePair(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	if err := os.WriteFile(path, []byte(`{"name":"Lapin \ud83d\udc30","session_hours":24}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := LoadPreferences(path)
+	if value, err := p.Current(); err != nil || !p.valid || value.Name != "Lapin 🐰" {
+		t.Fatalf("valid Unicode name rejected: %+v %v", value, err)
 	}
 }
 

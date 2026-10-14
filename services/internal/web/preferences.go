@@ -33,8 +33,9 @@ func defaultPreferences() Preferences {
 
 func (p *Preferences) validate() error {
 	p.Name = strings.TrimSpace(p.Name)
-	if !utf8.ValidString(p.Name) || utf8.RuneCountInString(p.Name) < 1 || utf8.RuneCountInString(p.Name) > 64 || strings.ContainsFunc(p.Name, unicode.IsControl) {
-		return errors.New("le nom doit contenir de 1 à 64 caractères sans caractères de contrôle")
+	// encoding/json repairs invalid UTF-8 and unpaired surrogates to U+FFFD.
+	if !utf8.ValidString(p.Name) || strings.ContainsRune(p.Name, utf8.RuneError) || utf8.RuneCountInString(p.Name) < 1 || utf8.RuneCountInString(p.Name) > 64 || strings.ContainsFunc(p.Name, unicode.IsControl) {
+		return errors.New("le nom doit contenir de 1 à 64 caractères sans caractères invalides ou de contrôle")
 	}
 	if p.SessionHours != 1 && p.SessionHours != 24 && p.SessionHours != 168 {
 		return errors.New("choisissez une durée de connexion de 1 heure, 1 jour ou 7 jours")
@@ -89,6 +90,9 @@ func LoadPreferences(path string) *PreferencesPolicy {
 		return p
 	}
 	var candidate Preferences
+	if err == nil && !utf8.Valid(raw) {
+		err = errors.New("encodage UTF-8 des préférences invalide")
+	}
 	if err == nil {
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.DisallowUnknownFields()
