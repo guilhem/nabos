@@ -172,7 +172,7 @@ in
       GPIO_CDEV = yes; KEYBOARD_GPIO = module; INPUT_EVDEV = module;
       I2C = yes; I2C_CHARDEV = module; I2C_BCM2835 = module;
       SND = module; SND_SOC = module; SND_BCM2835_SOC_I2S = module;
-      SND_SOC_WM8960 = no;
+      SND_SOC_WM8960 = no; SND_SOC_MAX9759 = no;
       LEDS_CLASS_MULTICOLOR = module; DMA_BCM2835 = yes;
       OVERLAY_FS_METACOPY = yes; OVERLAY_FS_REDIRECT_DIR = yes;
       SQUASHFS = module; SQUASHFS_ZSTD = yes; EROFS_FS = module; OVERLAY_FS = module;

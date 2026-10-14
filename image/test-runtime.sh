@@ -88,6 +88,18 @@ if ! (cd "$work" && mount -n -t overlay -o "ro,nodev,nosuid,redirect_dir=on,meta
 fi
 
 ln -s "$system" "$root/run/current-system"
+# Resolve inside the shipped root before host tools can hide a driver collision.
+# shellcheck disable=SC2016
+env -i "PATH=$system/sw/bin" QEMU_CPU=arm1176 "$(command -v chroot)" "$root" "$system/sw/bin/bash" -eu -c '
+  trees=(/run/current-system/kernel-modules/lib/modules/*)
+  [[ ${#trees[@]} == 1 ]]
+  version=${trees[0]##*/}
+  for name in wm8960 max9759; do
+    module=$(modinfo -b /run/current-system/kernel-modules -k "$version" -F filename "snd_soc_$name")
+    [[ $(readlink -f "$module") == /nix/store/*-tagtagtag-sound-*/lib/modules/"$version"/extra/snd-soc-"$name".ko ]]
+  done
+'
+echo 'PASS: shipped WM8960 and MAX9759 resolve to the TagTagTag drivers'
 bash "$repo/image/test-generated-units.sh" "$1" "$root"
 
 # Native test Python/systemd/D-Bus are test inputs, never product dependencies.
