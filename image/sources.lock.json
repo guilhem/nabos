@@ -27,9 +27,9 @@
     },
     "sound": {
       "repository": "guilhem/wm8960",
-      "commit": "10eb69493bf053ec1f6095feafa8d7f563bdb68c",
-      "url": "https://codeload.github.com/guilhem/wm8960/tar.gz/10eb69493bf053ec1f6095feafa8d7f563bdb68c",
-      "sha256": "8f47044292097df06e2576434ded9af9616ce790cc04809d261e637c13512cd4"
+      "commit": "9a8ccbf35ef7009c3f63e19d42fb1acdece0a4ee",
+      "url": "https://codeload.github.com/guilhem/wm8960/tar.gz/9a8ccbf35ef7009c3f63e19d42fb1acdece0a4ee",
+      "sha256": "2c7dfd37df65ff300f89081b966d39edc693e6a646ebab6c628fe7b78978a39e"
     },
     "led": {
       "repository": "guilhem/bcm2835-ws2812",
