@@ -29,8 +29,12 @@ let
       [ "/usr/lib/nabos/persist.sh" ] [ "${persistLibrary}" ]
       (builtins.readFile (rootfs + "/usr/lib/nabos/health"))}
   '';
+  # Gnulib otherwise disables O_NOFOLLOW when cross-compiling for Linux.
+  manualCoreutils = pkgs.coreutils.overrideAttrs (old: {
+    configureFlags = old.configureFlags ++ [ "gl_cv_header_working_fcntl_h=yes" ];
+  });
   manual = pkgs.writeShellScript "nabos-rauc-manual" ''
-    export PATH=${lib.makeBinPath (tools ++ [ pkgs.openssl ])}
+    export PATH=${lib.makeBinPath ([ manualCoreutils ] ++ tools ++ [ pkgs.openssl ])}
     ${builtins.readFile (rootfs + "/usr/lib/nabos/rauc-manual")}
   '';
   postInstall = pkgs.writeShellScript "nabos-rauc-post-install" ''

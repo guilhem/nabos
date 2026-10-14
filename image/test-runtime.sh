@@ -98,8 +98,21 @@ env -i "PATH=$system/sw/bin" QEMU_CPU=arm1176 "$(command -v chroot)" "$root" "$s
     module=$(modinfo -b /run/current-system/kernel-modules -k "$version" -F filename "snd_soc_$name")
     [[ $(readlink -f "$module") == /nix/store/*-tagtagtag-sound-*/lib/modules/"$version"/extra/snd-soc-"$name".ko ]]
   done
+  manual=$(sed -n "s/^ExecStart=//p" /etc/systemd/system/nabos-rauc-manual.service)
+  PATH=$(sed -n "s/^export PATH=//p" "$manual")
+  export PATH
+  [[ -n $PATH ]]
+  printf "manual-update-test" > /run/manual-copy-source
+  dd if=/run/manual-copy-source of=/run/manual-copy-output bs=64K iflag=nonblock,nofollow,count_bytes count=2147483649 status=none
+  [[ $(cat /run/manual-copy-output) == manual-update-test ]]
+  ln -s /run/manual-copy-source /run/manual-copy-link
+  if dd if=/run/manual-copy-link of=/run/manual-copy-output bs=64K iflag=nonblock,nofollow,count_bytes count=2147483649 status=none; then
+    echo "Manual update snapshot followed a symlink" >&2; exit 1
+  fi
+  rm /run/manual-copy-source /run/manual-copy-output /run/manual-copy-link
 '
 echo 'PASS: shipped WM8960 and MAX9759 resolve to the TagTagTag drivers'
+echo 'PASS: shipped manual update snapshot copies regular files and rejects symlinks'
 bash "$repo/image/test-generated-units.sh" "$1" "$root"
 
 # Native test Python/systemd/D-Bus are test inputs, never product dependencies.
