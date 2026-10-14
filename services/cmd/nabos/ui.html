@@ -1,6 +1,6 @@
 {{define "top"}}<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Title}}</title>
+<title>{{.Title}} · {{.Preferences.Name}}</title>
 <style>
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:#f6f3fa;color:#222;line-height:1.5}
@@ -35,15 +35,15 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 @media(max-width:40rem){header nav{order:1;width:100%}header a{flex-grow:1;text-align:center}main{padding:1rem .75rem}section{padding:1rem}.schedule th:first-child{width:4.5rem}.schedule td,.schedule th{padding-right:.25rem}}
 @media(max-width:30rem){.schedule,.schedule tbody{display:block}.schedule thead{display:none}.schedule tr{display:grid;gap:.4rem;padding:.75rem 0;border-top:1px solid #e6dfeb}.schedule th:first-child{width:auto}.schedule td,.schedule th{padding:0}.schedule td::before{content:"Réveil";display:block;font-size:.9rem;margin-bottom:.25rem}.schedule td:last-child::before{content:"Coucher"}}
 </style></head><body>
-<header><b>🐰 NabOS</b>{{if .Auth}}<nav aria-label="Navigation principale">
-<a href="/"{{if eq .Page "home"}} aria-current="page"{{end}}>Accueil</a>
-<a href="/settings"{{if eq .Page "settings"}} aria-current="page"{{end}}>Réglages</a>
-<a href="/wifi"{{if eq .Page "wifi"}} aria-current="page"{{end}}>Wi-Fi</a>
-<a href="/services"{{if eq .Page "services"}} aria-current="page"{{end}}>Services</a>
-<a href="/tags"{{if eq .Page "tags"}} aria-current="page"{{end}}>Étiquettes</a>
-<a href="/sounds"{{if eq .Page "sounds"}} aria-current="page"{{end}}>Sons</a>
-<a href="/updates"{{if eq .Page "updates"}} aria-current="page"{{end}}>Mises à jour</a></nav>
-<form method="post" action="/logout"><div class="form-actions"><button>Déconnexion</button></div></form>{{end}}</header>
+<header><b>🐰 {{.Preferences.Name}}</b>{{if .Auth}}<nav aria-label="Navigation principale">
+<a href="{{$.URL "/"}}"{{if eq .Page "home"}} aria-current="page"{{end}}>Accueil</a>
+<a href="{{$.URL "/settings"}}"{{if eq .Page "settings"}} aria-current="page"{{end}}>Réglages</a>
+<a href="{{$.URL "/wifi"}}"{{if eq .Page "wifi"}} aria-current="page"{{end}}>Wi-Fi</a>
+<a href="{{$.URL "/services"}}"{{if eq .Page "services"}} aria-current="page"{{end}}>Services</a>
+<a href="{{$.URL "/tags"}}"{{if eq .Page "tags"}} aria-current="page"{{end}}>Étiquettes</a>
+<a href="{{$.URL "/sounds"}}"{{if eq .Page "sounds"}} aria-current="page"{{end}}>Sons</a>
+<a href="{{$.URL "/updates"}}"{{if eq .Page "updates"}} aria-current="page"{{end}}>Mises à jour</a></nav>
+<form method="post" action="{{$.URL "/logout"}}"><div class="form-actions"><button>Déconnexion</button></div></form>{{end}}</header>
 <main><h1>{{.Title}}</h1>{{if .Flash}}<p class="ok" role="status">{{.Flash}}</p>{{end}}{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{end}}
 
@@ -53,7 +53,7 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <section><h2>Premier démarrage</h2>
 <p>Le Wi-Fi est connecté. Choisissez maintenant le mot de passe d'administration du lapin.</p>
 <p><b>Cette page étant ouverte, appuyez à nouveau sur le bouton de la tête du lapin</b>, puis validez dans les 5 minutes. L'appui utilisé pour connecter le Wi-Fi ne permet pas de créer le mot de passe.</p>
-<form method="post" action="/setup">
+<form method="post" action="{{$.URL "/setup"}}">
 <label>Mot de passe (8 à 128 caractères)<input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
 <label>Confirmation<input type="password" name="confirm" minlength="8" maxlength="128" required autocomplete="new-password"></label>
 <div class="form-actions"><button>Enregistrer</button></div></form>
@@ -61,14 +61,14 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{template "bottom" .}}{{end}}
 
 {{define "login"}}{{template "top" .}}
-<section><h2>Connexion</h2><form method="post" action="/login">
+<section><h2>Connexion</h2><form method="post" action="{{$.URL "/login"}}">
 <label>Mot de passe<input type="password" name="password" maxlength="128" required autofocus autocomplete="current-password"></label>
 <div class="form-actions"><button>Entrer</button></div></form></section>
 {{template "bottom" .}}{{end}}
 
 {{define "home"}}{{template "top" .}}
 {{if .Data.Recovered}}<p class="err">Le fichier de réglages était illisible : réglages par défaut restaurés (copie : {{.Data.Recovered}}).</p>{{end}}
-{{if .Data.Update}}<p class="ok">Nouvelle version {{.Data.Update}} disponible. <a href="/updates">Voir les mises à jour</a></p>{{end}}
+{{if .Data.Update}}<p class="ok">Nouvelle version {{.Data.Update}} disponible. <a href="{{$.URL "/updates"}}">Voir les mises à jour</a></p>{{end}}
 <section><h2>État</h2><table>
 <tr><td>Lapin</td><td>{{if .Data.Online}}{{with .Data.Rabbit}}{{if eq .State "idle"}}réveillé{{else if eq .State "asleep"}}endormi{{else}}occupé{{end}}{{end}}{{else}}moteur indisponible{{end}}</td></tr>
 <tr><td>Réseau</td><td>{{if eq .Data.Network "ok"}}Internet{{else if eq .Data.Network "lan"}}réseau local sans Internet{{else}}hors ligne{{end}}</td></tr>
@@ -78,39 +78,56 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <tr><td>Assistant vocal</td><td>{{if .Data.Voice}}activé{{else}}désactivé{{end}}</td></tr>
 <tr><td>Version</td><td>{{.Data.Version}}</td></tr></table></section>
 <section class="actions"><h2>Actions</h2>
-<form method="post" action="/action"><input type="hidden" name="name" value="time"><div class="form-actions"><button>Donner l'heure</button></div></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="weather_today"><div class="form-actions"><button>Météo du jour</button></div></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="weather_tomorrow"><div class="form-actions"><button>Météo de demain</button></div></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="sleep"><div class="form-actions"><button>Dormir</button></div></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="wakeup"><div class="form-actions"><button>Se réveiller</button></div></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="cancel"><div class="form-actions"><button>Interrompre</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="time"><div class="form-actions"><button>Donner l'heure</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="weather_today"><div class="form-actions"><button>Météo du jour</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="weather_tomorrow"><div class="form-actions"><button>Météo de demain</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="sleep"><div class="form-actions"><button>Dormir</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="wakeup"><div class="form-actions"><button>Se réveiller</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="cancel"><div class="form-actions"><button>Interrompre</button></div></form>
 </section>
 <section class="actions"><h2>Diagnostic</h2>
-<form method="post" action="/action"><input type="hidden" name="name" value="test_ears"><div class="form-actions"><button>Tester les oreilles</button></div></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="test_leds"><div class="form-actions"><button>Tester les LED</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="test_ears"><div class="form-actions"><button>Tester les oreilles</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="test_leds"><div class="form-actions"><button>Tester les LED</button></div></form>
 <details><summary>Matériel</summary><pre>{{json .Data.Rabbit.Hardware}}</pre></details>
-<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><div class="form-actions"><button>Redémarrer</button></div></form>
-<form method="post" action="/action"><input type="hidden" name="name" value="poweroff"><div class="form-actions"><button>Éteindre</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="reboot"><div class="form-actions"><button>Redémarrer</button></div></form>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="poweroff"><div class="form-actions"><button>Éteindre</button></div></form>
 </section>
 {{template "bottom" .}}{{end}}
 
 {{define "settings"}}{{template "top" .}}
-<section><h2>Wi-Fi</h2><p><a href="/wifi">Configurer le réseau et les profils Wi-Fi</a></p></section>
+<section><h2>Identité et accès web</h2>
+{{if .Data.PreferencesFlash}}<p class="ok" role="status">{{.Data.PreferencesFlash}}</p>{{end}}
+{{if .Data.PreferencesError}}<p class="err" role="alert">{{.Data.PreferencesError}}</p>{{end}}
+{{if .Data.PreferencesSaveError}}<p class="err" role="alert">{{.Data.PreferencesSaveError}}</p>{{end}}
+<form method="post" action="{{$.URL "/settings/preferences"}}">
+<label>Nom du lapin <input name="rabbit_name" value="{{.Data.Preferences.Name}}" maxlength="64" required aria-describedby="rabbit-name-help"></label>
+<p id="rabbit-name-help">Affiché dans cette interface et publié par MQTT. Le nom réseau et les entités existantes restent identiques.</p>
+<label for="allowed-domains">Domaines autorisés — un par ligne</label>
+<textarea id="allowed-domains" name="allowed_domains" rows="3" maxlength="8192" spellcheck="false" placeholder="amand.lettron.fr" aria-describedby="domains-help domains-recovery">{{.Data.AllowedDomains}}</textarea>
+<p id="domains-help">Noms exacts, sans protocole, port, chemin ni joker. Champ vide : tous les domaines sont acceptés. La restriction s’applique immédiatement à tous les accès web.</p>
+<p id="domains-recovery">Pour corriger une erreur, ouvrez directement l’IP locale du lapin, ou <code>http://10.41.0.1</code> sur son point d’accès Wi-Fi. Votre appareil ne doit pas appartenir aux proxies de confiance.</p>
+<label>Durée de connexion <select name="session_hours" aria-describedby="session-help">
+<option value="1"{{if eq .Data.Preferences.SessionHours 1}} selected{{end}}>1 heure</option>
+<option value="24"{{if eq .Data.Preferences.SessionHours 24}} selected{{end}}>1 jour</option>
+<option value="168"{{if eq .Data.Preferences.SessionHours 168}} selected{{end}}>7 jours</option></select></label>
+<p id="session-help">Durée maximale depuis la connexion, appliquée aux nouvelles connexions. Les sessions en cours conservent leur durée.</p>
+<div class="form-actions"><button>Enregistrer le nom et l’accès web</button></div></form></section>
+<section><h2>Wi-Fi</h2><p><a href="{{$.URL "/wifi"}}">Configurer le réseau et les profils Wi-Fi</a></p></section>
 <section><h2>Heure</h2><p>{{template "clock" .Data.Clock}}</p>
-{{if ne .Data.Clock "ntp"}}<form method="post" action="/clock"><label>Date et heure <input type="datetime-local" name="now" value="{{.Data.Now}}" required></label>
+{{if ne .Data.Clock "ntp"}}<form method="post" action="{{$.URL "/clock"}}"><label>Date et heure <input type="datetime-local" name="now" value="{{.Data.Now}}" required></label>
 <div class="form-actions"><button>Régler l'heure</button></div></form><p>Le lapin n'a pas d'horloge sauvegardée par pile : sans Internet, l'heure réglée à la main vaut jusqu'au prochain redémarrage.</p>{{end}}</section>
 {{if .System}}<section><h2>Réglages système</h2>
-<form method="post" action="/settings/system"><input type="hidden" name="revision" value="{{.Revision}}">
+<form method="post" action="{{$.URL "/settings/system"}}"><input type="hidden" name="revision" value="{{.Revision}}">
 <label>Langue <select name="locale">{{range .Data.Locales}}<option{{if eq . $.System.Locale}} selected{{end}}>{{.}}</option>{{end}}</select></label>
 <label>Fuseau horaire <input name="timezone" value="{{.System.Timezone}}" required></label>
 <label>Volume <input type="range" name="volume" min="0" max="100" step="5" value="{{.System.Volume}}"></label>
 <p>Ce réglage réduit le niveau choisi avec la molette.</p>
-<p>Recherche et installation des nouvelles versions : <a href="/updates">Mises à jour</a>.</p>
+<p>Recherche et installation des nouvelles versions : <a href="{{$.URL "/updates"}}">Mises à jour</a>.</p>
 {{if .Data.Voice}}<label><input type="checkbox" name="voice"{{if .Data.VoiceOn}} checked{{end}}> Assistant vocal (Linux Voice Assistant, via Home Assistant)</label>{{end}}
 <div class="form-actions"><button>Enregistrer les réglages système</button></div></form></section>{{else}}<p class="err" role="alert">{{.SystemError}}</p>{{end}}
 <section><h2>Réglages du lapin</h2>
 <p>L’horloge, la météo et Home Assistant s’enregistrent ensemble avec le bouton en bas de cette carte.</p>
-<form method="post" action="/settings/application">
+<form method="post" action="{{$.URL "/settings/application"}}">
 <fieldset><legend>Horloge et sommeil</legend>
 <label><input type="checkbox" name="chime"{{if .S.Clock.Chime}} checked{{end}}> Annoncer les heures</label>
 <label><input type="checkbox" name="sleep_sounds"{{if .S.Clock.SleepSounds}} checked{{end}}> Sons au coucher et au réveil</label>
@@ -143,16 +160,27 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <label>Préfixe de découverte <input name="ha_prefix" value="{{.S.HomeAssistant.Prefix}}"></label>
 </fieldset>
 <div class="form-actions"><button>Enregistrer les réglages du lapin</button></div></form></section>
+<section><h2>Accès via un proxy</h2>
+<p>Ouvrez l’interface du lapin derrière un proxy inverse, par exemple dans Home Assistant. Le mot de passe du lapin reste nécessaire.</p>
+{{if .Data.ProxyFlash}}<p class="ok" role="status">{{.Data.ProxyFlash}}</p>{{end}}
+{{if .Data.ProxyError}}<p class="err" role="alert">{{.Data.ProxyError}}</p>{{end}}
+{{if .Data.ProxySaveError}}<p class="err" role="alert">{{.Data.ProxySaveError}}</p>{{end}}
+<form method="post" action="{{$.URL "/settings/proxy"}}">
+<label for="trusted-proxies">Adresse(s) des proxies de confiance</label>
+<input id="trusted-proxies" name="trusted_proxies" value="{{.Data.ProxyAddresses}}" maxlength="4096" placeholder="192.168.20.144" spellcheck="false" aria-describedby="proxy-help proxy-recovery">
+<p id="proxy-help">IP ou réseaux CIDR séparés par des virgules. Préférez l’IP exacte du proxy qui se connecte au lapin. Champ vide : accès via proxy désactivé (par défaut). L’enregistrement s’applique immédiatement.</p>
+<p id="proxy-recovery">Pour la première configuration ou si l’accès via le proxy ne fonctionne plus, ouvrez directement l’adresse IP locale du lapin dans votre navigateur. Retirer le proxy utilisé coupe cet accès dès la prochaine requête.</p>
+<div class="form-actions"><button>Enregistrer l’accès via le proxy</button></div></form></section>
 <section><h2>Accès SSH</h2>
 <p>Connexion avec <code>ssh nabos@nabaztag.local</code>, par clé uniquement. Le compte <code>nabos</code> dispose de <code>sudo</code> sans mot de passe pour administrer le système.</p>
 {{if .Data.SSHError}}<p class="err">Impossible de lire les clés SSH : {{.Data.SSHError}}</p>{{else}}
-<form method="post" action="/settings/ssh">
+<form method="post" action="{{$.URL "/settings/ssh"}}">
 <input type="hidden" name="ssh_revision" value="{{.SSHRevision}}">
 <label for="ssh-keys">Clés publiques SSH — une par ligne</label>
 <textarea id="ssh-keys" name="authorized_keys" rows="5" maxlength="65536" spellcheck="false" aria-describedby="ssh-help">{{.Data.SSHKeys}}</textarea>
 <p id="ssh-help">Collez le contenu de votre fichier <code>.pub</code>, jamais votre clé privée. Videz le champ pour désactiver les nouvelles connexions SSH. Les sessions déjà ouvertes restent actives.</p>
 <div class="form-actions"><button>Enregistrer les clés SSH</button></div></form>{{end}}</section>
-<section><h2>Mot de passe</h2><form method="post" action="/password">
+<section><h2>Mot de passe</h2><form method="post" action="{{$.URL "/password"}}">
 <label>Actuel <input type="password" name="old" required maxlength="128" autocomplete="current-password"></label>
 <label>Nouveau <input type="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>
 <div class="form-actions"><button>Changer le mot de passe</button></div></form></section>
@@ -166,7 +194,7 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 </table>
 {{if or (eq .State "downloading") (eq .State "installing")}}<p><progress aria-label="Progression de la mise à jour" max="100" value="{{.Progress}}"></progress> {{.Progress}} %</p>{{end}}
 {{if .Checking}}<p role="status">Recherche des versions…</p>{{end}}
-<p><a href="/updates">Actualiser l’état</a></p>
+<p><a href="{{$.URL "/updates"}}">Actualiser l’état</a></p>
 {{if .CheckError}}<p class="err" role="alert">Recherche indisponible : {{.CheckError}}. Les résultats précédents peuvent être anciens.</p>{{end}}
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if .Suspended}}<p class="err">Installation automatique suspendue. {{if .RetryRequired}}Utilisez « Réessayer » pour reprendre manuellement.{{else}}Installez d’abord une version publiée pour activer l’automatique.{{end}}</p>{{end}}
@@ -175,13 +203,13 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{if .Data.LastError}}<p class="err" role="alert">{{.Data.LastError}}</p>{{end}}
 {{if .Data.Waiting}}<p>{{.Data.Waiting}}</p>{{end}}
 {{if .Data.Configured}}
-<form method="post" action="/updates/check"><div class="form-actions"><button{{if or .Data.Busy .Data.Status.Checking}} disabled{{end}}>Vérifier maintenant</button></div></form>
+<form method="post" action="{{$.URL "/updates/check"}}"><div class="form-actions"><button{{if or .Data.Busy .Data.Status.Checking}} disabled{{end}}>Vérifier maintenant</button></div></form>
 {{else}}<p>Le catalogue GitHub des mises à jour n’est pas configuré sur cette image. Vous pouvez importer un fichier manuellement.</p>{{end}}
-{{if eq .Data.Status.State "reboot"}}<form method="post" action="/action"><input type="hidden" name="name" value="reboot"><input type="hidden" name="back" value="/updates"><div class="form-actions"><button>Redémarrer sur la nouvelle version</button></div></form>{{end}}
+{{if eq .Data.Status.State "reboot"}}<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="reboot"><input type="hidden" name="back" value="/updates"><div class="form-actions"><button>Redémarrer sur la nouvelle version</button></div></form>{{end}}
 <p>La nouvelle version s'installe sur la partition inactive. Si elle ne démarre pas correctement, le lapin revient tout seul à la version précédente.</p></section>
 <section><h2>Importer une mise à jour</h2>
 <p>Choisissez un fichier .rauc ou .raucb (2 Gio maximum). L’installation est manuelle, sans recherche sur GitHub ni redémarrage automatique.</p>
-<form method="post" action="/updates/upload" enctype="multipart/form-data">
+<form method="post" action="{{$.URL "/updates/upload"}}" enctype="multipart/form-data">
 <fieldset{{if .Data.Busy}} disabled{{end}}><legend>Fichier et vérification</legend>
 <label>Fichier de mise à jour <input type="file" name="bundle" accept=".rauc,.raucb" required></label>
 <label><input type="checkbox" name="ignore_certificate" value="true" aria-describedby="certificate-warning"> Ignorer la validation du certificat</label>
@@ -191,7 +219,7 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 </fieldset></form>
 {{if .Data.Busy}}<p>Import indisponible pendant la mise à jour ou dans l’attente du redémarrage.</p>{{end}}</section>
 {{if .Data.Configured}}
-{{if .System}}<section><h2>Préférences</h2><form method="post" action="/updates/settings"><input type="hidden" name="revision" value="{{.Revision}}">
+{{if .System}}<section><h2>Préférences</h2><form method="post" action="{{$.URL "/updates/settings"}}"><input type="hidden" name="revision" value="{{.Revision}}">
 <label>Mode <select name="mode">
 <option value="manual"{{if not .System.AutoCheck}} selected{{end}}>Vérifier à la demande</option>
 <option value="notify"{{if and .System.AutoCheck (not .System.Updates.Automatic)}} selected{{end}}>Proposer les mises à jour chaque jour</option>
@@ -210,7 +238,7 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{if .Notes}}<details><summary>Notes de publication</summary><pre style="white-space:pre-wrap">{{.Notes}}</pre></details>{{end}}
 {{if .Blocked}}<p class="err">Exclue de l’automatique : {{.Blocked}}</p>{{end}}
 {{if .Ready}}
-<form method="post" action="/updates/install"><input type="hidden" name="tag" value="{{.Tag}}">
+<form method="post" action="{{$.URL "/updates/install"}}"><input type="hidden" name="tag" value="{{.Tag}}">
 {{if or .Blocked $.Data.Status.RetryRequired}}<input type="hidden" name="retry" value="true"><div class="form-actions"><button{{if $.Data.Busy}} disabled{{end}}>Réessayer {{.Tag}} manuellement</button></div>
 {{else}}<div class="form-actions"><button{{if $.Data.Busy}} disabled{{end}}>Installer {{.Tag}}</button></div>{{end}}
 </form>
@@ -222,7 +250,7 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{define "services"}}{{template "top" .}}
 <section><h2>Réglages des services</h2>
 <p>Ces services s’enregistrent ensemble avec le bouton en bas de cette carte.</p>
-<form method="post" action="/services/settings">
+<form method="post" action="{{$.URL "/services/settings"}}">
 <fieldset><legend>Tai-chi</legend>
 <label>Fréquence (0 = uniquement à la demande, 1 à 255) <input type="number" name="taichi_frequency" min="0" max="255" value="{{.S.Services.TaichiFrequency}}" required></label>
 {{with index .Data.Errors "taichi"}}<p class="err" role="alert">{{.}}</p>{{end}}
@@ -256,18 +284,18 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{with index .Data.Errors "airquality"}}<p class="err" role="alert">{{.}}</p>{{end}}</fieldset>
 <div class="form-actions"><button>Enregistrer les services</button></div></form></section>
 <section><h2>Essayer un service</h2><p>Les essais utilisent les réglages déjà enregistrés.</p><div class="actions">
-<form method="post" action="/services/action"><input type="hidden" name="name" value="taichi"><div class="form-actions"><button>Faire du tai-chi</button></div></form>
-<form method="post" action="/services/action"><input type="hidden" name="name" value="surprise"><div class="form-actions"><button>Jouer une surprise</button></div></form>
-<form method="post" action="/services/action"><input type="hidden" name="name" value="eightball"><div class="form-actions"><button{{if not .S.Services.Eightball}} disabled{{end}}>Boule magique</button></div></form>
-<form method="post" action="/services/action"><input type="hidden" name="name" value="airquality"><div class="form-actions"><button{{if not .S.Services.AirQuality.Enabled}} disabled{{end}}>Qualité de l'air</button></div></form></div>
-<h3>Surprise personnalisée</h3><form method="post" action="/services/action"><input type="hidden" name="name" value="surprise">
+<form method="post" action="{{$.URL "/services/action"}}"><input type="hidden" name="name" value="taichi"><div class="form-actions"><button>Faire du tai-chi</button></div></form>
+<form method="post" action="{{$.URL "/services/action"}}"><input type="hidden" name="name" value="surprise"><div class="form-actions"><button>Jouer une surprise</button></div></form>
+<form method="post" action="{{$.URL "/services/action"}}"><input type="hidden" name="name" value="eightball"><div class="form-actions"><button{{if not .S.Services.Eightball}} disabled{{end}}>Boule magique</button></div></form>
+<form method="post" action="{{$.URL "/services/action"}}"><input type="hidden" name="name" value="airquality"><div class="form-actions"><button{{if not .S.Services.AirQuality.Enabled}} disabled{{end}}>Qualité de l'air</button></div></form></div>
+<h3>Surprise personnalisée</h3><form method="post" action="{{$.URL "/services/action"}}"><input type="hidden" name="name" value="surprise">
 <label>Langue <select name="language">{{range .Data.Languages}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
 <label>Type <select name="surprise_kind"><option value="">Au hasard</option>{{range .Data.SurpriseKinds}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><div class="form-actions"><button>Jouer</button></div></form>
-<h3>Catalogue de livres</h3>{{range .Data.Books}}<form method="post" action="/services/action"><input type="hidden" name="name" value="book"><input type="hidden" name="isbn" value="{{.ISBN}}">
+<h3>Catalogue de livres</h3>{{range .Data.Books}}<form method="post" action="{{$.URL "/services/action"}}"><input type="hidden" name="name" value="book"><input type="hidden" name="isbn" value="{{.ISBN}}">
 <label>{{.Title}} ({{.ISBN}}) — voix <select name="voice">{{range .Voices}}<option value="{{.ID}}">{{.Description}}</option>{{end}}</select></label>
 <div class="form-actions"><button{{if or (not $.S.Services.Books) (not .Voices)}} disabled{{end}}>Lire</button></div></form>{{else}}<p>Aucun livre installé.</p>{{end}}
 {{if .S.Tags}}<h3>Actions associées aux étiquettes</h3>{{range $uid, $association := .S.Tags}}
-<form method="post" action="/services/action"><input type="hidden" name="name" value="{{$association.App}}"><input type="hidden" name="uid" value="{{$uid}}">
+<form method="post" action="{{$.URL "/services/action"}}"><input type="hidden" name="name" value="{{$association.App}}"><input type="hidden" name="uid" value="{{$uid}}">
 <div class="form-actions"><button{{if or (and (eq $association.App "radio") (not $.S.Services.Radio)) (and (eq $association.App "ifttt") (not $.S.Services.IFTTT)) (and (eq $association.App "webhook") (not $.S.Services.Webhooks))}} disabled{{end}}>Lancer {{$association.App}} — {{$uid}}</button></div></form>{{end}}{{end}}
 </section>
 <section><h2>Mastodon</h2>
@@ -275,19 +303,19 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{if .S.Mastodon.SpouseHandle}}<p>Partenaire : {{.S.Mastodon.SpouseHandle}} — {{if eq .S.Mastodon.PairingState "married"}}associé{{else if eq .S.Mastodon.PairingState "waiting_approval"}}en attente de votre réponse{{else if eq .S.Mastodon.PairingState "proposed"}}invitation envoyée{{else}}non associé{{end}}.</p>{{end}}
 {{with index .Data.Errors "mastodon"}}<p class="err" role="alert">{{.}}</p>{{end}}
 {{if .S.Mastodon.Username}}
-<form method="post" action="/services/mastodon/action"><label>Compte du partenaire <input name="spouse" value="{{.S.Mastodon.SpouseHandle}}" placeholder="nom@instance.example"></label><div class="form-actions"><button name="action" value="propose"{{if .S.Mastodon.PairingState}} disabled{{end}}>Proposer</button></div></form>
-<div class="actions"><form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="accept"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Accepter</button></div></form>
-<form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="reject"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Refuser</button></div></form>
-<form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="divorce"{{if and (ne .S.Mastodon.PairingState "married") (ne .S.Mastodon.PairingState "proposed")}} disabled{{end}}>Séparer / annuler la proposition</button></div></form>
-<form method="post" action="/services/mastodon/action"><div class="form-actions"><button name="action" value="disconnect">Déconnecter</button></div></form></div>
-{{else}}<form method="post" action="/services/mastodon/connect"><label>Instance Mastodon <input name="instance" placeholder="mastodon.social" required></label><div class="form-actions"><button>Connecter</button></div></form>{{end}}</section>
+<form method="post" action="{{$.URL "/services/mastodon/action"}}"><label>Compte du partenaire <input name="spouse" value="{{.S.Mastodon.SpouseHandle}}" placeholder="nom@instance.example"></label><div class="form-actions"><button name="action" value="propose"{{if .S.Mastodon.PairingState}} disabled{{end}}>Proposer</button></div></form>
+<div class="actions"><form method="post" action="{{$.URL "/services/mastodon/action"}}"><div class="form-actions"><button name="action" value="accept"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Accepter</button></div></form>
+<form method="post" action="{{$.URL "/services/mastodon/action"}}"><div class="form-actions"><button name="action" value="reject"{{if ne .S.Mastodon.PairingState "waiting_approval"}} disabled{{end}}>Refuser</button></div></form>
+<form method="post" action="{{$.URL "/services/mastodon/action"}}"><div class="form-actions"><button name="action" value="divorce"{{if and (ne .S.Mastodon.PairingState "married") (ne .S.Mastodon.PairingState "proposed")}} disabled{{end}}>Séparer / annuler la proposition</button></div></form>
+<form method="post" action="{{$.URL "/services/mastodon/action"}}"><div class="form-actions"><button name="action" value="disconnect">Déconnecter</button></div></form></div>
+{{else}}<form method="post" action="{{$.URL "/services/mastodon/connect"}}"><label>Instance Mastodon <input name="instance" placeholder="mastodon.social" required></label><div class="form-actions"><button>Connecter</button></div></form>{{end}}</section>
 {{template "bottom" .}}{{end}}
 
 {{define "tags"}}{{template "top" .}}
 <section><h2>Dernière étiquette</h2>{{with .Data.Tag}}<table>
 <tr><td>Identifiant</td><td>{{.uid}} ({{.tech}})</td></tr><tr><td>Événement</td><td>{{.event}}</td></tr>
 <tr><td>Contenu</td><td>{{.support}}{{if .app}} — {{.app}}{{end}}</td></tr></table>{{else}}<p>Posez une étiquette sur le nez du lapin puis rechargez la page.</p>{{end}}</section>
-<section><h2>Programmer l'étiquette</h2><form method="post" action="/tags/write">
+<section><h2>Programmer l'étiquette</h2><form method="post" action="{{$.URL "/tags/write"}}">
 <label>Action <select name="kind"><option value="clock_sleep">Dormir</option><option value="clock_wakeup">Se réveiller</option>
 <option value="weather_today">Météo du jour</option><option value="weather_tomorrow">Météo de demain</option>
 <option value="eightball">Boule magique</option><option value="surprise">Surprise</option><option value="taichi">Tai-chi</option><option value="airquality">Qualité de l'air</option><option value="book">Livre</option><option value="ifttt">IFTTT</option><option value="radio">Radio</option><option value="webhook">Webhook</option></select></label>
@@ -301,19 +329,19 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <button name="mode" value="associate">Associer sans réécrire</button></div>
 <p>Pour une ancienne étiquette radio, IFTTT ou webhook, choisissez l'action déjà inscrite et sa nouvelle valeur, puis « Associer sans réécrire ». Cela fonctionne aussi avec une étiquette verrouillée.</p></form></section>
 <section><h2>Associations enregistrées</h2>{{range $uid, $action := .S.Tags}}<div class="actions"><p>{{$uid}} — {{$action.App}} : {{$action.Value}}</p>
-<form method="post" action="/tags/remove"><input type="hidden" name="uid" value="{{$uid}}"><div class="form-actions"><button aria-label="Supprimer l'association {{$uid}}">Supprimer</button></div></form></div>{{else}}<p>Aucune association locale.</p>{{end}}</section>
+<form method="post" action="{{$.URL "/tags/remove"}}"><input type="hidden" name="uid" value="{{$uid}}"><div class="form-actions"><button aria-label="Supprimer l'association {{$uid}}">Supprimer</button></div></form></div>{{else}}<p>Aucune association locale.</p>{{end}}</section>
 {{template "bottom" .}}{{end}}
 
 {{define "sounds"}}{{template "top" .}}
 <section><h2>Mes sons</h2>{{range .Data.Sounds}}
 <div class="actions">{{.}}
-<form method="post" action="/action"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds"><input type="hidden" name="resource" value="user/{{.}}"><div class="form-actions"><button aria-label="Lire {{.}}">▶</button></div></form>
-<form method="post" action="/sounds/delete"><input type="hidden" name="name" value="{{.}}"><div class="form-actions"><button>Supprimer</button></div></form></div>
+<form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds"><input type="hidden" name="resource" value="user/{{.}}"><div class="form-actions"><button aria-label="Lire {{.}}">▶</button></div></form>
+<form method="post" action="{{$.URL "/sounds/delete"}}"><input type="hidden" name="name" value="{{.}}"><div class="form-actions"><button>Supprimer</button></div></form></div>
 {{else}}<p>Aucun son ajouté.</p>{{end}}</section>
-<section><h2>Ajouter un son</h2><form method="post" action="/sounds/upload" enctype="multipart/form-data">
+<section><h2>Ajouter un son</h2><form method="post" action="{{$.URL "/sounds/upload"}}" enctype="multipart/form-data">
 <label>Fichier audio <input type="file" name="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required></label><div class="form-actions"><button>Envoyer</button></div></form>
 <p>MP3 ou WAV, 10 Mo maximum.</p></section>
-<section><h2>Jouer un son du lapin</h2><form method="post" action="/action"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds">
+<section><h2>Jouer un son du lapin</h2><form method="post" action="{{$.URL "/action"}}"><input type="hidden" name="name" value="play"><input type="hidden" name="back" value="/sounds">
 <label>Ressource audio <input name="resource" value="system/abort.wav" required></label><div class="form-actions"><button aria-label="Lire la ressource audio">▶</button></div></form></section>
 {{template "bottom" .}}{{end}}
 
@@ -322,23 +350,23 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{define "wifi"}}{{template "top" .}}
 {{if .Data.Unavailable}}<section><p role="alert">La configuration Wi-Fi est temporairement indisponible. Rechargez la page lorsque le cœur du lapin est prêt.</p></section>
 {{else}}{{$s := .Data.Snapshot}}
-<div id="wifi" data-mode="{{$s.Status.Mode}}" data-setup="{{.Data.Setup}}">
+<div id="wifi" data-prefix="{{.Prefix}}" data-mode="{{$s.Status.Mode}}" data-setup="{{.Data.Setup}}">
 <section><h2>{{if .Data.Setup}}1. Connecter le lapin au Wi-Fi{{else}}Connexion Wi-Fi{{end}}</h2>
 <p id="wifi-status" role="status">{{if eq $s.Status.Mode "hotspot"}}Hotspot de secours{{else if eq $s.Status.Mode "client"}}Connecté à {{$s.Status.SSID}}{{else}}Reconnexion en cours{{end}}{{if $s.Status.Address}} — {{$s.Status.Address}}{{end}}</p>
 {{if eq $s.Status.Mode "hotspot"}}<p>Le hotspot utilise la même radio que votre réseau Wi-Fi. Il disparaîtra pendant la tentative ; cette coupure est normale et la connexion continue.</p>
 {{if .Data.Setup}}
 {{if .Data.Reserved}}<p><b>Appuyez maintenant sur le bouton de la tête du lapin</b> pour autoriser une tentative pendant cinq minutes. La réservation du formulaire ne prolonge pas cette autorisation.</p>
-{{else}}<form method="post" action="/wifi/reserve"><p>Préparez ce formulaire, puis appuyez sur le bouton de la tête du lapin.</p><div class="form-actions"><button>Préparer la connexion</button></div></form>{{end}}
+{{else}}<form method="post" action="{{$.URL "/wifi/reserve"}}"><p>Préparez ce formulaire, puis appuyez sur le bouton de la tête du lapin.</p><div class="form-actions"><button>Préparer la connexion</button></div></form>{{end}}
 <p id="wifi-authorization" role="status">{{if .Data.Authorized}}Confirmation physique reçue.{{else}}Confirmation physique attendue.{{end}}</p>
 <p>Ce hotspot est ouvert et l’interface utilise HTTP : la confirmation physique autorise la configuration, sans chiffrer les échanges.</p>
 {{end}}
-<form method="post" action="/wifi/release"><div class="form-actions"><button>Libérer le hotspot</button></div></form>{{end}}
-{{if eq $s.Status.Phase "connecting"}}<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{$s.Status.AttemptID}}"><div class="form-actions"><button>Annuler la tentative</button></div></form>{{end}}
+<form method="post" action="{{$.URL "/wifi/release"}}"><div class="form-actions"><button>Libérer le hotspot</button></div></form>{{end}}
+{{if eq $s.Status.Phase "connecting"}}<form method="post" action="{{$.URL "/wifi/cancel"}}"><input type="hidden" name="attempt_id" value="{{$s.Status.AttemptID}}"><div class="form-actions"><button>Annuler la tentative</button></div></form>{{end}}
 <p>Après la connexion, rejoignez le même réseau que le lapin et ouvrez <a href="http://nabaztag.local/">nabaztag.local</a> ou son adresse dans votre routeur. En cas d’échec, rejoignez à nouveau le hotspot du lapin puis <a href="http://10.41.0.1/wifi">10.41.0.1</a>.</p></section>
 <section><h2>Réseau à rejoindre</h2>
-<form method="post" action="/wifi/scan"><div class="form-actions"><button>Rechercher les réseaux</button></div></form>
+<form method="post" action="{{$.URL "/wifi/scan"}}"><div class="form-actions"><button>Rechercher les réseaux</button></div></form>
 <p>Si le scan est indisponible pendant le hotspot, les derniers résultats restent utilisables. Vous pouvez aussi saisir le nom d’un réseau masqué.</p>
-<form method="post" action="/wifi/connect" id="wifi-form">
+<form method="post" action="{{$.URL "/wifi/connect"}}" id="wifi-form">
 <label>Réseaux détectés <select name="ssid_bytes" id="wifi-network"><option value="">Saisir le nom manuellement</option>{{range $s.Networks}}<option value="{{ssid64 .SSID}}" data-security="{{.Security}}"{{if or (eq .Security "unsupported") (eq (len .SSID) 0)}} disabled{{end}}>{{.SSID}} — {{.Strength}} % ({{.Security}})</option>{{end}}</select></label>
 <label>Nom du réseau (SSID, 32 octets maximum) <input name="ssid" id="wifi-ssid" maxlength="32" autocomplete="off" spellcheck="false"></label>
 <label>Sécurité <select name="security" id="wifi-security"><option value="wpa-psk">WPA / WPA2 personnel</option><option value="sae">WPA3 personnel</option><option value="open">Réseau ouvert</option></select></label>
@@ -346,21 +374,21 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <p>Une seule tentative à la fois. Les anciens profils fonctionnels sont conservés ; le retour à la connexion précédente ou au hotspot est automatique après un échec.</p>
 <div class="form-actions"><button data-wifi-connect{{if and .Data.Setup (not .Data.Authorized)}} disabled{{end}}>Connecter (la page peut se déconnecter)</button></div></form></section>
 <section><h2>Profils enregistrés</h2>{{range $s.Profiles}}
-<div class="actions"><p>{{.SSID}}</p><form method="post" action="/wifi/connect"><input type="hidden" name="uuid" value="{{.UUID}}"><div class="form-actions"><button data-wifi-connect{{if and $.Data.Setup (not $.Data.Authorized)}} disabled{{end}}>Utiliser ce profil</button></div></form>
-{{if not $.Data.Setup}}<form method="post" action="/wifi/forget"><input type="hidden" name="uuid" value="{{.UUID}}"><div class="form-actions"><button>Oublier</button></div></form>{{end}}</div>{{else}}<p>Aucun réseau enregistré.</p>{{end}}</section>
+<div class="actions"><p>{{.SSID}}</p><form method="post" action="{{$.URL "/wifi/connect"}}"><input type="hidden" name="uuid" value="{{.UUID}}"><div class="form-actions"><button data-wifi-connect{{if and $.Data.Setup (not $.Data.Authorized)}} disabled{{end}}>Utiliser ce profil</button></div></form>
+{{if not $.Data.Setup}}<form method="post" action="{{$.URL "/wifi/forget"}}"><input type="hidden" name="uuid" value="{{.UUID}}"><div class="form-actions"><button>Oublier</button></div></form>{{end}}</div>{{else}}<p>Aucun réseau enregistré.</p>{{end}}</section>
 
-</div><script src="/wifi.js" defer></script>{{end}}
+</div><script src="{{$.URL "/wifi.js"}}" defer></script>{{end}}
 {{template "bottom" .}}{{end}}
 
 {{define "wifi-transition"}}{{template "top" .}}
-<section id="wifi-transition" data-attempt="{{.Data.Attempt}}"><p role="status" id="wifi-status">Tentative {{.Data.Attempt}} lancée. Le lapin passe sur le réseau choisi. La coupure de cette page est attendue et ne l’annule pas.</p>
+<section id="wifi-transition" data-prefix="{{.Prefix}}" data-attempt="{{.Data.Attempt}}"><p role="status" id="wifi-status">Tentative {{.Data.Attempt}} lancée. Le lapin passe sur le réseau choisi. La coupure de cette page est attendue et ne l’annule pas.</p>
 <p>Rejoignez le même réseau que le lapin, puis ouvrez <a href="http://nabaztag.local/">nabaztag.local</a> ou son adresse indiquée par votre routeur. Le réseau local suffit ; Internet n’est pas nécessaire.</p>
-{{if .Data.Setup}}<p>Après reconnexion, ouvrez la <a href="/setup">page de création du mot de passe d’administration</a>, puis appuyez à nouveau sur le bouton du lapin avant de valider.</p>{{end}}
+{{if .Data.Setup}}<p>Après reconnexion, ouvrez la <a href="{{$.URL "/setup"}}">page de création du mot de passe d’administration</a>, puis appuyez à nouveau sur le bouton du lapin avant de valider.</p>{{end}}
 <p>En cas d’échec, le lapin revient à son ancienne connexion ou au hotspot. Rejoignez ce hotspot et ouvrez <a href="http://10.41.0.1/wifi">10.41.0.1</a> pour réessayer.</p>
-<form method="post" action="/wifi/cancel"><input type="hidden" name="attempt_id" value="{{.Data.Attempt}}"><div class="form-actions"><button>Annuler si le lapin est encore accessible</button></div></form>
-<p><a href="/wifi">Revenir au Wi-Fi</a></p></section><script src="/wifi.js" defer></script>
+<form method="post" action="{{$.URL "/wifi/cancel"}}"><input type="hidden" name="attempt_id" value="{{.Data.Attempt}}"><div class="form-actions"><button>Annuler si le lapin est encore accessible</button></div></form>
+<p><a href="{{$.URL "/wifi"}}">Revenir au Wi-Fi</a></p></section><script src="{{$.URL "/wifi.js"}}" defer></script>
 {{template "bottom" .}}{{end}}
 
 {{define "wifi-released"}}{{template "top" .}}
-<section><p>Le formulaire ne réserve plus le hotspot. Le lapin peut réessayer ses réseaux connus.</p><p><a href="/wifi">Configurer à nouveau le Wi-Fi</a></p></section>
+<section><p>Le formulaire ne réserve plus le hotspot. Le lapin peut réessayer ses réseaux connus.</p><p><a href="{{$.URL "/wifi"}}">Configurer à nouveau le Wi-Fi</a></p></section>
 {{template "bottom" .}}{{end}}

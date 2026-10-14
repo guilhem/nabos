@@ -471,7 +471,7 @@ func TestSetupDisarmsOnNetworkAndServiceTransitions(t *testing.T) {
 	stop()
 	delete(wifiHardware, a)
 	// Finish the old hardware callbacks before replacing the service auth state.
-	a.auth = web.NewAuth(a.store)
+	a.auth = web.NewAuth(a.store, a.prefs)
 	physicalButton(t, a, "down", oldEdge)
 	if a.auth.Present() {
 		t.Fatal("restart admitted a queued down")

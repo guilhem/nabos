@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/network"
+	"github.com/guilhem/nabos/services/internal/web"
 )
 
 const (
@@ -63,7 +64,7 @@ func (a *App) wifiRoute(next http.HandlerFunc) http.HandlerFunc {
 		if a.auth.Configured() {
 			if !a.auth.Valid(r) {
 				if r.Method == http.MethodGet {
-					http.Redirect(w, r, "/login", http.StatusSeeOther)
+					http.Redirect(w, r, web.Path(r, "/login"), http.StatusSeeOther)
 				} else {
 					http.Error(w, "authentication required", http.StatusUnauthorized)
 				}
@@ -77,7 +78,7 @@ func (a *App) wifiRoute(next http.HandlerFunc) http.HandlerFunc {
 			}
 			if !hotspotSocket(r, s) {
 				if r.URL.Path == "/wifi" && s.ClientReady() {
-					http.Redirect(w, r, "/setup", http.StatusSeeOther)
+					http.Redirect(w, r, web.Path(r, "/setup"), http.StatusSeeOther)
 				} else {
 					http.Error(w, "connectez-vous au hotspot du lapin", http.StatusForbidden)
 				}
@@ -179,11 +180,11 @@ func (a *App) wifiReserve(w http.ResponseWriter, r *http.Request) {
 		attempt = a.wifi.attempt
 	}
 	a.wifi = &wifiSession{browser: browser, token: lease, expires: time.Now().Add(wifiLeaseTTL), attempt: attempt}
-	http.SetCookie(w, &http.Cookie{Name: wifiCookie, Value: browser, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: int(wifiLeaseTTL.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: wifiCookie, Value: browser, Path: web.Path(r, "/"), HttpOnly: true, Secure: web.Scheme(r) == "https", SameSite: http.SameSiteStrictMode, MaxAge: int(wifiLeaseTTL.Seconds())})
 	if r.Header.Get("Accept") == "application/json" {
 		wifiJSON(w, map[string]bool{"reserved": true})
 	} else {
-		http.Redirect(w, r, "/wifi", http.StatusSeeOther)
+		http.Redirect(w, r, web.Path(r, "/wifi"), http.StatusSeeOther)
 	}
 }
 
@@ -199,7 +200,7 @@ func (a *App) wifiRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.wifi = nil
-	http.SetCookie(w, &http.Cookie{Name: wifiCookie, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: wifiCookie, Path: web.Path(r, "/"), Secure: web.Scheme(r) == "https", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	a.render(w, r, "wifi-released", "Hotspot libéré", nil)
 }
 
@@ -364,7 +365,7 @@ func (a *App) setupNetwork(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if !s.ClientReady() || s.Phase == "connecting" {
 		a.auth.DisarmPresence()
-		http.Redirect(w, r, "/wifi", http.StatusSeeOther)
+		http.Redirect(w, r, web.Path(r, "/wifi"), http.StatusSeeOther)
 		return false
 	}
 	if a.setupGeneration != snapshot.Status.Generation {

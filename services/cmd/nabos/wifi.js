@@ -3,13 +3,14 @@
   const page = document.getElementById('wifi');
   const transition = document.getElementById('wifi-transition');
   if (!page && !transition) return;
+  const prefix = (page || transition).dataset.prefix;
   const status = document.getElementById('wifi-status');
   const authorization = document.getElementById('wifi-authorization');
   const labels = {idle: 'Prêt', connecting: 'Connexion en cours', succeeded: 'Connexion réussie', failed: 'Connexion échouée : vérifiez le mot de passe et le réseau', cancelled: 'Tentative annulée'};
   let switching = Boolean(transition);
   async function poll() {
     try {
-      const response = await fetch('/wifi/status', {cache: 'no-store'});
+      const response = await fetch(prefix + '/wifi/status', {cache: 'no-store'});
       if (!response.ok || response.redirected) throw new Error('unreachable');
       const data = await response.json();
       const s = data.status;
@@ -34,7 +35,7 @@
   async function renew() {
     if (document.hidden || switching) return;
     try {
-      const response = await fetch('/wifi/reserve', {method: 'POST', headers: {Accept: 'application/json'}});
+      const response = await fetch(prefix + '/wifi/reserve', {method: 'POST', headers: {Accept: 'application/json'}});
       if (!response.ok) throw new Error('reservation');
       await poll();
     } catch (_) {
@@ -58,7 +59,7 @@
       passwordMode();
     });
     security.addEventListener('change', passwordMode);
-    document.querySelectorAll('form[action="/wifi/connect"], form[action="/wifi/release"]').forEach(form => form.addEventListener('submit', () => { switching = true; }));
+    document.querySelectorAll('form[action="' + prefix + '/wifi/connect"], form[action="' + prefix + '/wifi/release"]').forEach(form => form.addEventListener('submit', () => { switching = true; }));
     if (page.dataset.mode === 'hotspot') {
       renew();
       setInterval(renew, 30000);

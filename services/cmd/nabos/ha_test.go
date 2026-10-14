@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,75 +27,93 @@ func haBroker(t *testing.T, a *App) func(string) []byte {
 	var mu sync.Mutex
 	last := map[string][]byte{}
 	done := make(chan struct{})
-	var client net.Conn
+	clients := map[net.Conn]bool{}
+	var handlers sync.WaitGroup
 	go func() {
 		defer close(done)
-		c, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		mu.Lock()
-		client = c
-		mu.Unlock()
-		defer c.Close()
 		for {
-			p, err := packets.ReadPacket(c)
+			c, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			var reply *packets.ControlPacket
-			switch p.Type {
-			case packets.CONNECT:
-				reply = packets.NewControlPacket(packets.CONNACK)
-			case packets.PUBLISH:
-				pub := p.Content.(*packets.Publish)
-				if pub.Topic == "nabos/"+a.ha.Node+"/state" && !pub.Retain {
-					t.Error("HA state publication lost retain")
+			mu.Lock()
+			clients[c] = true
+			mu.Unlock()
+			handlers.Go(func() {
+				defer func() {
+					c.Close()
+					mu.Lock()
+					delete(clients, c)
+					mu.Unlock()
+				}()
+				for {
+					p, err := packets.ReadPacket(c)
+					if err != nil {
+						return
+					}
+					var reply *packets.ControlPacket
+					switch p.Type {
+					case packets.CONNECT:
+						reply = packets.NewControlPacket(packets.CONNACK)
+					case packets.PUBLISH:
+						pub := p.Content.(*packets.Publish)
+						if pub.Topic == "nabos/"+a.ha.Node+"/state" && !pub.Retain {
+							t.Error("HA state publication lost retain")
+						}
+						mu.Lock()
+						last[pub.Topic] = append([]byte(nil), pub.Payload...)
+						mu.Unlock()
+						if pub.QoS == 1 {
+							reply = packets.NewControlPacket(packets.PUBACK)
+							reply.Content.(*packets.Puback).PacketID = pub.PacketID
+						}
+					case packets.SUBSCRIBE:
+						sub := p.Content.(*packets.Subscribe)
+						reply = packets.NewControlPacket(packets.SUBACK)
+						ack := reply.Content.(*packets.Suback)
+						ack.PacketID = sub.PacketID
+						ack.Reasons = make([]byte, len(sub.Subscriptions))
+					case packets.PINGREQ:
+						reply = packets.NewControlPacket(packets.PINGRESP)
+					case packets.DISCONNECT:
+						return
+					}
+					if reply != nil {
+						if _, err = reply.WriteTo(c); err != nil {
+							return
+						}
+					}
 				}
-				mu.Lock()
-				last[pub.Topic] = append([]byte(nil), pub.Payload...)
-				mu.Unlock()
-				if pub.QoS == 1 {
-					reply = packets.NewControlPacket(packets.PUBACK)
-					reply.Content.(*packets.Puback).PacketID = pub.PacketID
-				}
-			case packets.SUBSCRIBE:
-				sub := p.Content.(*packets.Subscribe)
-				reply = packets.NewControlPacket(packets.SUBACK)
-				ack := reply.Content.(*packets.Suback)
-				ack.PacketID = sub.PacketID
-				ack.Reasons = make([]byte, len(sub.Subscriptions))
-			case packets.PINGREQ:
-				reply = packets.NewControlPacket(packets.PINGRESP)
-			case packets.DISCONNECT:
-				return
-			}
-			if reply != nil {
-				if _, err = reply.WriteTo(c); err != nil {
-					return
-				}
-			}
+			})
 		}
 	}()
 	t.Cleanup(func() {
 		a.ha.Stop()
 		listener.Close()
+		<-done
 		mu.Lock()
-		if client != nil {
+		for client := range clients {
 			client.Close()
 		}
 		mu.Unlock()
-		<-done
+		handlers.Wait()
 	})
 	cfg := a.store.Get().HomeAssistant
 	cfg.Enabled, cfg.Host, cfg.Port = true, "127.0.0.1", listener.Addr().(*net.TCPAddr).Port
-	if err := a.ha.Start(cfg); err != nil {
+	if _, err := a.store.Update(func(s *config.Settings) error { s.HomeAssistant = cfg; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	prefs, _ := a.prefs.Current()
+	if err := a.ha.Start(cfg, prefs.Name); err != nil {
 		t.Fatal(err)
 	}
 	pynabWait(t, "HA connected", time.Second, a.ha.Connected)
 	return func(sub string) []byte {
 		mu.Lock()
 		defer mu.Unlock()
+		if strings.HasPrefix(sub, "homeassistant/") {
+			return append([]byte(nil), last[sub]...)
+		}
 		return append([]byte(nil), last["nabos/"+a.ha.Node+"/"+sub]...)
 	}
 }

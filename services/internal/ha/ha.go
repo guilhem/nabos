@@ -37,9 +37,9 @@ type Bridge struct {
 func (b *Bridge) topic(s string) string { return "nabos/" + b.Node + "/" + s }
 
 // Discovery returns the retained discovery messages (topic -> payload).
-func (b *Bridge) Discovery(prefix string) map[string]any {
+func (b *Bridge) Discovery(prefix, name string) map[string]any {
 	device := map[string]any{
-		"identifiers": []string{b.Node}, "name": "Nabaztag", "manufacturer": "Violet / TagTagTag",
+		"identifiers": []string{b.Node}, "name": name, "manufacturer": "Violet / TagTagTag",
 		"model": b.Model, "sw_version": b.Version,
 	}
 	base := func(name, obj string) map[string]any {
@@ -107,7 +107,7 @@ func (b *Bridge) ParseCommand(topic string, payload []byte) (Command, bool) {
 }
 
 // Start (re)connects to the Home Assistant broker described by cfg.
-func (b *Bridge) Start(cfg config.HomeAssistant) error {
+func (b *Bridge) Start(cfg config.HomeAssistant, name string) error {
 	b.Stop()
 	if !cfg.Enabled {
 		return nil
@@ -124,7 +124,7 @@ func (b *Bridge) Start(cfg config.HomeAssistant) error {
 		ConnectPassword:               []byte(cfg.Password),
 		WillMessage:                   &paho.WillMessage{Topic: b.topic("availability"), Payload: []byte("offline"), QoS: 1, Retain: true},
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, _ *paho.Connack) {
-			go b.announce(ctx, cm, prefix)
+			go b.announce(ctx, cm, prefix, name)
 		},
 		OnConnectError: func(err error) { slog.Warn("Home Assistant broker", "err", err) },
 		ClientConfig: paho.ClientConfig{
@@ -148,7 +148,7 @@ func (b *Bridge) Start(cfg config.HomeAssistant) error {
 	return nil
 }
 
-func (b *Bridge) announce(ctx context.Context, cm *autopaho.ConnectionManager, prefix string) {
+func (b *Bridge) announce(ctx context.Context, cm *autopaho.ConnectionManager, prefix, name string) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	// Consumers can send commands as soon as a discovery entity is published.
@@ -156,7 +156,7 @@ func (b *Bridge) announce(ctx context.Context, cm *autopaho.ConnectionManager, p
 		slog.Warn("Home Assistant command subscriptions", "err", err)
 		return
 	}
-	for topic, cfg := range b.Discovery(prefix) {
+	for topic, cfg := range b.Discovery(prefix, name) {
 		raw, _ := json.Marshal(cfg)
 		cm.Publish(ctx, &paho.Publish{Topic: topic, QoS: 1, Retain: true, Payload: raw})
 	}

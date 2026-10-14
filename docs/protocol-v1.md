@@ -113,6 +113,100 @@ Device-core's source pin and settings contract are independent of NabOS's
 revision. Its image environment and access policy are described in the
 [build guide](build.md).
 
+### Reverse proxies
+
+NabOS can serve its interface at a proxy's site root or beneath a path such as
+`/nabaztag`, without response rewriting. Home Assistant ingress is one supported
+use of this general proxy configuration.
+Administration still requires the rabbit's password and a session. All writes
+still require an Origin (or a Referer when Origin is absent) matching the public
+scheme and Host. Direct access continues to work.
+
+Trust is disabled by default. For initial setup, open the rabbit's local IP
+directly in your browser, sign in and open **Réglages → Accès via un proxy**.
+Enter the trusted proxy IP address(es) or CIDRs separated by commas, for example
+`192.168.20.144`, and select **Enregistrer l’accès via le proxy**. Use the IP
+that actually connects to the rabbit; a container, NAT or another proxy can
+change that address. Prefer one exact IP rather than a LAN subnet; include only
+proxies whose headers you control. Loopback and private networks are not
+implicitly trusted. Matching uses the actual TCP peer, never `X-Forwarded-For`.
+
+Saving applies immediately without a restart. Empty the field and save to
+disable trust. The confirmation renders directly, without redirecting through a
+proxy that may just have been removed. If proxy access stops working, reopen the
+rabbit's local IP directly to repair the configuration.
+
+NabOS stores only this HTTP policy in `/data/nabos/trusted-proxies`, a separate
+application-owned file with mode `0600`, using atomic replacement. It does not
+change `application.json` or the device-core settings schema, so an older RAUC
+slot can still read the application settings. A missing file disables trust;
+an unreadable or invalid file also disables trust and reports the error in local
+Settings and the log, without resetting other settings or the admin password.
+Invalid form values cannot replace the active policy. Failed writes keep the
+previous policy unless the exact candidate is confirmed visible on disk after
+an uncertain commit; in that case it is applied and Settings warns that survival
+after a power loss is uncertain. Concurrent saves are serialized, and requests
+already in progress keep their original policy. Configuration uses the Settings
+form rather than an environment variable.
+
+**Réglages → Identité et accès web** provides three application preferences:
+
+- **Nom du lapin:** 1–64 characters, displayed in the interface and MQTT device
+  discovery. Changing it republishes discovery without changing the machine
+  identity, MQTT topics or entity identifiers. It does not change the hostname.
+- **Domaines autorisés:** up to 32 exact hostnames, one per line, such as
+  `amand.lettron.fr`. Do not include a scheme, port, path, wildcard or IP address.
+  Matching ignores case, a final dot and the request port; subdomains require
+  their own entry. An empty list allows any syntactically valid Host. Changes
+  apply immediately to all web routes, including login and hotspot onboarding.
+- **Durée de connexion:** 1 hour, 1 day or 7 days (default). Both the cookie and
+  server token expire at a fixed deadline from login or initial password setup;
+  activity does not extend it. Changes apply to newly issued sessions. Existing
+  sessions keep their original deadline; restarting the app clears all sessions.
+
+If the domain list prevents access, connect directly to the rabbit's numeric
+local IP, or `http://10.41.0.1` while connected to its Wi-Fi hotspot. Recovery
+requires an actual TCP destination matching the numeric Host and a peer outside
+the trusted proxy list. A broad trusted CIDR containing your browser's peer
+address also disables this recovery path; prefer exact proxy addresses. Password,
+CSRF and physical-presence requirements still apply. Only loopback `GET`/`HEAD`
+requests to `/healthz` bypass domain restrictions for boot qualification.
+
+These preferences use `/data/nabos/preferences.json`, mode `0600`, with serialized
+atomic writes. They do not change `application.json` or device-core settings.
+Missing preferences use the defaults above. An existing invalid or unreadable
+file is preserved and blocks named-host and trusted-proxy access until repaired
+through direct-IP Settings; the load error remains visible there. A visible
+write with uncertain durability applies immediately and shows a warning.
+Older software slots ignore these preferences, including domain restrictions
+and session duration, while retaining the application settings and password.
+
+The proxy must preserve the incoming public `Host`, remove client-supplied
+`X-Forwarded-Prefix` and `X-Ingress-Path`, and replace client-supplied
+`X-Forwarded-Proto` with one authoritative `http` or `https` value. Check this
+through the complete proxy chain: trusting the final TCP peer does not make a
+forwarded client header trustworthy. `X-Forwarded-Host` and `Forwarded` are ignored.
+The application does not rewrite Origin.
+
+For a path prefix, set `X-Forwarded-Prefix` to the public path, for example
+`/nabaztag`. This works with reverse proxies such as
+[Traefik's StripPrefix middleware](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/stripprefix/).
+Home Assistant ingress can use `X-Ingress-Path` instead, for example
+`/api/ingress/nabaztag`. Both headers use the same validation; if both are present,
+their values must match. For a proxy at the site root, omit both path headers.
+
+For trusted peers, duplicate, conflicting or list-valued scheme/path headers are
+rejected with HTTP 400. A path must contain only nonempty segments of ASCII letters,
+digits, `_` and `-`, each separated by one `/`, with no trailing slash. Full
+URLs, dot segments, encoded characters, backslashes, queries, fragments and
+whitespace are rejected.
+The proxy removes this prefix from incoming request paths; NabOS adds it to
+links, forms, redirects, cookies, Wi-Fi requests and the Mastodon OAuth callback.
+HTTPS marks cookies Secure, and their Path is the prefix followed by `/`.
+
+Health checks and initial hotspot admission continue to use the actual socket
+addresses. Forwarded client addresses do not confer local or physical access.
+
 ## Health and testing
 
 Loopback-only `GET /healthz` returns

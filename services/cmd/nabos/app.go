@@ -34,6 +34,8 @@ type App struct {
 	store           *config.Store
 	rabbit          *rabbit.Engine
 	auth            *web.Auth
+	proxy           *web.ProxyPolicy
+	prefs           *web.PreferencesPolicy
 	wx              *weather.Client
 	device          *device.Client
 	net             *network.Client
@@ -56,6 +58,7 @@ type App struct {
 	airQuery        airquality.Query
 	mastodonMu      sync.Mutex
 	wifiMu          sync.Mutex
+	haMu            sync.Mutex
 	updateUploadMu  sync.Mutex
 	setupGeneration string
 	wifi            *wifiSession
@@ -78,6 +81,14 @@ type App struct {
 }
 
 func NewApp(env Env) (*App, error) {
+	prefs := web.LoadPreferences(filepath.Join(env.DataDir, "preferences.json"))
+	if _, err := prefs.Current(); err != nil {
+		slog.Error("invalid preferences", "err", err)
+	}
+	proxy := web.LoadProxy(filepath.Join(env.DataDir, "trusted-proxies"))
+	if _, err := proxy.Current(); err != nil {
+		slog.Error("proxy configuration disabled", "err", err)
+	}
 	store, err := config.Open(filepath.Join(env.DataDir, "application.json"))
 	if err != nil {
 		return nil, err
@@ -101,7 +112,9 @@ func NewApp(env Env) (*App, error) {
 	a := &App{
 		env:           env,
 		store:         store,
-		auth:          web.NewAuth(store),
+		auth:          web.NewAuth(store, prefs),
+		proxy:         proxy,
+		prefs:         prefs,
 		wx:            weather.NewClient(env.WeatherURL, env.GeocodingURL),
 		started:       time.Now(),
 		clockKick:     make(chan struct{}, 1),
@@ -169,9 +182,7 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	a.publishSettings(ctx)
-	if err := a.ha.Start(a.store.Get().HomeAssistant); err != nil {
-		a.setHAErr(err)
-	}
+	a.startHA()
 	go a.deviceLoop(ctx)
 	srv := &http.Server{Addr: a.env.HTTPAddr, Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second}
 	defer func() {
@@ -194,6 +205,17 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (a *App) startHA() {
+	a.haMu.Lock()
+	defer a.haMu.Unlock()
+	a.startHALocked()
+}
+
+func (a *App) startHALocked() {
+	prefs, _ := a.prefs.Current()
+	a.setHAErr(a.ha.Start(a.store.Get().HomeAssistant, prefs.Name))
 }
 
 func (a *App) send(command rabbit.Command) {

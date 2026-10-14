@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +19,7 @@ func uiDocument(t *testing.T, w *httptest.ResponseRecorder) *html.Node {
 	if w.Code != http.StatusOK {
 		t.Fatalf("page: HTTP %d: %s", w.Code, w.Body.String())
 	}
-	doc, err := html.Parse(w.Body)
+	doc, err := html.Parse(bytes.NewReader(w.Body.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +166,34 @@ func checkUISaveForm(t *testing.T, doc *html.Node, action string, subsections bo
 	}
 }
 
+func checkUIProxyCard(t *testing.T, doc *html.Node, prefix, value string) {
+	t.Helper()
+	checkUISaveForm(t, doc, prefix+"/settings/proxy", false, "trusted_proxies")
+	for _, form := range uiElements(doc, "form") {
+		if uiAttribute(form, "action") != prefix+"/settings/proxy" {
+			continue
+		}
+		section := uiAncestor(form, "section")
+		if section == nil || len(uiElements(section, "form")) != 1 || uiAttribute(form, "method") != "post" {
+			t.Fatal("proxy setting must have one dedicated card/form")
+		}
+		headers := uiElements(section, "h2")
+		if len(headers) != 1 || headers[0].FirstChild == nil || headers[0].FirstChild.Data != "Accès via un proxy" {
+			t.Fatal("proxy card needs its own French heading")
+		}
+		fields, labels, buttons := uiElements(form, "input"), uiElements(form, "label"), uiElements(form, "button")
+		if len(fields) != 1 || uiAttribute(fields[0], "value") != value || uiAttribute(fields[0], "maxlength") != "4096" || uiAttribute(fields[0], "aria-describedby") != "proxy-help proxy-recovery" {
+			t.Fatal("proxy field needs the saved value, input limit and help")
+		}
+		if len(labels) != 1 || uiAttribute(labels[0], "for") != uiAttribute(fields[0], "id") || labels[0].FirstChild == nil || labels[0].FirstChild.Data != "Adresse(s) des proxies de confiance" {
+			t.Fatal("proxy field must have an explicit French label")
+		}
+		if len(buttons) != 1 || uiAttribute(buttons[0].Parent, "class") != "form-actions" {
+			t.Fatal("proxy save must use the existing save footer")
+		}
+	}
+}
+
 func TestUIPageForms(t *testing.T) {
 	core := wifiTestBus(t)
 	a := testApp(t)
@@ -196,6 +225,8 @@ func TestUIPageForms(t *testing.T) {
 			checkUIFormSections(t, doc)
 			switch path {
 			case "/settings":
+				checkUISaveForm(t, doc, "/settings/preferences", false, "rabbit_name", "allowed_domains", "session_hours")
+				checkUIProxyCard(t, doc, "", "")
 				checkUISaveForm(t, doc, "/settings/system", false, "revision", "locale", "timezone", "volume")
 				checkUISaveForm(t, doc, "/settings/application", true, "chime", "wakeup", "sleep", "wakeup_6", "sleep_6", "location", "unit", "ha_enabled", "ha_host", "ha_password")
 			case "/services":
