@@ -21,7 +21,6 @@ import (
 
 const (
 	CookieName  = "nab_session"
-	sessionTTL  = 7 * 24 * time.Hour
 	maxSessions = 32
 	maxFailures = 5
 	lockout     = time.Minute
@@ -64,6 +63,7 @@ func checkPassword(a config.Admin, pw string) bool {
 
 type Auth struct {
 	store   *config.Store
+	prefs   *PreferencesPolicy
 	Now     func() time.Time
 	MonoNow func() uint64
 
@@ -80,8 +80,8 @@ type Auth struct {
 	presence uint64
 }
 
-func NewAuth(store *config.Store) *Auth {
-	return &Auth{store: store, Now: time.Now, MonoNow: monotonicNow, sessions: map[string]time.Time{}}
+func NewAuth(store *config.Store, prefs *PreferencesPolicy) *Auth {
+	return &Auth{store: store, prefs: prefs, Now: time.Now, MonoNow: monotonicNow, sessions: map[string]time.Time{}}
 }
 
 func (a *Auth) Configured() bool { return a.store.Get().Admin.Hash != "" }
@@ -147,6 +147,7 @@ func (a *Auth) Reset() error {
 }
 
 func (a *Auth) newSession() string {
+	prefs, _ := a.prefs.Current()
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	tok := hex.EncodeToString(b)
@@ -155,7 +156,7 @@ func (a *Auth) newSession() string {
 	now := a.Now()
 	oldest, oldestExp := "", time.Time{}
 	for k, exp := range a.sessions {
-		if now.After(exp) {
+		if !now.Before(exp) {
 			delete(a.sessions, k)
 		} else if oldest == "" || exp.Before(oldestExp) {
 			oldest, oldestExp = k, exp
@@ -164,7 +165,7 @@ func (a *Auth) newSession() string {
 	if len(a.sessions) >= maxSessions {
 		delete(a.sessions, oldest)
 	}
-	a.sessions[tok] = now.Add(sessionTTL)
+	a.sessions[tok] = now.Add(time.Duration(prefs.SessionHours) * time.Hour)
 	return tok
 }
 
@@ -267,16 +268,22 @@ func (a *Auth) Valid(r *http.Request) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	exp, ok := a.sessions[c.Value]
-	if !ok || a.Now().After(exp) {
+	if !ok || !a.Now().Before(exp) {
 		delete(a.sessions, c.Value)
 		return false
 	}
-	a.sessions[c.Value] = a.Now().Add(sessionTTL)
 	return true
 }
 
-func SetCookie(w http.ResponseWriter, r *http.Request, tok string) {
-	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: tok, Path: Path(r, "/"), Secure: Scheme(r) == "https", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds())})
+func (a *Auth) SetCookie(w http.ResponseWriter, r *http.Request, tok string) {
+	a.mu.Lock()
+	expires := a.sessions[tok]
+	remaining := expires.Sub(a.Now())
+	a.mu.Unlock()
+	if remaining <= 0 {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: tok, Path: Path(r, "/"), Secure: Scheme(r) == "https", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int((remaining + time.Second - 1) / time.Second), Expires: expires})
 }
 
 // sameOrigin rejects cross-site form posts (CSRF) in addition to SameSite cookies.

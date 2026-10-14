@@ -69,6 +69,7 @@ type page struct {
 	SSHRevision         string
 	SystemError         error
 	S                   config.Settings
+	Preferences         web.Preferences
 	Data                map[string]any
 }
 
@@ -77,6 +78,7 @@ func (p page) URL(path string) string { return p.Prefix + path }
 func (a *App) render(w http.ResponseWriter, r *http.Request, name, title string, data map[string]any) {
 	active, _, _ := strings.Cut(name, "-")
 	p := page{Title: title, Page: active, Prefix: web.Prefix(r), App: a, Auth: a.auth.Valid(r), S: a.store.Get(), Data: data, Flash: r.URL.Query().Get("ok"), Error: r.URL.Query().Get("err")}
+	p.Preferences, _ = a.prefs.Current()
 	p.SSHRevision, _ = data["SSHRevision"].(string)
 	revision, settings, err := a.device.ReadConfig(r.Context())
 	p.Revision, p.SystemError = revision, err
@@ -131,7 +133,7 @@ func (a *App) routes() http.Handler {
 			back(w, r, "/setup", err, "")
 			return
 		}
-		web.SetCookie(w, r, tok)
+		a.auth.SetCookie(w, r, tok)
 		http.Redirect(w, r, web.Path(r, "/settings"), http.StatusSeeOther)
 	})
 	m.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) { a.render(w, r, "login", "Connexion", nil) })
@@ -141,7 +143,7 @@ func (a *App) routes() http.Handler {
 			back(w, r, "/login", err, "")
 			return
 		}
-		web.SetCookie(w, r, tok)
+		a.auth.SetCookie(w, r, tok)
 		http.Redirect(w, r, web.Path(r, "/"), http.StatusSeeOther)
 	})
 	m.HandleFunc("POST /logout", func(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +152,8 @@ func (a *App) routes() http.Handler {
 	})
 	m.HandleFunc("GET /{$}", a.home)
 	m.HandleFunc("POST /action", a.action)
-	m.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) { a.renderSettings(w, r, "", nil) })
+	m.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) { a.renderSettings(w, r, nil) })
+	m.HandleFunc("POST /settings/preferences", a.savePreferences)
 	m.HandleFunc("POST /settings/proxy", a.saveProxy)
 	m.HandleFunc("POST /settings/application", a.saveSettings)
 	m.HandleFunc("POST /settings/system", a.saveSystemSettings)
@@ -196,17 +199,23 @@ func (a *App) routes() http.Handler {
 		}
 		back(w, r, "/sounds", err, "Son supprimé")
 	})
-	return a.proxy.Middleware(a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback", "/wifi", "/wifi/", "/wifi.js"))
+	return a.proxy.Middleware(a.prefs.Middleware(a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback", "/wifi", "/wifi/", "/wifi.js")))
 }
 
-func (a *App) renderSettings(w http.ResponseWriter, r *http.Request, proxyFlash string, proxySaveError error) {
+func (a *App) renderSettings(w http.ResponseWriter, r *http.Request, messages map[string]any) {
 	_, clk := a.clockQuality()
 	sshRevision, keys, sshErr := a.readSSHKeys()
 	addresses, proxyErr := a.proxy.Current()
-	a.render(w, r, "settings", "Réglages", map[string]any{"Locales": locales, "Voice": a.voiceSupported(), "VoiceOn": a.voiceEnabled(),
+	prefs, prefsErr := a.prefs.Current()
+	data := map[string]any{"Locales": locales, "Voice": a.voiceSupported(), "VoiceOn": a.voiceEnabled(),
 		"SSHRevision": sshRevision, "SSHKeys": keys, "SSHError": sshErr,
 		"Clock": clk, "Now": a.clockNow().In(a.location()).Format("2006-01-02T15:04"),
-		"ProxyAddresses": addresses, "ProxyError": proxyErr, "ProxyFlash": proxyFlash, "ProxySaveError": proxySaveError})
+		"ProxyAddresses": addresses, "ProxyError": proxyErr,
+		"Preferences": prefs, "PreferencesError": prefsErr, "AllowedDomains": strings.Join(prefs.AllowedDomains, "\n")}
+	for key, value := range messages {
+		data[key] = value
+	}
+	a.render(w, r, "settings", "Réglages", data)
 }
 
 func (a *App) saveProxy(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +240,42 @@ func (a *App) saveProxy(w http.ResponseWriter, r *http.Request) {
 	} else if err != nil {
 		err = fmt.Errorf("configuration non enregistrée : %w", err)
 	}
-	a.renderSettings(w, r, flash, err)
+	a.renderSettings(w, r, map[string]any{"ProxyFlash": flash, "ProxySaveError": err})
+}
+
+func (a *App) savePreferences(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil || len(r.PostForm) != 3 || len(r.PostForm["rabbit_name"]) != 1 || len(r.PostForm["allowed_domains"]) != 1 || len(r.PostForm["session_hours"]) != 1 {
+		http.Error(w, "formulaire de préférences invalide", http.StatusBadRequest)
+		return
+	}
+	hours, err := strconv.Atoi(r.PostForm.Get("session_hours"))
+	if err != nil {
+		http.Error(w, "durée de connexion invalide", http.StatusBadRequest)
+		return
+	}
+	value := web.Preferences{Name: r.PostForm.Get("rabbit_name"), SessionHours: hours}
+	for _, domain := range strings.Split(r.PostForm.Get("allowed_domains"), "\n") {
+		if domain = strings.TrimSpace(domain); domain != "" {
+			value.AllowedDomains = append(value.AllowedDomains, domain)
+		}
+	}
+	a.haMu.Lock()
+	old, _ := a.prefs.Current()
+	applied, err := a.prefs.Save(value)
+	flash := ""
+	if applied {
+		current, _ := a.prefs.Current()
+		if current.Name != old.Name {
+			a.startHALocked()
+		}
+		flash = "Nom et accès web enregistrés. La durée s’applique aux nouvelles connexions."
+		err = nil // A durability warning remains visible through PreferencesError.
+	} else if err != nil {
+		err = fmt.Errorf("préférences non enregistrées : %w", err)
+	}
+	a.haMu.Unlock()
+	a.renderSettings(w, r, map[string]any{"PreferencesFlash": flash, "PreferencesSaveError": err})
 }
 
 func (a *App) healthz(w http.ResponseWriter, r *http.Request) {
@@ -394,7 +438,7 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		kick(a.airKick)
 	}
 	if st.HomeAssistant != old.HomeAssistant {
-		a.setHAErr(a.ha.Start(st.HomeAssistant))
+		a.startHA()
 	}
 	kick(a.clockKick)
 	back(w, r, "/settings", nil, "Réglages enregistrés")

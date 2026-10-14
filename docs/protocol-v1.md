@@ -149,6 +149,38 @@ after a power loss is uncertain. Concurrent saves are serialized, and requests
 already in progress keep their original policy. Configuration uses the Settings
 form rather than an environment variable.
 
+**Réglages → Identité et accès web** provides three application preferences:
+
+- **Nom du lapin:** 1–64 characters, displayed in the interface and MQTT device
+  discovery. Changing it republishes discovery without changing the machine
+  identity, MQTT topics or entity identifiers. It does not change the hostname.
+- **Domaines autorisés:** up to 32 exact hostnames, one per line, such as
+  `amand.lettron.fr`. Do not include a scheme, port, path, wildcard or IP address.
+  Matching ignores case, a final dot and the request port; subdomains require
+  their own entry. An empty list allows any syntactically valid Host. Changes
+  apply immediately to all web routes, including login and hotspot onboarding.
+- **Durée de connexion:** 1 hour, 1 day or 7 days (default). Both the cookie and
+  server token expire at a fixed deadline from login or initial password setup;
+  activity does not extend it. Changes apply to newly issued sessions. Existing
+  sessions keep their original deadline; restarting the app clears all sessions.
+
+If the domain list prevents access, connect directly to the rabbit's numeric
+local IP, or `http://10.41.0.1` while connected to its Wi-Fi hotspot. Recovery
+requires an actual TCP destination matching the numeric Host and a peer outside
+the trusted proxy list. A broad trusted CIDR containing your browser's peer
+address also disables this recovery path; prefer exact proxy addresses. Password,
+CSRF and physical-presence requirements still apply. Only loopback `GET`/`HEAD`
+requests to `/healthz` bypass domain restrictions for boot qualification.
+
+These preferences use `/data/nabos/preferences.json`, mode `0600`, with serialized
+atomic writes. They do not change `application.json` or device-core settings.
+Missing preferences use the defaults above. An existing invalid or unreadable
+file is preserved and blocks named-host and trusted-proxy access until repaired
+through direct-IP Settings; the load error remains visible there. A visible
+write with uncertain durability applies immediately and shows a warning.
+Older software slots ignore these preferences, including domain restrictions
+and session duration, while retaining the application settings and password.
+
 The proxy must preserve the incoming public `Host`, remove client-supplied
 `X-Forwarded-Prefix` and `X-Ingress-Path`, and replace client-supplied
 `X-Forwarded-Proto` with one authoritative `http` or `https` value. Check this

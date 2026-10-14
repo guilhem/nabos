@@ -225,6 +225,7 @@ func TestUIPageForms(t *testing.T) {
 			checkUIFormSections(t, doc)
 			switch path {
 			case "/settings":
+				checkUISaveForm(t, doc, "/settings/preferences", false, "rabbit_name", "allowed_domains", "session_hours")
 				checkUIProxyCard(t, doc, "", "")
 				checkUISaveForm(t, doc, "/settings/system", false, "revision", "locale", "timezone", "volume")
 				checkUISaveForm(t, doc, "/settings/application", true, "chime", "wakeup", "sleep", "wakeup_6", "sleep_6", "location", "unit", "ha_enabled", "ha_host", "ha_password")

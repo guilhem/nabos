@@ -1,6 +1,6 @@
 {{define "top"}}<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Title}}</title>
+<title>{{.Title}} · {{.Preferences.Name}}</title>
 <style>
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:#f6f3fa;color:#222;line-height:1.5}
@@ -35,7 +35,7 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 @media(max-width:40rem){header nav{order:1;width:100%}header a{flex-grow:1;text-align:center}main{padding:1rem .75rem}section{padding:1rem}.schedule th:first-child{width:4.5rem}.schedule td,.schedule th{padding-right:.25rem}}
 @media(max-width:30rem){.schedule,.schedule tbody{display:block}.schedule thead{display:none}.schedule tr{display:grid;gap:.4rem;padding:.75rem 0;border-top:1px solid #e6dfeb}.schedule th:first-child{width:auto}.schedule td,.schedule th{padding:0}.schedule td::before{content:"Réveil";display:block;font-size:.9rem;margin-bottom:.25rem}.schedule td:last-child::before{content:"Coucher"}}
 </style></head><body>
-<header><b>🐰 NabOS</b>{{if .Auth}}<nav aria-label="Navigation principale">
+<header><b>🐰 {{.Preferences.Name}}</b>{{if .Auth}}<nav aria-label="Navigation principale">
 <a href="{{$.URL "/"}}"{{if eq .Page "home"}} aria-current="page"{{end}}>Accueil</a>
 <a href="{{$.URL "/settings"}}"{{if eq .Page "settings"}} aria-current="page"{{end}}>Réglages</a>
 <a href="{{$.URL "/wifi"}}"{{if eq .Page "wifi"}} aria-current="page"{{end}}>Wi-Fi</a>
@@ -95,6 +95,23 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 {{template "bottom" .}}{{end}}
 
 {{define "settings"}}{{template "top" .}}
+<section><h2>Identité et accès web</h2>
+{{if .Data.PreferencesFlash}}<p class="ok" role="status">{{.Data.PreferencesFlash}}</p>{{end}}
+{{if .Data.PreferencesError}}<p class="err" role="alert">{{.Data.PreferencesError}}</p>{{end}}
+{{if .Data.PreferencesSaveError}}<p class="err" role="alert">{{.Data.PreferencesSaveError}}</p>{{end}}
+<form method="post" action="{{$.URL "/settings/preferences"}}">
+<label>Nom du lapin <input name="rabbit_name" value="{{.Data.Preferences.Name}}" maxlength="64" required aria-describedby="rabbit-name-help"></label>
+<p id="rabbit-name-help">Affiché dans cette interface et publié par MQTT. Le nom réseau et les entités existantes restent identiques.</p>
+<label for="allowed-domains">Domaines autorisés — un par ligne</label>
+<textarea id="allowed-domains" name="allowed_domains" rows="3" maxlength="8192" spellcheck="false" placeholder="amand.lettron.fr" aria-describedby="domains-help domains-recovery">{{.Data.AllowedDomains}}</textarea>
+<p id="domains-help">Noms exacts, sans protocole, port, chemin ni joker. Champ vide : tous les domaines sont acceptés. La restriction s’applique immédiatement à tous les accès web.</p>
+<p id="domains-recovery">Pour corriger une erreur, ouvrez directement l’IP locale du lapin, ou <code>http://10.41.0.1</code> sur son point d’accès Wi-Fi. Votre appareil ne doit pas appartenir aux proxies de confiance.</p>
+<label>Durée de connexion <select name="session_hours" aria-describedby="session-help">
+<option value="1"{{if eq .Data.Preferences.SessionHours 1}} selected{{end}}>1 heure</option>
+<option value="24"{{if eq .Data.Preferences.SessionHours 24}} selected{{end}}>1 jour</option>
+<option value="168"{{if eq .Data.Preferences.SessionHours 168}} selected{{end}}>7 jours</option></select></label>
+<p id="session-help">Durée maximale depuis la connexion, appliquée aux nouvelles connexions. Les sessions en cours conservent leur durée.</p>
+<div class="form-actions"><button>Enregistrer le nom et l’accès web</button></div></form></section>
 <section><h2>Wi-Fi</h2><p><a href="{{$.URL "/wifi"}}">Configurer le réseau et les profils Wi-Fi</a></p></section>
 <section><h2>Heure</h2><p>{{template "clock" .Data.Clock}}</p>
 {{if ne .Data.Clock "ntp"}}<form method="post" action="{{$.URL "/clock"}}"><label>Date et heure <input type="datetime-local" name="now" value="{{.Data.Now}}" required></label>

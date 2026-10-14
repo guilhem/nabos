@@ -19,7 +19,7 @@ func newAuth(t *testing.T) *Auth {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewAuth(st)
+	return NewAuth(st, LoadPreferences(filepath.Join(t.TempDir(), "preferences.json")))
 }
 
 func freshPresence(t *testing.T, a *Auth) {
@@ -140,7 +140,7 @@ func TestSessionsAreBoundedAndResetWorks(t *testing.T) {
 	if _, ok := a.sessions[first]; ok {
 		t.Fatal("oldest session not evicted")
 	}
-	now = now.Add(sessionTTL + time.Hour)
+	now = now.Add(168*time.Hour + time.Hour)
 	a.newSession()
 	if len(a.sessions) != 1 {
 		t.Fatal("expired sessions not reaped")

@@ -47,6 +47,7 @@ func NewProxy(addresses string) (*Proxy, error) {
 type proxyContextKey struct{}
 type proxyRequest struct {
 	scheme, prefix string
+	trusted        bool
 }
 
 var (
@@ -93,6 +94,7 @@ func (p *Proxy) Middleware(next http.Handler) http.Handler {
 				if !network.Contains(peer.Addr().AsSlice()) {
 					continue
 				}
+				external.trusted = true
 				if values := r.Header.Values("X-Forwarded-Proto"); len(values) != 0 {
 					if len(values) != 1 || (values[0] != "http" && values[0] != "https") {
 						http.Error(w, "invalid X-Forwarded-Proto", http.StatusBadRequest)

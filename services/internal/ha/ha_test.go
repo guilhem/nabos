@@ -1,7 +1,9 @@
 package ha
 
 import (
+	"encoding/json"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +24,7 @@ func TestDiscoveryWaitsForCommandSubscriptions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			commands := make(chan Command, 1)
 			b := &Bridge{Node: "nabos_test", OnCommand: func(c Command) { commands <- c }}
-			advertised, subscribed := discoveryBroker(t, b, tc.reason)
+			advertised, subscribed, _ := discoveryBroker(t, b, tc.reason, "Nabaztag")
 			if tc.reason == 0 {
 				select {
 				case <-advertised:
@@ -45,8 +47,8 @@ func TestDiscoveryWaitsForCommandSubscriptions(t *testing.T) {
 				t.Fatal("subscription was not attempted")
 			}
 			select {
-			case topic := <-advertised:
-				t.Fatalf("advertised %s despite failed command subscriptions", topic)
+			case pub := <-advertised:
+				t.Fatalf("advertised %s despite failed command subscriptions", pub.Topic)
 			case <-time.After(200 * time.Millisecond):
 			}
 		})
@@ -55,22 +57,18 @@ func TestDiscoveryWaitsForCommandSubscriptions(t *testing.T) {
 
 // Model a consumer acting at the first discovery: a non-retained command is
 // forwarded only if its subscription already exists, and is otherwise lost.
-func discoveryBroker(t *testing.T, b *Bridge, reason byte) (<-chan string, <-chan struct{}) {
+func discoveryBroker(t *testing.T, b *Bridge, reason byte, name string) (<-chan *packets.Publish, <-chan struct{}, config.HomeAssistant) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	advertised := make(chan string, 32)
+	advertised := make(chan *packets.Publish, 64)
 	subscribed, done := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
+	var subscribedOnce sync.Once
 	var client net.Conn
-	go func() {
-		defer close(done)
-		c, err := listener.Accept()
-		if err != nil {
-			return
-		}
+	serve := func(c net.Conn) {
 		mu.Lock()
 		client = c
 		mu.Unlock()
@@ -85,10 +83,13 @@ func discoveryBroker(t *testing.T, b *Bridge, reason byte) (<-chan string, <-cha
 			var reply *packets.ControlPacket
 			switch p.Type {
 			case packets.CONNECT:
+				if id := p.Content.(*packets.Connect).ClientID; id != b.Node {
+					t.Errorf("MQTT client ID = %q, want %q", id, b.Node)
+				}
 				reply = packets.NewControlPacket(packets.CONNACK)
 			case packets.SUBSCRIBE:
 				sub := p.Content.(*packets.Subscribe)
-				close(subscribed)
+				subscribedOnce.Do(func() { close(subscribed) })
 				reply = packets.NewControlPacket(packets.SUBACK)
 				ack := reply.Content.(*packets.Suback)
 				ack.PacketID = sub.PacketID
@@ -103,7 +104,7 @@ func discoveryBroker(t *testing.T, b *Bridge, reason byte) (<-chan string, <-cha
 			case packets.PUBLISH:
 				pub := p.Content.(*packets.Publish)
 				if strings.HasPrefix(pub.Topic, "homeassistant/") {
-					advertised <- pub.Topic
+					advertised <- pub
 					if firstDiscovery {
 						firstDiscovery = false
 						if ready {
@@ -116,7 +117,7 @@ func discoveryBroker(t *testing.T, b *Bridge, reason byte) (<-chan string, <-cha
 					}
 				}
 				if pub.Topic == b.topic("availability") && string(pub.Payload) == "online" {
-					advertised <- pub.Topic
+					advertised <- pub
 				}
 				if pub.QoS == 1 {
 					reply = packets.NewControlPacket(packets.PUBACK)
@@ -133,6 +134,16 @@ func discoveryBroker(t *testing.T, b *Bridge, reason byte) (<-chan string, <-cha
 				}
 			}
 		}
+	}
+	go func() {
+		defer close(done)
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			serve(c)
+		}
 	}()
 	t.Cleanup(func() {
 		b.Stop()
@@ -148,10 +159,60 @@ func discoveryBroker(t *testing.T, b *Bridge, reason byte) (<-chan string, <-cha
 			t.Error("MQTT fixture did not stop")
 		}
 	})
-	if err := b.Start(config.HomeAssistant{Enabled: true, Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, Prefix: "homeassistant"}); err != nil {
+	cfg := config.HomeAssistant{Enabled: true, Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, Prefix: "homeassistant"}
+	if err := b.Start(cfg, name); err != nil {
 		t.Fatal(err)
 	}
-	return advertised, subscribed
+	return advertised, subscribed, cfg
+}
+
+func TestRenameUpdatesRetainedDiscovery(t *testing.T) {
+	b := &Bridge{Node: "nabos_test", Model: "TagTagTag", Version: "test"}
+	const originalName, renamed = "Émile 🐇", "Lapin \"bleu\""
+	advertised, _, cfg := discoveryBroker(t, b, 0, originalName)
+	readDiscovery := func(name string) map[string]any {
+		t.Helper()
+		entities := make(map[string]any)
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		for len(entities) < 17 {
+			select {
+			case pub := <-advertised:
+				if !strings.HasPrefix(pub.Topic, cfg.Prefix+"/") {
+					continue
+				}
+				if !pub.Retain {
+					t.Fatalf("discovery %s is not retained", pub.Topic)
+				}
+				var entity map[string]any
+				if err := json.Unmarshal(pub.Payload, &entity); err != nil {
+					t.Fatal(err)
+				}
+				device, ok := entity["device"].(map[string]any)
+				if !ok || device["name"] != name {
+					t.Fatalf("device metadata for %s = %#v, want name %q", pub.Topic, entity["device"], name)
+				}
+				if !reflect.DeepEqual(device["identifiers"], []any{b.Node}) {
+					t.Fatalf("device identifiers = %#v, want %q", device["identifiers"], b.Node)
+				}
+				delete(device, "name")
+				if _, exists := entities[pub.Topic]; exists {
+					t.Fatalf("duplicate discovery topic %s", pub.Topic)
+				}
+				entities[pub.Topic] = entity
+			case <-timer.C:
+				t.Fatalf("received %d of 17 discovery entities for %q", len(entities), name)
+			}
+		}
+		return entities
+	}
+	before := readDiscovery(originalName)
+	if err := b.Start(cfg, renamed); err != nil {
+		t.Fatal(err)
+	}
+	if after := readDiscovery(renamed); !reflect.DeepEqual(before, after) {
+		t.Fatalf("rename changed discovery beyond device name:\nbefore: %#v\nafter: %#v", before, after)
+	}
 }
 
 func TestCommandsAreValidated(t *testing.T) {
@@ -177,7 +238,7 @@ func TestCommandsAreValidated(t *testing.T) {
 			t.Fatalf("%s %s accepted", topic, payload)
 		}
 	}
-	if len(b.Discovery("homeassistant")) != 17 {
+	if len(b.Discovery("homeassistant", "Nabaztag")) != 17 {
 		t.Fatal("discovery entities")
 	}
 	for _, name := range []string{"taichi", "surprise", "eightball", "airquality", "carrot", "birthday", "autopromo", "weather_tomorrow"} {
