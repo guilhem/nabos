@@ -57,7 +57,7 @@ let
       mountprefix = "/run/rauc/mnt";
       bundle-formats = "-plain +verity";
     };
-    keyring = { path = "/data/rauc/ca.cert.pem"; directory = "/run/nabos-rauc-trust"; };
+    keyring = { path = "/usr/share/nabos/ca.cert.pem"; directory = "/run/nabos-rauc-trust"; };
     handlers.post-install = "${postInstall}";
     "slot.rootfs.0" = { device = "/dev/mmcblk0p2"; type = "ext4"; bootname = "A"; };
     "slot.rootfs.1" = { device = "/dev/mmcblk0p3"; type = "ext4"; bootname = "B"; };
@@ -430,7 +430,7 @@ in
     };
     rauc = {
       path = [ pkgs.ubootTools pkgs.coreutils pkgs.util-linux ];
-      unitConfig.ConditionFileNotEmpty = "/data/rauc/ca.cert.pem";
+      unitConfig.ConditionFileNotEmpty = "/usr/share/nabos/ca.cert.pem";
       serviceConfig = {
         ExecStart = mkForce "${lib.getExe config.services.rauc.package} --conf=/etc/rauc/system.conf --mount=/run/rauc/mnt service";
         StateDirectory = mkForce [ ];

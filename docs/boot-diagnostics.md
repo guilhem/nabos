@@ -4,6 +4,9 @@ NixOS images save startup logs on the shared `/data` partition so they can be
 read after an A/B rollback. Installing an image with this support is required;
 it cannot recover journals lost during earlier boots.
 
+See [head-button recovery](recovery.md) for manual rollback and factory reset.
+Factory reset erases these logs along with all other user data.
+
 ## Read the logs after rollback
 
 Connect to the working slot using the existing SSH account. The initrd logs are

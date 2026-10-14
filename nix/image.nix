@@ -5,13 +5,14 @@ let
   arm64 = target == "zero2-arm64";
   dtb = if arm64 then "bcm2710-rpi-zero-2-w.dtb" else "bcm2708-rpi-zero-w.dtb";
   kernel = config.boot.kernelPackages.kernel;
+  recovery = import ./recovery.nix { pkgs = system.pkgs; nativePkgs = pkgs; inherit kernel packages; };
   # Runtime references omit headers and native helpers needed on a fresh builder.
   cacheRoots = lib.unique ([ config.system.build.toplevel packages.uboot kernel.dev
     pkgs.gtk4.dev pkgs.gobject-introspection.dev pkgs.go_1_27 ]
     # Profile collisions can discard references to outputs it still must build.
     ++ lib.concatMap (entry: entry.paths) config.system.path.chosenOutputs
     # The compressed initrd discards its references, including generated udev rules.
-    ++ [ (pkgs.closureInfo {
+    ++ [ recovery (pkgs.closureInfo {
       rootPaths = map (entry: entry.source) (lib.filter (entry: entry.enable &&
         !(lib.elem entry.source config.boot.initrd.systemd.suppressedStorePaths))
         config.boot.initrd.systemd.storePaths);
@@ -21,7 +22,7 @@ let
     storePaths = [ config.system.build.toplevel ];
     volumeLabel = "nabos-root";
     populateImageCommands = ''
-      mkdir -p files/{boot/dtb,boot/overlays,etc/nixos,data,var,tmp,run,proc,sys,dev,bin,usr/bin}
+      mkdir -p files/{boot/dtb,boot/overlays,etc/nixos,data,var,tmp,run,proc,sys,dev,bin,usr/bin,usr/share/nabos}
       ln -s ${config.system.build.toplevel}/init files/init
       ln -s ${system.pkgs.bash}/bin/sh files/bin/sh
       ln -s ${system.pkgs.coreutils}/bin/env files/usr/bin/env
@@ -46,7 +47,7 @@ let
 in
 pkgs.runCommand "nabos-nixos-${target}-${version}" {
   nativeBuildInputs = with pkgs; [ e2fsprogs dosfstools mtools ubootTools jq ];
-  passthru = { inherit rootfs bootScript cacheRoots; systemClosure = config.system.build.toplevel; };
+  passthru = { inherit rootfs bootScript cacheRoots recovery; systemClosure = config.system.build.toplevel; };
 } ''
   mkdir -p $out boot
   cp --reflink=auto --sparse=always ${rootfs} $out/rootfs.ext4
@@ -58,6 +59,11 @@ pkgs.runCommand "nabos-nixos-${target}-${version}" {
   find ${kernel}/dtbs -name '*.dtb' -exec cp '{}' boot/ \;
   cp ${packages.uboot}/u-boot.bin boot/
   cp ${../image/boot/config.txt} boot/config.txt
+  mkdir boot/recovery
+  cp ${kernel}/${kernel.target} boot/recovery/kernel
+  cp ${recovery}/initrd boot/recovery/initrd
+  dtbfile=$(find ${config.hardware.deviceTree.package} -name '${dtb}' -print)
+  cp "$dtbfile" boot/recovery/${dtb}
   sed -e 's/@TARGET@/${target}/g' -e 's/@DTB@/${dtb}/g' ${../image/boot/boot.env.in} > boot/boot.env
   mkimage -A arm -T script -C none -n 'NabOS NixOS RAUC A/B' -d ${bootScript} boot/boot.scr
   truncate -s 256M $out/boot.vfat

@@ -36,7 +36,7 @@ Les [essais Zero 2 W du 30 septembre 2026](qualification-zero2-2026-09-30.md) co
 - [ ] Les constructions et tests des artefacts exactement téléchargés réussissent pour les deux cibles ; manifestes `SHA256SUMS-<cible>`, verrous `flake-<cible>.lock` et révisions conservés avec les preuves. Le bundle respecte la limite d’import de 2 Gio ; taille des autres artefacts, durée totale et pic disque de chaque job relevés.
 - [ ] Rapports cold/warm/version/nixpkgs conservés sous `dist/measurements/` avec entrées et scopes ; union Cachix dédupliquée mesurée après publication, objets manquants/évincés signalés. Aucune suffisance de 5 Go conclue sans ces mesures.
 
-Les assets sont ceux du [guide de fabrication](build.md#construire-et-vérifier), tous nommés par cible : image de premier flash, bundle RAUC, certificat public, verrou Nix, script de démarrage, racines de cache et manifestes. Le certificat de confiance est amorcé dans `/data/rauc/ca.cert.pem` ; la clé privée n’est jamais une entrée Nix ni un artefact. Firmware Raspberry Pi, U-Boot et leur configuration sont communs aux racines A/B, mais les deux copies FAT sont mises à jour par RAUC. Un changement du partitionnement nécessite un nouveau flash.
+The artifacts listed in the [build guide](build.md#construire-et-vérifier) are named per target: initial-flash image, RAUC bundle, public certificate, Nix lock, boot script, cache roots, and manifests. The public trust certificate is embedded in the immutable rootfs at `/usr/share/nabos/ca.cert.pem`; private signing keys are never Nix inputs or shipped artifacts. Raspberry Pi firmware, U-Boot, and their configuration are shared by the A/B roots, while RAUC updates both FAT copies. Partition layout changes require a new flash.
 
 ## Qualification de l’extraction device-core
 
@@ -60,3 +60,10 @@ Les assets sont ceux du [guide de fabrication](build.md#construire-et-vérifier)
 - [ ] Wi-Fi device-core sans Go ; matériel disponible malgré NetworkManager indisponible.
 - [ ] Formulaire avant administration accessible uniquement par le hotspot réel avec confirmation physique liée à la réservation ; après administration, connexion obligatoire y compris sur le hotspot.
 - [ ] Vérifier DNS captif et accès HTTP sur 80 ; `/healthz` distant reste inaccessible.
+
+## Physical recovery qualification
+
+- [ ] Qualify [the recovery gesture](recovery.md) on both Zero W and Zero 2 W with disposable cards: 10-second threshold, long holds, double-click reset, cancelled gestures, and Linux takeover.
+- [ ] Measure WS2812 timing, GRB order, latch interval, and uninterrupted PWM FIFO output. FIFO reliability is a release gate; software simulation cannot satisfy it.
+- [ ] Check A-to-B and B-to-A manual rollback with recorded running-slot history, missing history, invalid artifacts, and failed environment writes.
+- [ ] Cut power during reset authorization, p4 formatting, and final environment completion. Verify autonomous retry, unchanged boot/root regions, erased user state, new SSH keys and identity, fresh Wi-Fi onboarding, and retained system version.

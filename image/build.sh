@@ -52,7 +52,7 @@ payload=$(nix --extra-experimental-features 'nix-command flakes' build --impure 
   --expr "$payload_expr")
 seconds=$SECONDS
 SECONDS=0
-mkdir -p "$work/images" "$work/data/rauc" "$work/bundle" "$work/empty"
+mkdir -p "$work/images" "$work/data" "$work/bundle" "$work/empty"
 if $development; then
   mkdir -m700 "$work/signing"
   (umask 077; openssl req -x509 -newkey rsa:3072 -nodes -days 7 \
@@ -64,9 +64,19 @@ else
   signing_key=${RAUC_KEY:?RAUC_KEY must point to a PEM signing key}
   signing_cert=${RAUC_CERT:?RAUC_CERT must point to its trusted public certificate}
 fi
-install -m600 "$signing_cert" "$work/data/rauc/ca.cert.pem"
-chmod 700 "$work/data/rauc"
+# Only the public certificate is embedded; private keys stay outside the payload.
+openssl x509 -in "$signing_cert" -noout
+if grep -qE -- '-----BEGIN .*PRIVATE KEY-----' "$signing_cert"; then
+  echo 'RAUC_CERT must contain public certificates only' >&2; exit 1
+fi
+install -m644 "$signing_cert" "$work/public-ca.pem"
 cp --reflink=auto --sparse=always "$payload"/{rootfs.ext4,boot.vfat,uboot.env} "$work/images/"
+chmod u+w "$work/images/rootfs.ext4"
+debugfs -w -R "write \"$work/public-ca.pem\" /usr/share/nabos/ca.cert.pem" "$work/images/rootfs.ext4"
+for field in 'uid 0' 'gid 0' 'mode 0100644'; do
+  debugfs -w -R "set_inode_field /usr/share/nabos/ca.cert.pem $field" "$work/images/rootfs.ext4"
+done
+debugfs -R 'cat /usr/share/nabos/ca.cert.pem' "$work/images/rootfs.ext4" 2>/dev/null | cmp - "$work/public-ca.pem"
 truncate -s 1G "$work/images/data.ext4"
 # Expanded by the child shell, with paths passed as positional arguments.
 # shellcheck disable=SC2016

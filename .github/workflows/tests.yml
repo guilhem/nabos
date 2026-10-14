@@ -67,7 +67,11 @@ jobs:
         working-directory: services/tests/image
         run: |
           go test -race -c -o "$RUNNER_TEMP/nabos-image-tests" .
-          sudo env NABOS_RAUC_INTEGRATION=1 unshare --mount --propagation private \
+          # Use the image's writer: distro libubootenv silently ignores U-Boot batch syntax.
+          fw_tools=$(nix --extra-experimental-features 'nix-command flakes' build \
+            --impure --no-link --print-out-paths --expr '
+              (builtins.getFlake ("git+file://" + toString ../../..)).inputs.nixpkgs.legacyPackages.x86_64-linux.ubootTools.out')
+          sudo env "PATH=$fw_tools/bin:$PATH" NABOS_RAUC_INTEGRATION=1 unshare --mount --propagation private \
             "$RUNNER_TEMP/nabos-image-tests" -test.run '^TestRaucBootMBRIntegration$' -test.v -test.timeout 10m
       - name: Shell and runtime fixture checks
         run: |
@@ -117,7 +121,7 @@ jobs:
               --no-update-lock-file ".#$package-native" --out-link "build/$package-native" \
               --print-out-paths >> build/native-test-cache-roots
           done
-          for check in audio-boot network-boot boot-logs; do
+          for check in audio-boot network-boot boot-logs factory-reset; do
             nix --extra-experimental-features 'nix-command flakes' build \
               --no-update-lock-file ".#checks.x86_64-linux.$check" \
               --out-link "build/$check-test" --print-out-paths >> build/native-test-cache-roots

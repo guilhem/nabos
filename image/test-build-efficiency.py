@@ -56,6 +56,8 @@ elif name == 'git':
         print('a' * 40)
     else:
         assert 'status' in args
+elif name == 'openssl' and args[0] == 'x509':
+    assert '-noout' in args
 elif name == 'openssl':
     pathlib.Path(args[args.index('-keyout') + 1]).write_text('private fixture key')
     pathlib.Path(args[args.index('-out') + 1]).write_text('public fixture certificate')
@@ -100,6 +102,9 @@ elif name == 'python3':
         sys.stdin.read()
     else:
         assert args[0].endswith('/test-initrd.py'), args
+elif name == 'debugfs' and not os.environ.get('FIXTURE_VALIDATION'):
+    if args[1] == 'cat /usr/share/nabos/ca.cert.pem':
+        sys.stdout.write(pathlib.Path(args[-1]).parent.parent.joinpath('public-ca.pem').read_text())
 elif name == 'debugfs' and os.environ.get('FIXTURE_VALIDATION'):
     request = args[1]
     if request == 'cat /boot/init':
@@ -108,11 +113,12 @@ elif name == 'debugfs' and os.environ.get('FIXTURE_VALIDATION'):
         print('Size: 12')
     elif request.startswith('dump /boot/initrd '):
         pathlib.Path(request.removeprefix('dump /boot/initrd ')).write_bytes(b'initrd fixture')
-    elif request == 'cat /rauc/ca.cert.pem':
+    elif request == 'cat /usr/share/nabos/ca.cert.pem':
         sys.stdout.write((repo / 'certificate.pem').read_text())
     else:
-        assert request in ('stat /nix/store', 'stat /rauc', 'stat /rauc/ca.cert.pem'), request
-        print('User: 0 Group: 0 Mode: ' + ('0700' if request == 'stat /rauc' else '0600'))
+        assert request in ('stat /nix/store', 'stat /rauc', 'stat /usr/share/nabos/ca.cert.pem'), request
+        if request != 'stat /rauc':
+            print('Type: regular User: 0 Group: 0 Mode: 0644')
 elif name == 'unsquashfs':
     assert args[0] == '-cat', args
     if args[-1] == 'rauc-hook.sh':
@@ -296,7 +302,10 @@ class BuildEfficiency(unittest.TestCase):
                     self.assertEqual(self.calls('dd'), [])
                     self.assertEqual(self.calls('e2fsck'), [['-fn', str(files[1])], ['-fn', str(files[3])]])
                     data_checks = [args for args in self.calls('debugfs') if '/rauc' in args[1]]
-                    self.assertEqual(len(data_checks), 3)
+                    self.assertEqual(len(data_checks), 1)
+                    trust_checks = [args for args in self.calls('debugfs') if '/usr/share/nabos/ca.cert.pem' in args[1]]
+                    self.assertEqual(len(trust_checks), 2)
+                    self.assertTrue(all(args[-1] == str(files[1]) for args in trust_checks))
                     self.assertTrue(all(args[-1] == str(files[3]) for args in data_checks))
 
     def test_existing_cache_benchmark_contract(self):

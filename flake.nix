@@ -79,6 +79,9 @@
       checks.x86_64-linux.boot-logs = import ./nix/tests/boot-logs.nix {
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
       };
+      checks.x86_64-linux.factory-reset = import ./nix/tests/recovery.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      };
       packages = forSystems (buildSystem:
         nixpkgs.lib.genAttrs targets (target:
           (mkImage { inherit buildSystem target; }).payload) // {

@@ -214,6 +214,8 @@ if mode == 'seed':
          (snapshot.parent / 'legacy-host-key').read_text()),
         ('/data/system/.data-grown', 0, 0, 0o644, ''),
         ('/data/system/machine-id', 0, 0, 0o644, '0123456789abcdef0123456789abcdef\n'),
+        ('/data/rauc/ca.cert.pem', 0, 0, 0o600,
+         (root / 'usr/share/nabos/ca.cert.pem').read_text()),
     ]
     for name, uid, gid, permissions, contents in files:
         path = root / (('data/system' + name) if name.startswith(('/etc/', '/var/')) else name.lstrip('/'))
@@ -224,7 +226,8 @@ if mode == 'seed':
     home = root / 'data/system/var/lib/nabos'
     home.chmod(0o711)
     os.chown(home, 1000, 1000)
-    names = [row[0] for row in files] + ['/etc/machine-id', '/data/rauc/ca.cert.pem']
+    (root / 'data/rauc').chmod(0o700)
+    names = [row[0] for row in files] + ['/etc/machine-id']
 else:
     names = list(json.loads(snapshot.read_text()))
 state = {}

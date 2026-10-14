@@ -173,6 +173,8 @@ install-same=false
 		"/dev/mmcblk0", loop,
 		"/etc/rauc/ca.cert.pem", cert,
 		"/data", dataMount,
+		"/proc/cmdline", filepath.Join(dir, "cmdline"),
+		"/usr/share/nabos/ca.cert.pem", filepath.Join(dir, "image-ca.pem"),
 	).Replace(read(t, filepath.Join(imageDir, "rauc-hook.sh")))
 	badKey := filepath.Join(dir, "untrusted.key")
 	badCert := filepath.Join(dir, "untrusted.crt")
@@ -209,6 +211,7 @@ install-same=false
 	busEnv := "DBUS_SYSTEM_BUS_ADDRESS=unix:path=" + bus
 	serviceLog := filepath.Join(dir, "rauc.log")
 	startService := func(slot string) func() {
+		write(t, filepath.Join(dir, "cmdline"), "rauc.slot="+slot)
 		stop := raStart(t, serviceLog, "rauc", []string{"--conf=" + conf, "--override-boot-slot=" + slot, "service"}, []string{busEnv, pathEnv})
 		for i := 0; i < 100; i++ {
 			r := execute(t, "", []string{busEnv}, "dbus-send", "--system", "--print-reply", "--dest=org.freedesktop.DBus", "/", "org.freedesktop.DBus.NameHasOwner", "string:de.pengutronix.rauc")
@@ -235,6 +238,13 @@ install-same=false
 		r := execute(t, "", nil, filepath.Join(bin, "fw_printenv"))
 		if r.code != 0 || !strings.Contains(r.stdout, "BOOT_ORDER="+order) || !strings.Contains(r.stdout, "BOOT_"+active+"_LEFT=3") {
 			t.Fatalf("stored redundant U-Boot environment: exit %d\n%s%s", r.code, r.stdout, r.stderr)
+		}
+	}
+	assertHistory := func(slot string) {
+		t.Helper()
+		r := execute(t, "", nil, filepath.Join(bin, "fw_printenv"), "-n", "NABOS_ROLLBACK_SLOT")
+		if r.code != 0 || strings.TrimSpace(r.stdout) != slot {
+			t.Fatalf("running slot history: exit %d, %q, want %s", r.code, r.stdout+r.stderr, slot)
 		}
 	}
 	_, parts := genimagePartitions(t)
@@ -271,6 +281,7 @@ install-same=false
 		t.Fatalf("existing trust anchor was not migrated safely: %v, %v", anchorInfo, err)
 	}
 	assertEnv("B A", "B")
+	assertHistory("A")
 	stopA()
 	write(t, conf, config)
 	stopB := startService("B")
@@ -279,6 +290,7 @@ install-same=false
 	raLayout(t, disk, initialMBR, boot0, root1, root0, rootSize, bootSize, raFileHash(t, rootB), raFileHash(t, rootA), raFileHash(t, bootB), raFileHash(t, bootC))
 	assertData()
 	assertEnv("A B", "A")
+	assertHistory("B")
 	t.Log("RAUC A -> B -> A: both MBR switches, root images, boot copies and /data verified")
 
 	// These fail during bundle verification, before any slot or environment write.
