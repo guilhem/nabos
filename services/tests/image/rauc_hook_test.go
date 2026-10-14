@@ -11,7 +11,7 @@ import (
 func migrationFixture(t *testing.T, syncFailure string) (string, string, fakeCommands) {
 	t.Helper()
 	dir := t.TempDir()
-	for _, path := range []string{"data", "etc/rauc"} {
+	for _, path := range []string{"data", "etc/rauc", "usr/share/nabos", "run"} {
 		if err := os.MkdirAll(filepath.Join(dir, path), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -28,14 +28,20 @@ func migrationFixture(t *testing.T, syncFailure string) (string, string, fakeCom
 	if err := os.Chmod(filepath.Join(dir, "etc/rauc/ca.cert.pem"), 0444); err != nil {
 		t.Fatal(err)
 	}
+	write(t, filepath.Join(dir, "cmdline"), "root=/dev/mmcblk0p2 rauc.slot=A quiet\n")
 	hook := strings.NewReplacer("/sys/class/block", filepath.Join(dir, "sys"),
+		"/proc/cmdline", filepath.Join(dir, "cmdline"),
+		"/usr/share/nabos", filepath.Join(dir, "usr/share/nabos"),
+		"/run/nabos-rollback", filepath.Join(dir, "run/nabos-rollback"),
 		"/etc/rauc", filepath.Join(dir, "etc/rauc"), "/data", filepath.Join(dir, "data")).
 		Replace(read(t, filepath.Join(imageDir, "rauc-hook.sh")))
 	path := filepath.Join(dir, "hook.sh")
 	write(t, path, hook)
 	fake := newFakes(t, dir, map[string]string{
-		"findmnt": `printf '%s\n' "${MOUNT_SOURCE:-/dev/mmcblk0p4 ext4}"`,
-		"sync":    "case $2 in " + syncFailure + ") exit 42 ;; esac",
+		"findmnt":     `printf '%s\n' "${MOUNT_SOURCE:-/dev/mmcblk0p4 ext4}"`,
+		"sync":        "case $2 in " + syncFailure + ") exit 42 ;; esac",
+		"fw_setenv":   `test "${ENV_WRITE_FAIL:-0}" != 1 || exit 42; test "${ENV_WRITE_WARNING:-0}" != 1 || echo "fsync failed on SD environment" >&2; awk '$1 == "NABOS_ROLLBACK_SLOT" {print $2}' "$2" > ` + filepath.Join(dir, "environment"),
+		"fw_printenv": `test "${ENV_READ_FAIL:-0}" != 1 || exit 42; test "${ENV_READ_VALUE:-}" = "" || { echo "$ENV_READ_VALUE"; exit; }; cat ` + filepath.Join(dir, "environment"),
 	})
 	return dir, path, fake
 }
@@ -177,6 +183,47 @@ func TestRaucMigrationInvalidExistingTrust(t *testing.T) {
 			info, err := os.Lstat(certificate)
 			if err != nil || (kind == "symlink" && info.Mode()&os.ModeSymlink == 0) || (kind == "empty" && info.Size() != 0) {
 				t.Fatal("invalid authority was silently replaced", info, err)
+			}
+		})
+	}
+}
+
+func TestRaucRecordsRunningSlotOnlyAfterValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmdline, flag string
+		success             bool
+	}{
+		{"A", "BOOT_ORDER=B A rauc.slot=A", "", true},
+		{"B", "rauc.slot=B", "", true},
+		{"missing", "root=/dev/mmcblk0p2", "", false},
+		{"invalid", "rauc.slot=C", "", false},
+		{"ambiguous", "rauc.slot=A rauc.slot=B", "", false},
+		{"empty then valid", "rauc.slot= rauc.slot=A", "", false},
+		{"write failure", "rauc.slot=A", "ENV_WRITE_FAIL=1", false},
+		{"write flush warning", "rauc.slot=A", "ENV_WRITE_WARNING=1", false},
+		{"verification failure", "rauc.slot=A", "ENV_READ_VALUE=B", false},
+		{"read failure", "rauc.slot=A", "ENV_READ_FAIL=1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, hook, fake := migrationFixture(t, "never-match")
+			write(t, filepath.Join(dir, "cmdline"), tc.cmdline)
+			write(t, filepath.Join(dir, "usr/share/nabos/ca.cert.pem"), "image public authority\n")
+			env := fake.env("RAUC_SYSTEM_COMPATIBLE=nabos-zero-armv6", "RAUC_MF_COMPATIBLE=nabos-zero-armv6")
+			if tc.flag != "" {
+				env = append(env, tc.flag)
+			}
+			r := execute(t, "", env, "sh", hook, "install-check")
+			if (r.code == 0) != tc.success {
+				t.Fatalf("exit %d: %s", r.code, r.stderr)
+			}
+			if tc.success {
+				want := tc.name + "\n"
+				if got := read(t, filepath.Join(dir, "environment")); got != want {
+					t.Fatalf("history %q, want %q", got, want)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "data/rauc")); !os.IsNotExist(err) {
+					t.Fatal("image trust must not require persistent trust")
+				}
 			}
 		})
 	}

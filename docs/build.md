@@ -124,10 +124,11 @@ services sous leurs restrictions réelles sur l’appareil.
 
 ## Signature et confiance
 
-La clé publique Cachix permet au **constructeur** de vérifier les binaires Nix.
-La confiance **RAUC sur le lapin** repose sur `/data/rauc/ca.cert.pem`, amorcé
-dans la partition de données au premier flash. Les mises à jour conservent
-cette partition et son autorité de confiance.
+Cachix's public key lets the **builder** verify Nix binaries.
+RAUC update trust on the rabbit comes from the public certificate embedded
+in the immutable system image at `/usr/share/nabos/ca.cert.pem`. Fresh images
+ship an empty data filesystem. [Factory reset](recovery.md) formats p4 completely
+without losing the image certificate; the private signing key is never shipped.
 
 `--development` crée une autorité temporaire valable sept jours. Une image
 ainsi flashée rejette les bundles signés par une autre autorité, dont les

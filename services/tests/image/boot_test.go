@@ -57,13 +57,16 @@ const (
 // a stored environment made only of uboot.env (env import -d wipes
 // everything else, like a real stored environment does).
 type bootFixture struct {
-	t            *testing.T
-	tmp          string
-	overlays     map[string]string
-	legacy       map[string]bool // Slot present in this map is Debian; value enables its ears overlay.
-	kernel       []byte
-	missing      map[string][]string
-	initContents map[string]string
+	t               *testing.T
+	tmp             string
+	overlays        map[string]string
+	legacy          map[string]bool // Slot present in this map is Debian; value enables its ears overlay.
+	kernel          []byte
+	missing         map[string][]string
+	initContents    map[string]string
+	recovery        bool
+	recoveryMissing []string
+	failEnv         bool
 }
 
 func copyFile(t *testing.T, from, to string) {
@@ -79,6 +82,8 @@ func copyFile(t *testing.T, from, to string) {
 func (f *bootFixture) slotTree(name, target string, brokenOverlay bool) string {
 	tree := filepath.Join(f.tmp, name)
 	os.RemoveAll(tree)
+	os.MkdirAll(filepath.Join(tree, "usr/share/nabos"), 0o755)
+	write(f.t, filepath.Join(tree, "usr/share/nabos/ca.cert.pem"), "public image authority\n")
 	os.MkdirAll(filepath.Join(tree, "boot/dtb"), 0o755)
 	os.MkdirAll(filepath.Join(tree, "boot/overlays"), 0o755)
 	write(f.t, filepath.Join(tree, "boot/kernel"), strings.Repeat("not a real kernel", 64))
@@ -136,6 +141,15 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 		env = read(t, filepath.Join(boot, "boot.env"))
 	}
 	write(t, filepath.Join(boot, "boot.env"), env)
+	if f.recovery {
+		os.Mkdir(filepath.Join(boot, "recovery"), 0755)
+		write(t, filepath.Join(boot, "recovery/kernel"), "broken recovery kernel")
+		write(t, filepath.Join(boot, "recovery/initrd"), "dummy RAM recovery")
+		copyFile(t, filepath.Join(f.tmp, "base.dtb"), filepath.Join(boot, "recovery", dtbs[target]))
+		for _, missing := range f.recoveryMissing {
+			os.Remove(filepath.Join(boot, "recovery", missing))
+		}
+	}
 	parts := []string{"", "", ""}
 	if slotA {
 		parts[0] = f.slotTree("a", target, brokenOverlay)
@@ -188,7 +202,7 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	copyArgs := append([]string{"-i", bootImage}, bootFiles...)
+	copyArgs := append([]string{"-s", "-i", bootImage}, bootFiles...)
 	run(t, "", "mcopy", append(copyArgs, "::")...)
 	bootData, err := os.ReadFile(bootImage)
 	if err != nil {
@@ -219,6 +233,11 @@ func (f *bootFixture) disk(target string, slotA, slotB, brokenOverlay bool) stri
 
 func (f *bootFixture) boot(disk, envChanges string, watchdog bool) ([]string, string) {
 	t := f.t
+	if f.failEnv {
+		if err := os.Mkdir(filepath.Join(f.tmp, "uboot.env"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// env import -d -c: the CRC-checked redundant binary replaces the whole
 	// environment, exactly like a valid stored environment on the card.
 	commands := "host bind 0 " + disk + "; " +
@@ -706,5 +725,123 @@ func TestSelectedSlotBootContract(t *testing.T) {
 	payload := read(t, filepath.Join(repo, "nix/image.nix"))
 	if !strings.Contains(payload, `bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);`) {
 		t.Error("payload must compile the authoritative boot.cmd without rewriting it")
+	}
+}
+
+func TestPhysicalRecoveryBootScript(t *testing.T) {
+	for _, target := range []string{"zero-armv6", "zero2-arm64"} {
+		if actual := os.Getenv("NABOS_IMAGE_TARGET"); actual != "" && target != actual {
+			continue
+		}
+		t.Run(target, func(t *testing.T) {
+			for _, preferred := range []string{"A", "B"} {
+				previous, order := "B", "A B"
+				if preferred == "B" {
+					previous, order = "A", "B A"
+				}
+				for _, failure := range []string{"", "missing history", "stale history", "invalid history", "empty slot", "missing kernel", "missing initrd", "invalid metadata", "invalid kernel"} {
+					t.Run(preferred+"/"+failure, func(t *testing.T) {
+						f := newBootFixture(t)
+						f.kernel = make([]byte, 4096)
+						if target == "zero-armv6" {
+							binary.LittleEndian.PutUint32(f.kernel[0x24:], 0x016f2818)
+							binary.LittleEndian.PutUint32(f.kernel[0x2c:], uint32(len(f.kernel)))
+						} else {
+							binary.LittleEndian.PutUint32(f.kernel[0x38:], 0x644d5241)
+							binary.LittleEndian.PutUint64(f.kernel[0x10:], uint64(len(f.kernel)))
+						}
+						history, a, b := previous, true, true
+						name := strings.ToLower(previous)
+						switch failure {
+						case "missing history":
+							history = ""
+						case "stale history":
+							history = preferred
+						case "invalid history":
+							history = "C"
+						case "empty slot":
+							if previous == "A" {
+								a = false
+							} else {
+								b = false
+							}
+						case "missing kernel":
+							f.missing = map[string][]string{name: {"kernel"}}
+						case "missing initrd":
+							f.missing = map[string][]string{name: {"initrd"}}
+						case "invalid metadata":
+							f.initContents = map[string]string{name: "corrupt"}
+						case "invalid kernel":
+							f.kernel = []byte("not a valid kernel")
+						}
+						env := fmt.Sprintf("setenv BOOT_ORDER \"%s\"; setenv BOOT_A_LEFT 3; setenv BOOT_B_LEFT 3; setenv NABOS_ROLLBACK_SLOT %s; setenv nabos_recovery_action rollback;", order, history)
+						lines, output := f.boot(f.disk(target, a, b, false), env, true)
+						if saved, err := os.ReadFile(filepath.Join(f.tmp, "uboot.env")); err == nil && strings.Contains(string(saved), "nabos_recovery_action=") {
+							t.Fatal("transient action was persisted")
+						}
+						if failure == "" {
+							containsAll(t, lines, "nabos: rollback selected slot "+previous)
+							if strings.Contains(output, "nabos_recovery_action=rollback") {
+								t.Fatal("transient action was persisted")
+							}
+							if !strings.Contains(booting(t, lines, previous), "rauc.slot="+previous) {
+								t.Fatal(output)
+							}
+						} else {
+							containsAll(t, lines, "nabos: rollback cancelled, no different loadable recorded slot")
+						}
+					})
+				}
+			}
+			for _, action := range []string{"reset", "rollback"} {
+				t.Run("environment write failure/"+action, func(t *testing.T) {
+					f := newBootFixture(t)
+					f.failEnv = true
+					f.kernel = make([]byte, 4096)
+					if target == "zero-armv6" {
+						binary.LittleEndian.PutUint32(f.kernel[0x24:], 0x016f2818)
+					} else {
+						binary.LittleEndian.PutUint32(f.kernel[0x38:], 0x644d5241)
+					}
+					lines, output := f.boot(f.disk(target, true, true, false), "setenv NABOS_ROLLBACK_SLOT B; setenv nabos_recovery_action "+action+";", true)
+					if action == "reset" {
+						containsAll(t, lines, "nabos: reset authorization failed, normal boot blocked")
+					} else {
+						containsAll(t, lines, "nabos: rollback persistence failed")
+					}
+					if strings.Contains(output, "nabos: trying slot") {
+						t.Fatal("unpersisted recovery entered normal boot", output)
+					}
+				})
+			}
+			for _, tc := range []struct {
+				name, env string
+				missing   []string
+			}{
+				{"new reset", "setenv nabos_recovery_action reset;", nil},
+				{"pending precedence", "setenv NABOS_RESET_SLOT B; setenv nabos_recovery_action rollback;", nil},
+				{"missing rescue kernel", "setenv NABOS_RESET_SLOT A;", []string{"kernel"}},
+				{"missing rescue initrd", "setenv NABOS_RESET_SLOT A;", []string{"initrd"}},
+				{"invalid pending", "setenv NABOS_RESET_SLOT C;", nil},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					f := newBootFixture(t)
+					f.recovery, f.recoveryMissing = true, tc.missing
+					f.missing = map[string][]string{"a": {"kernel", "initrd"}, "b": {"kernel", "initrd"}}
+					lines, output := f.boot(f.disk(target, true, true, false), tc.env, true)
+					if strings.Contains(output, "nabos: booting slot") || strings.Contains(output, "nabos: trying slot") {
+						t.Fatal("pending reset entered normal boot", output)
+					}
+					if tc.name == "invalid pending" {
+						containsAll(t, lines, "nabos: invalid pending reset, normal boot blocked")
+					} else {
+						containsAll(t, lines, "nabos: recovery failed, normal boot blocked")
+						if len(tc.missing) == 0 && !strings.Contains(output, "nabos: starting independent recovery") {
+							t.Fatal(output)
+						}
+					}
+				})
+			}
+		})
 	}
 }

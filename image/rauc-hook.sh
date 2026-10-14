@@ -1,6 +1,7 @@
 #!/bin/sh
 # Runs from the signed bundle, before RAUC writes either inactive slot.
 set -eu
+set -f
 reject() { echo "NabOS update rejected: $*" >&2; exit 10; }
 [ "${1:-}" = install-check ] || reject "unexpected hook"
 # An install-check replaces RAUC's built-in compatible check.
@@ -29,7 +30,10 @@ partition 3 13639680 12582912
 [ ! -e /data/.volatile ] || reject "data partition is not persistent"
 
 certificate=/data/rauc/ca.cert.pem
-if [ -e "$certificate" ] || [ -L "$certificate" ]; then
+if [ -e /usr/share/nabos/ca.cert.pem ] || [ -L /usr/share/nabos/ca.cert.pem ]; then
+    [ -f /usr/share/nabos/ca.cert.pem ] && [ -s /usr/share/nabos/ca.cert.pem ] &&
+        [ ! -L /usr/share/nabos/ca.cert.pem ] || reject "invalid image trust anchor"
+elif [ -e "$certificate" ] || [ -L "$certificate" ]; then
     if [ ! -f "$certificate" ] || [ ! -s "$certificate" ] || [ -L "$certificate" ]; then
         reject "invalid persistent trust anchor"
     fi
@@ -44,5 +48,31 @@ else
     ln "$temporary" "$certificate"
     rm -f "$temporary"
 fi
-# Also complete durability when retrying after an interrupted publication.
-sync -f /data/rauc
+# Older slots still need their existing authority for rollback before a reset.
+if [ -f "$certificate" ]; then sync -f /data/rauc; fi
+
+running=
+seen=false
+# Kernel arguments are words; globbing is disabled.
+# shellcheck disable=SC2013
+for parameter in $(cat /proc/cmdline); do
+    case $parameter in
+        rauc.slot=*)
+            ! "$seen" || reject "ambiguous running slot"
+            seen=true
+            running=${parameter#rauc.slot=}
+            case $running in A|B) ;; *) reject "invalid running slot" ;; esac
+            ;;
+    esac
+done
+[ -n "$running" ] || reject "missing running slot"
+transaction=$(mktemp /run/nabos-rollback.XXXXXX)
+trap 'rm -f "$transaction" "$transaction.errors"' EXIT
+printf 'NABOS_ROLLBACK_SLOT %s\nnabos_recovery_action\n' "$running" > "$transaction"
+fw_setenv -s "$transaction" 2> "$transaction.errors" || reject "cannot record running slot"
+# fw_setenv can report fsync errors while returning zero.
+if [ -s "$transaction.errors" ]; then
+    cat "$transaction.errors" >&2
+    reject "running slot write reported an error"
+fi
+[ "$(fw_printenv -n NABOS_ROLLBACK_SLOT)" = "$running" ] || reject "running slot was not persisted"

@@ -41,14 +41,19 @@ debugfs -R "dump /boot/initrd $work/initrd" "$rootfs" 2>/dev/null
 python3 "$repo/image/test-initrd.py" "$work/initrd"
 debugfs -R 'stat /nix/store' "$rootfs" 2>/dev/null | grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0'
 mdir -i "$boot" ::/boot.scr >/dev/null
+mdir -i "$boot" ::/recovery/kernel >/dev/null
+mdir -i "$boot" ::/recovery/initrd >/dev/null
+mcopy -i "$boot" ::/recovery/initrd "$work/recovery-initrd"
+python3 "$repo/image/test-initrd.py" --recovery "$work/recovery-initrd"
 e2fsck -fn "$data"
-debugfs -R 'cat /rauc/ca.cert.pem' "$data" 2>/dev/null | cmp - "$certificate"
-for path in /rauc /rauc/ca.cert.pem; do
-  stat=$(debugfs -R "stat $path" "$data" 2>/dev/null)
-  grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0' <<< "$stat"
-  mode=0600; [[ $path != /rauc ]] || mode=0700
-  grep -Eq "Mode:[[:space:]]+$mode" <<< "$stat"
-done
+debugfs -R 'cat /usr/share/nabos/ca.cert.pem' "$rootfs" 2>/dev/null | cmp - "$certificate"
+stat=$(debugfs -R 'stat /usr/share/nabos/ca.cert.pem' "$rootfs" 2>/dev/null)
+grep -Eq 'Type: regular' <<< "$stat"
+grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0' <<< "$stat"
+grep -Eq 'Mode:[[:space:]]+0644' <<< "$stat"
+if debugfs -R 'stat /rauc' "$data" 2>/dev/null | grep -q 'Inode:'; then
+  echo 'Fresh data partition contains RAUC state' >&2; exit 1
+fi
 compatible="nabos-$target"
 rauc info --keyring="$certificate" --output-format=json "$bundle" |
   jq -e --arg compatible "$compatible" --arg version "${EXPECTED_VERSION:-}" \

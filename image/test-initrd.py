@@ -2,6 +2,7 @@
 """Check the shipped initrd without mounting filesystems or executing ARM code."""
 import configparser
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -9,7 +10,7 @@ import sys
 import tempfile
 
 
-def check(archive):
+def check(archive, recovery=False):
     assert Path(archive).is_file(), 'Expected a regular initrd archive, never a block device'
     errors = []
     with tempfile.TemporaryDirectory(prefix='nabos-initrd-test-') as work:
@@ -38,6 +39,52 @@ def check(archive):
                 return resolved
             except (OSError, AssertionError) as error:
                 errors.append(f'{path}: {error}')
+
+        if recovery:
+            init = included('/init', executable=True)
+            assert init is not None, 'missing independent recovery init'
+            script = init.read_text()
+            included(script.splitlines()[0].removeprefix('#!'), executable=True)
+            library = next(line.split()[1] for line in script.splitlines()
+                           if line.startswith('. /nix/store/'))
+            included(library)
+            config = included('/etc/fw_env.config')
+            assert config is not None
+            assert config.read_text().splitlines()[-2:] == [
+                '/dev/mmcblk0 0x100000 0x10000', '/dev/mmcblk0 0x200000 0x10000']
+            path = next(line.split('=', 1)[1] for line in script.splitlines()
+                        if line.startswith('PATH='))
+            for command in ('sleep', 'mkdir', 'cat', 'stat', 'sfdisk', 'awk', 'grep',
+                            'mkfs.ext4', 'e2fsck', 'blkid', 'sync', 'mount', 'umount',
+                            'fw_setenv', 'fw_printenv', 'timeout', 'modprobe', 'reboot'):
+                candidates = [root / directory.lstrip('/') / command for directory in path.split(':')]
+                assert any(p.is_file() and os.access(p, os.X_OK) and
+                           p.resolve().is_relative_to(root) for p in candidates), command
+            for module in ('mmc_block', 'bcm2835-ws2812'):
+                assert any(module in p.name for p in (root / 'lib/modules').rglob('*')), module
+            assert 'nabos-persist.service' not in str(list(root.rglob('*')))
+            # Check every shipped ELF interpreter and shared library against RAM contents.
+            for executable in root.rglob('*'):
+                if not executable.is_file() or executable.is_symlink():
+                    continue
+                with executable.open('rb') as handle:
+                    if handle.read(4) != b'\x7fELF':
+                        continue
+                metadata = subprocess.check_output(['readelf', '-l', '-d', str(executable)], text=True)
+                interpreter = re.search(r'Requesting program interpreter: ([^\]]+)', metadata)
+                if interpreter:
+                    included(interpreter[1], executable=True)
+                needed = re.findall(r'\(NEEDED\).*?\[([^\]]+)\]', metadata)
+                rpaths = re.findall(r'\((?:RUNPATH|RPATH)\).*?\[([^\]]+)\]', metadata)
+                directories = [executable.parent] + [root / part.lstrip('/')
+                    for value in rpaths for part in value.split(':') if part.startswith('/')]
+                for name in needed:
+                    assert any((d / name).is_file() and (d / name).resolve().is_relative_to(root)
+                               for d in directories), (executable, name)
+            if errors:
+                raise AssertionError('\n'.join(errors))
+            print(f'PASS: {archive}: independent recovery scripts, tools, modules and ELF dependencies')
+            return
 
         unit_path = included('/etc/systemd/system/nabos-persist.service')
         assert unit_path is not None, 'missing persistence service'
@@ -96,6 +143,7 @@ def check(archive):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        sys.exit('Usage: python3 image/test-initrd.py INITRD')
-    check(os.path.realpath(sys.argv[1]))
+    recovery = len(sys.argv) == 3 and sys.argv[1] == '--recovery'
+    if len(sys.argv) != 2 and not recovery:
+        sys.exit('Usage: python3 image/test-initrd.py [--recovery] INITRD')
+    check(os.path.realpath(sys.argv[-1]), recovery=recovery)

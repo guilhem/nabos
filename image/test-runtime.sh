@@ -224,7 +224,7 @@ if mode == 'seed':
     home = root / 'data/system/var/lib/nabos'
     home.chmod(0o711)
     os.chown(home, 1000, 1000)
-    names = [row[0] for row in files] + ['/etc/machine-id', '/data/rauc/ca.cert.pem']
+    names = [row[0] for row in files] + ['/etc/machine-id', '/usr/share/nabos/ca.cert.pem']
 else:
     names = list(json.loads(snapshot.read_text()))
 state = {}

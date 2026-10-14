@@ -11,6 +11,18 @@ let
   sourceVersion = name: builtins.substring 0 12 lock.sources.${name}.commit;
   native = pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform;
 
+  ubootRecoverySources = ''
+    cp ${../image/boot/nabos-recovery.c} cmd/nabos-recovery.c
+    cp ${../image/boot/nabos-recovery-fsm.h} cmd/nabos-recovery-fsm.h
+    cp ${../image/boot/nabos-recovery-test.c} cmd/nabos-recovery-test.c
+    cp ${../image/boot/ws2812-encode.h} cmd/ws2812-encode.h
+  '';
+  ubootRecoveryCheck = ''
+    ${pkgs.buildPackages.stdenv.cc}/bin/cc -std=c11 -Wall -Wextra -Werror \
+      cmd/nabos-recovery-test.c -o nabos-recovery-test
+    ./nabos-recovery-test
+  '';
+
   # Fixture buses need the session configuration shipped by Nixpkgs, since the
   # build sandbox has no NixOS /etc/dbus-1. This wrapper is only a check input.
   dbusForTests = pkgs.buildPackages.writeShellScriptBin "dbus-daemon" ''
@@ -166,6 +178,8 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
   uboot = pkgs.buildUBoot {
     version = lock.tools.uboot;
     src = source "uboot";
+    extraPatches = [ ../image/boot/uboot-nabos-recovery.patch ];
+    preConfigure = ubootRecoverySources;
     defconfig = board.uboot_defconfig;
     extraConfig = builtins.readFile ../image/boot/uboot.config
       + lib.optionalString (target == "zero-armv6") "\nCONFIG_USE_PRIVATE_LIBGCC=y\n";
@@ -182,7 +196,8 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
         grep -qxF CONFIG_USE_PRIVATE_LIBGCC=y .config
       ''}
     '';
-    postBuild = ''
+    # Cross stdenv skips checkPhase; these tests always use the native compiler.
+    postBuild = ubootRecoveryCheck + ''
       $READELF -h -A -l -d u-boot > u-boot.elf.txt
       if grep -Eq 'INTERP|\(NEEDED\)' u-boot.elf.txt; then
         echo 'U-Boot must be freestanding' >&2; exit 1
@@ -205,8 +220,25 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
   uboot-sandbox = pkgs.buildPackages.buildUBoot {
     version = lock.tools.uboot;
     src = source "uboot";
+    extraPatches = [ ../image/boot/uboot-nabos-recovery.patch ];
+    preConfigure = ubootRecoverySources + ''
+      cp ${../image/boot/uboot-hostfile.c} env/hostfile.c
+    '';
+    doCheck = true;
+    checkPhase = ubootRecoveryCheck + ''
+      ./u-boot -d u-boot.dtb -c nabos_recovery_test
+      python3 ${../image/boot/test-uboot-hostfile.py} ./u-boot ./u-boot.dtb
+    '';
     defconfig = "sandbox_defconfig";
     extraConfig = ''
+      CONFIG_NABOS_RECOVERY=y
+      CONFIG_CMD_NVEDIT_LOAD=y
+      CONFIG_ENV_IS_IN_HOSTFILE=y
+      CONFIG_ENV_SIZE=0x10000
+      # CONFIG_ENV_IS_NOWHERE is not set
+      # CONFIG_ENV_IS_IN_FAT is not set
+      # CONFIG_ENV_IS_IN_EXT4 is not set
+      # CONFIG_ENV_IS_IN_SPI_FLASH is not set
       # CONFIG_SANDBOX_SDL is not set
       # CONFIG_TOOLS_MKEFICAPSULE is not set
       # CONFIG_UNIT_TEST is not set
@@ -215,14 +247,19 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
       # CONFIG_CMD_UPL is not set
       # CONFIG_UPL is not set
     '';
-    postConfigure = "make olddefconfig";
+    postConfigure = ''
+      make olddefconfig
+      grep -qxF CONFIG_NABOS_RECOVERY=y .config
+      grep -qxF CONFIG_CMD_NVEDIT_LOAD=y .config
+      grep -qxF CONFIG_ENV_IS_IN_HOSTFILE=y .config
+    '';
     extraMakeFlags = [ "CONFIG_PYLIBFDT=" ];
     buildPhase = ''
       runHook preBuild
-      make "''${makeFlags[@]}" "''${makeFlagsArray[@]}" -j"$NIX_BUILD_CORES" u-boot tools
+      make "''${makeFlags[@]}" "''${makeFlagsArray[@]}" -j"$NIX_BUILD_CORES" u-boot u-boot.dtb tools
       runHook postBuild
     '';
-    filesToInstall = [ "u-boot" "tools/mkimage" "tools/mkenvimage" ];
+    filesToInstall = [ "u-boot" "u-boot.dtb" "tools/mkimage" "tools/mkenvimage" ];
     installDir = "$out/bin";
     postInstall = ''
       ln -s ${pkgs.buildPackages.dtc}/bin/dtc "$out/bin/dtc"
@@ -230,7 +267,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     # Hash the final binaries after stripping and ELF fixups.
     postFixup = ''
       cd "$out"
-      sha256sum bin/u-boot bin/dtc bin/mkimage bin/mkenvimage > SHA256SUMS
+      sha256sum bin/u-boot bin/u-boot.dtb bin/dtc bin/mkimage bin/mkenvimage > SHA256SUMS
     '';
   };
 

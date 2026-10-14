@@ -117,7 +117,7 @@ jobs:
               --no-update-lock-file ".#$package-native" --out-link "build/$package-native" \
               --print-out-paths >> build/native-test-cache-roots
           done
-          for check in audio-boot network-boot boot-logs; do
+          for check in audio-boot network-boot boot-logs factory-reset; do
             nix --extra-experimental-features 'nix-command flakes' build \
               --no-update-lock-file ".#checks.x86_64-linux.$check" \
               --out-link "build/$check-test" --print-out-paths >> build/native-test-cache-roots

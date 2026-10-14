@@ -1,0 +1,103 @@
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -10,6 +10,13 @@
+ 	  substantially to the size of U-Boot.
+ 
+ if CMDLINE
++
++config NABOS_RECOVERY
++	bool "NabOS physical recovery and LED feedback"
++	depends on ARCH_BCM283X || SANDBOX
++	help
++	  GPIO17 boot gesture and five GPIO13 WS2812 LEDs on NabOS Pi boards.
++	  Sandbox provides shared native gesture/encoding tests only.
+ 
+ config HUSH_PARSER
+ 	bool "Use hush shell"
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -10,6 +10,10 @@
+ obj-$(CONFIG_CMD_HELP) += help.o
+ obj-y += panic.o
+ obj-y += version.o
++obj-$(CONFIG_NABOS_RECOVERY) += nabos-recovery.o
++ifdef CONFIG_SANDBOX
++obj-$(CONFIG_NABOS_RECOVERY) += nabos-recovery-test.o
++endif
+ 
+ # command
+ obj-$(CONFIG_CMD_ARMFFA) += armffa.o
+--- a/board/raspberrypi/rpi/rpi.c
++++ b/board/raspberrypi/rpi/rpi.c
+@@ -482,7 +482,14 @@
+ #endif
+ 	set_serial_number();
+ 
++#ifdef CONFIG_NABOS_RECOVERY
++	/* Environment has been loaded; recovery precedes the boot script. */
++	extern int nabos_recovery_init(void);
++
++	return nabos_recovery_init();
++#else
+ 	return 0;
++#endif
+ }
+ 
+ static void get_board_revision(void)
+--- a/env/Kconfig
++++ b/env/Kconfig
+@@ -74,8 +74,16 @@
+ 		     !ENV_IS_IN_MMC && !ENV_IS_IN_NAND && \
+ 		     !ENV_IS_IN_NVRAM && !ENV_IS_IN_ONENAND && \
+ 		     !ENV_IS_IN_REMOTE && !ENV_IS_IN_SPI_FLASH && \
+-		     !ENV_IS_IN_UBI && !ENV_IS_IN_MTD && !ENV_IS_IN_SCSI
++		     !ENV_IS_IN_UBI && !ENV_IS_IN_MTD && !ENV_IS_IN_SCSI && \
++		     !ENV_IS_IN_HOSTFILE
+ 	select ENV_IS_NOWHERE
++
++config ENV_IS_IN_HOSTFILE
++	bool "Environment in a native sandbox host file"
++	depends on SANDBOX
++	help
++	  Store a CRC-checked environment in uboot.env in the current directory.
++	  This backend is for isolated native fixtures only.
+ 
+ config ENV_IS_NOWHERE
+ 	bool "Environment is not stored"
+--- a/env/Makefile
++++ b/env/Makefile
+@@ -21,6 +21,7 @@
+ endif
+ 
+ obj-$(CONFIG_$(PHASE_)ENV_IS_NOWHERE) += nowhere.o
++obj-$(CONFIG_ENV_IS_IN_HOSTFILE) += hostfile.o
+ obj-$(CONFIG_$(PHASE_)ENV_IS_IN_MMC) += mmc.o
+ obj-$(CONFIG_$(PHASE_)ENV_IS_IN_FAT) += fat.o
+ obj-$(CONFIG_$(PHASE_)ENV_IS_IN_EXT4) += ext4.o
+--- a/include/env_internal.h
++++ b/include/env_internal.h
+@@ -117,6 +117,7 @@
+ 	ENVL_UBI,
+ 	ENVL_SCSI,
+ 	ENVL_NOWHERE,
++	ENVL_HOSTFILE,
+ 
+ 	ENVL_COUNT,
+ };
+--- a/board/sandbox/sandbox.c
++++ b/board/sandbox/sandbox.c
+@@ -86,10 +86,14 @@
+ 
+ /* specific order for sandbox: nowhere is the first value, used by default */
+ static enum env_location env_locations[] = {
++#ifdef CONFIG_ENV_IS_IN_HOSTFILE
++	ENVL_HOSTFILE,
++#else
+ 	ENVL_NOWHERE,
+ 	ENVL_EXT4,
+ 	ENVL_FAT,
+ 	ENVL_SPI_FLASH,
++#endif
+ };
+ 
+ enum env_location env_get_location(enum env_operation op, int prio)
