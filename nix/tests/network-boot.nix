@@ -74,6 +74,16 @@ pkgs.testers.runNixOSTest {
         for path in ("/", "/etc", "/nix/store"):
             assert "ro" in machine.succeed(f"findmnt -n -o OPTIONS --mountpoint {path}").strip().split(",")
             machine.fail(f"touch {path.rstrip('/')}/.network-readonly-probe")
+        machine.wait_for_unit("avahi-daemon.service")
+        assert machine.succeed("busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus NameHasOwner s org.freedesktop.Avahi").strip() == "b true"
+        machine.wait_until_succeeds("test \"$(busctl call org.freedesktop.Avahi / org.freedesktop.Avahi.Server GetState)\" = 'i 2'")
+        machine.succeed("test -d /etc/avahi/services")
+        machine.fail("touch /etc/avahi/services/.network-readonly-probe")
+        for name, expected in {
+            "ConfigurationDirectory": "avahi/services", "ProtectSystem": "strict",
+            "NoNewPrivileges": "yes", "PrivateDevices": "yes",
+        }.items():
+            assert machine.succeed(f"systemctl show avahi-daemon -p {name} --value").strip() == expected
         machine.succeed("busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus StartServiceByName su fi.w1.wpa_supplicant1 0")
         machine.wait_for_unit("wpa_supplicant.service")
         assert machine.succeed("busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus NameHasOwner s fi.w1.wpa_supplicant1").strip() == "b true"

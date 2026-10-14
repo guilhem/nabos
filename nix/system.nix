@@ -238,7 +238,6 @@ in
     allowedUDPPorts = [ 53 67 ];
     allowedTCPPorts = [ 53 ];
   };
-  services.avahi = { enable = true; nssmdns4 = true; publish = { enable = true; addresses = true; }; };
   services.timesyncd.enable = true;
   hardware.bluetooth.enable = false;
   hardware.firmware = [ pkgs.raspberrypiWirelessFirmware ];

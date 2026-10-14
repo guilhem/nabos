@@ -33,9 +33,9 @@
     },
     "led": {
       "repository": "guilhem/bcm2835-ws2812",
-      "commit": "b5306826c3d955039f999b40affd6ad4a936a42b",
-      "url": "https://codeload.github.com/guilhem/bcm2835-ws2812/tar.gz/b5306826c3d955039f999b40affd6ad4a936a42b",
-      "sha256": "f5b8d66b2833ca3429ffcbab82a1810c695ec53cb7b70ca5d438aaf5d1ac2025"
+      "commit": "71aea0385433edf5dea7d68afe1998280c9dfc81",
+      "url": "https://codeload.github.com/guilhem/bcm2835-ws2812/tar.gz/71aea0385433edf5dea7d68afe1998280c9dfc81",
+      "sha256": "bfc455126729bb985fd18f42ced2d056315d775dae998ee81d91b9050bfd5ff7"
     },
     "uboot": {
       "repository": "u-boot/u-boot",
