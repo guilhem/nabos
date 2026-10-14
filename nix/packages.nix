@@ -1,9 +1,8 @@
-{ pkgs, target, kernelPackages }:
+{ pkgs, target, kernelPackages, device-core, wm8960, bcm2835-ws2812 }:
 let
   inherit (pkgs) lib;
   lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
   board = lock.targets.${target};
-  kernel = kernelPackages.kernel;
   source = name: pkgs.fetchurl {
     name = "${name}-${sourceVersion name}.tar.gz";
     inherit (lock.sources.${name}) url sha256;
@@ -25,54 +24,8 @@ let
     exec ${pkgs.buildPackages.dbus}/bin/dbus-daemon "''${args[@]}"
   '';
 
-  # The compiler and prepared headers are those of the actual system kernel.
-  driver = name: modules: overlay: kernel.stdenv.mkDerivation {
-    pname = "tagtagtag-${name}";
-    version = sourceVersion name;
-    src = source name;
-    nativeBuildInputs = kernel.moduleBuildDependencies ++ [
-      pkgs.buildPackages.dtc pkgs.buildPackages.kmod
-    ];
-    buildInputs = lib.optionals (name == "sound") [ pkgs.alsa-lib ];
-    hardeningDisable = [ "pic" "format" ];
-    enableParallelBuilding = true;
-    buildPhase = ''
-      runHook preBuild
-      make -C ${kernel.dev}/lib/modules/${kernel.modDirVersion}/build \
-        ${lib.concatStringsSep " " kernelPackages.kernelModuleMakeFlags} \
-        M="$PWD" -j"$NIX_BUILD_CORES" modules
-      dtc -@ -I dts -O dtb -o ${overlay}.dtbo ${overlay}-overlay.dts
-      ${lib.optionalString (name == "sound") ''
-        $CC -Wall -Werror tagtagtag-mixerd.c -lasound -lpthread -o tagtagtag-mixerd
-      ''}
-      runHook postBuild
-    '';
-    doCheck = native;
-    nativeCheckInputs = lib.optional (name == "led") pkgs.buildPackages.python3;
-    checkPhase = if name == "sound" then ''
-      $CC -Wall -Werror -DTEST tagtagtag-mixerd.c -lasound -lpthread -o tagtagtag-mixerd-test
-      ./tagtagtag-mixerd-test
-    '' else ''
-      make check HOSTCC="$CC"
-    '';
-    installPhase = ''
-      runHook preInstall
-      for module in ${lib.concatStringsSep " " modules}; do
-        # A successful compile alone is insufficient if a different kernel was used.
-        test "$(modinfo -F vermagic "$module.ko" | cut -d ' ' -f1)" = ${lib.escapeShellArg kernel.modDirVersion}
-        install -Dm644 "$module.ko" "$out/lib/modules/${kernel.modDirVersion}/extra/$module.ko"
-      done
-      install -Dm644 ${overlay}.dtbo "$out/overlays/${overlay}.dtbo"
-      install -m644 ${overlay}-overlay.dts "$out/overlays/${overlay}-overlay.dts"
-      ${lib.optionalString (name == "sound") ''
-        install -Dm755 tagtagtag-mixerd "$out/bin/tagtagtag-mixerd"
-        install -Dm644 mixer.conf.default "$out/share/tagtagtag-sound/mixer.conf.default"
-        install -Dm644 60-tagtagtag-volume.rules "$out/lib/udev/rules.d/60-tagtagtag-volume.rules"
-      ''}
-      runHook postInstall
-    '';
-    passthru = { inherit kernel; kernelVersion = kernel.modDirVersion; };
-    meta.platforms = lib.platforms.linux;
+  deviceCore = pkgs.callPackage (device-core + "/nix/package.nix") {
+    src = device-core;
   };
 
   assets = pkgs.buildPackages.stdenvNoCC.mkDerivation {
@@ -134,34 +87,26 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     '';
   };
 
-  device-core = pkgs.rustPlatform.buildRustPackage {
-    pname = "device-core";
-    version = sourceVersion "device_core";
-    src = source "device_core";
-    postPatch = ''
-      # The decoder fixture deliberately clears PATH; its interpreter must be absolute.
-      substituteInPlace tests/audio.rs --replace-fail '#!/usr/bin/python3' \
-        '#!${pkgs.buildPackages.python3}/bin/python3'
-    '';
-    cargoLock.lockFile = ./device-core.Cargo.lock;
-    doCheck = native;
-    # Test harnesses do not need the release profile's full LTO under QEMU.
-    checkType = "debug";
+  device-core = pkgs.symlinkJoin {
+    name = "device-core-nabos";
+    inherit (deviceCore) meta;
+    paths = [ deviceCore ];
     nativeBuildInputs = [ pkgs.makeWrapper ];
-    nativeCheckInputs = [ dbusForTests ] ++ (with pkgs.buildPackages; [
-      coreutils python3 openssh openssl rauc squashfsTools
-    ]);
-    postInstall = ''
-      install -Dm644 LICENSE "$out/share/doc/device-core/LICENSE"
-      install -m644 NOTICE "$out/share/doc/device-core/NOTICE"
+    postBuild = ''
       wrapProgram "$out/bin/device-core" \
         --prefix PATH : ${lib.makeBinPath [ pkgs.alsa-utils pkgs.mpg123 pkgs.wireplumber pkgs.openssh pkgs.rauc ]} \
         --set-default DEVICE_CORE_AUDIO_ROOTS "${assets}/share/nabos/sounds:/data/nabos/media/sounds"
     '';
   };
 
-  sound = driver "sound" [ "snd-soc-wm8960" "snd-soc-max9759" ] "tagtagtag-sound";
-  led = driver "led" [ "bcm2835-ws2812" ] "bcm2835-ws2812";
+  sound = pkgs.callPackage (wm8960 + "/nix/package.nix") {
+    src = wm8960;
+    inherit kernelPackages;
+  };
+  led = pkgs.callPackage (bcm2835-ws2812 + "/nix/package.nix") {
+    src = bcm2835-ws2812;
+    inherit kernelPackages;
+  };
 
   uboot = pkgs.buildUBoot {
     version = lock.tools.uboot;
