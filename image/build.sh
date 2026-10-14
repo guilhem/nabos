@@ -21,7 +21,7 @@ done
 mkdir -p "$repo/build/nix-tmp"
 export TMPDIR="$repo/build/nix-tmp"
 if [[ ${NABOS_NIX_SHELL:-} != 1 ]]; then
-  exec nix --extra-experimental-features 'nix-command flakes' develop "$repo" \
+  exec nix --extra-experimental-features 'nix-command flakes' develop "$repo#image" \
     --option always-allow-substitutes true \
     --command env NABOS_NIX_SHELL=1 bash "$0" "$target" "$version" "$@"
 fi
@@ -87,12 +87,12 @@ rauc bundle --mksquashfs-args="-comp zstd -Xcompression-level $zstd_level" \
 test "$(stat -c %s "$out/nabos-$target.raucb")" -le 2147483648
 install -m644 "$signing_cert" "$out/ca-$target.cert.pem"
 rauc_seconds=$SECONDS
-chmod a-w "$work/images/"{sdcard.img,rootfs.ext4,boot.vfat}
+chmod a-w "$work/images/"{sdcard.img,rootfs.ext4,boot.vfat,data.ext4}
 test_seconds=null
 if ! $defer_tests; then
   SECONDS=0
   EXPECTED_VERSION="$version" bash "$repo/image/test.sh" "$target" "$work/images/sdcard.img" \
-    "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$out/nabos-$target.raucb" "$out/ca-$target.cert.pem"
+    "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$work/images/data.ext4" "$out/nabos-$target.raucb" "$out/ca-$target.cert.pem"
   test_seconds=$SECONDS
 fi
 SECONDS=0

@@ -1,4 +1,4 @@
-{ pkgs, target, version ? "dev-local", kernelPackages }:
+{ pkgs, target, kernelPackages }:
 let
   inherit (pkgs) lib;
   lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
@@ -75,7 +75,7 @@ let
     meta.platforms = lib.platforms.linux;
   };
 
-  assets = pkgs.stdenvNoCC.mkDerivation {
+  assets = pkgs.buildPackages.stdenvNoCC.mkDerivation {
     name = "nabos-assets";
     src = ../assets;
     dontBuild = true;
@@ -89,14 +89,13 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
 {
   inherit assets;
   nabos = pkgs.buildGo127Module {
-    pname = "nabos";
-    inherit version;
+    name = "nabos";
     src = ../services;
     vendorHash = "sha256-pi4qI/OI42QGgtkE36szhSl9rjChYptShmBcFbmGvJQ=";
     subPackages = [ "cmd/nabos" ];
     doCheck = native;
     env = { CGO_ENABLED = 0; GOARM = board.goarm; };
-    ldflags = [ "-s" "-w" "-X main.version=${version}" ];
+    ldflags = [ "-s" "-w" ];
     nativeCheckInputs = [ dbusForTests ];
     preCheck = ''
       # NewApp reads /etc/machine-id directly, which the Nix sandbox lacks.

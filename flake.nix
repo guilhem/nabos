@@ -50,7 +50,7 @@
           };
           packages = import ./nix/packages.nix {
             pkgs = system.pkgs;
-            inherit target version;
+            inherit target;
             kernelPackages = system.config.boot.kernelPackages;
           };
           payload = import ./nix/image.nix {
@@ -85,11 +85,19 @@
             uboot-sandbox = nativePackages.${buildSystem}.uboot-sandbox;
           });
       devShells = forSystems (buildSystem:
-        let pkgs = nixpkgs.legacyPackages.${buildSystem};
-        in { default = pkgs.mkShellNoCC {
-          packages = with pkgs; [ nix cachix rauc genimage e2fsprogs dosfstools
-            mtools ubootTools openssl xz zstd cpio jq python3 fakeroot shellcheck dtc squashfsTools
-            go_1_27 rustc cargo pkg-config dbus systemd util-linux ];
-        }; });
+        let
+          pkgs = nixpkgs.legacyPackages.${buildSystem};
+          image = pkgs.mkShellNoCC {
+            packages = with pkgs; [ nix cachix rauc genimage e2fsprogs dosfstools
+              mtools ubootTools openssl xz zstd cpio jq python3 fakeroot dtc squashfsTools
+              go_1_27 dbus systemd util-linux ];
+          };
+        in {
+          inherit image;
+          default = pkgs.mkShellNoCC {
+            inputsFrom = [ image ];
+            packages = with pkgs; [ rustc cargo pkg-config shellcheck ];
+          };
+        });
     };
 }
