@@ -31,8 +31,10 @@ partition 3 13639680 12582912
 
 certificate=/data/rauc/ca.cert.pem
 if [ -e /usr/share/nabos/ca.cert.pem ] || [ -L /usr/share/nabos/ca.cert.pem ]; then
-    [ -f /usr/share/nabos/ca.cert.pem ] && [ -s /usr/share/nabos/ca.cert.pem ] &&
-        [ ! -L /usr/share/nabos/ca.cert.pem ] || reject "invalid image trust anchor"
+    if [ ! -f /usr/share/nabos/ca.cert.pem ] || [ ! -s /usr/share/nabos/ca.cert.pem ] ||
+        [ -L /usr/share/nabos/ca.cert.pem ]; then
+        reject "invalid image trust anchor"
+    fi
 elif [ -e "$certificate" ] || [ -L "$certificate" ]; then
     if [ ! -f "$certificate" ] || [ ! -s "$certificate" ] || [ -L "$certificate" ]; then
         reject "invalid persistent trust anchor"
