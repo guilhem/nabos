@@ -35,7 +35,7 @@ func NewProxy(addresses string) (*Proxy, error) {
 			var err error
 			_, network, err = net.ParseCIDR(address)
 			if err != nil {
-				return nil, fmt.Errorf("invalid NABOS_TRUSTED_PROXIES address %q", address)
+				return nil, fmt.Errorf("adresse de proxy invalide %q : indiquez une IP ou un CIDR", address)
 			}
 		}
 		p.trusted = append(p.trusted, network)

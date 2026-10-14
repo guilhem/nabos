@@ -288,7 +288,7 @@ in
       };
       serviceConfig = {
         Type = "exec"; User = "nab-app"; Group = "nab-app";
-        EnvironmentFile = [ "/etc/nabos/release.env" "-/data/system/nabos-proxy.env" ];
+        EnvironmentFile = "/etc/nabos/release.env";
         RuntimeDirectory = "nabos"; WorkingDirectory = "/run/nabos";
         ExecStart = "${packages.nabos}/bin/nabos";
         Restart = "always"; RestartSec = 2; UMask = "0027";

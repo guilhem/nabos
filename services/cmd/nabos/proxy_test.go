@@ -46,11 +46,9 @@ func ingressRequest(h http.Handler, method, path string, values url.Values, cook
 
 func trustIngress(t *testing.T, a *App) {
 	t.Helper()
-	proxy, err := web.NewProxy("192.0.2.10")
-	if err != nil {
+	if _, err := a.proxy.Save("192.0.2.10"); err != nil {
 		t.Fatal(err)
 	}
-	a.proxy = proxy
 }
 
 func TestIngressLogin(t *testing.T) {
@@ -113,6 +111,9 @@ func TestIngressPages(t *testing.T) {
 	for _, path := range []string{"/", "/settings", "/wifi", "/services", "/tags", "/sounds", "/updates", "/login"} {
 		t.Run(path, func(t *testing.T) {
 			doc := uiDocument(t, ingressRequest(h, http.MethodGet, path, nil, cookie))
+			if path == "/settings" {
+				checkUIProxyCard(t, doc, ingressPath, "192.0.2.10")
+			}
 			for _, n := range uiElements(doc, "") {
 				for _, attr := range []string{"href", "src", "action"} {
 					value := uiAttribute(n, attr)
@@ -158,18 +159,7 @@ func TestIngressWiFiCookies(t *testing.T) {
 	}
 }
 
-func TestProxyEnvironmentAndDirectAccess(t *testing.T) {
-	t.Setenv("NABOS_TRUSTED_PROXIES", "")
-	if loadEnv().TrustedProxies != "" {
-		t.Fatal("proxy trust enabled by default")
-	}
-	t.Setenv("NABOS_TRUSTED_PROXIES", "192.0.2.10")
-	if loadEnv().TrustedProxies != "192.0.2.10" {
-		t.Fatal("proxy environment setting ignored")
-	}
-	if _, err := NewApp(Env{DataDir: t.TempDir(), TrustedProxies: "192.0.2.10,bad"}); err == nil {
-		t.Fatal("startup accepted an invalid trusted proxy")
-	}
+func TestProxyDefaultAndDirectAccess(t *testing.T) {
 	a := testApp(t)
 	serviceSession(t, a)
 	h := a.routes()

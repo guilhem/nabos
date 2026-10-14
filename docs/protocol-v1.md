@@ -88,7 +88,6 @@ There is no migration of the former MQTT protocol, API names or settings.
 | `NABOS_VERSION` | Build/release version |
 | `NABOS_WEATHER_URL` / `NABOS_GEOCODING_URL` | Open-Meteo endpoints |
 | `NABOS_DEVICE_BUS_ADDRESS` | System bus in production; explicit private bus for tests |
-| `NABOS_TRUSTED_PROXIES` | Empty: ignore proxy headers; comma-separated proxy IP addresses or CIDRs |
 
 An explicit address applies to hardware and every Go device-core connection,
 including the dedicated audio owner, settings and maintenance. Connection
@@ -121,28 +120,32 @@ Administration still requires the rabbit's password and a session. All writes
 still require an Origin (or a Referer when Origin is absent) matching the public
 scheme and Host. Direct access continues to work.
 
-Trust is disabled by default. `NABOS_TRUSTED_PROXIES` matches the actual TCP peer
-address, never `X-Forwarded-For`. An invalid IP or CIDR prevents startup. Prefer
-one exact proxy IP rather than a LAN subnet; include only proxies whose headers
-you control. Loopback and private networks are not implicitly trusted.
+Trust is disabled by default. For initial setup, open the rabbit's local IP
+directly in your browser, sign in and open **Réglages → Accès via Home Assistant**.
+Enter the trusted proxy IP address(es) or CIDRs separated by commas, for example
+`192.168.20.144`, and select **Enregistrer l’accès via Home Assistant**. Use the IP
+that actually connects to the rabbit; a container, NAT or another proxy can
+change that address. Prefer one exact IP rather than a LAN subnet; include only
+proxies whose headers you control. Loopback and private networks are not
+implicitly trusted. Matching uses the actual TCP peer, never `X-Forwarded-For`.
 
-On the image, persist this setting in `/data/system/nabos-proxy.env`. The NabOS
-unit reads this optional environment file at startup alongside its release
-environment. Keep the file owned and writable only by root: `/data/system` is
-persistent and root-owned, while `/data/nabos` is writable by the application.
-For a Home Assistant host at `192.168.20.144`, run on the rabbit as an operator
-with sudo:
+Saving applies immediately without a restart. Empty the field and save to
+disable trust. The confirmation renders directly, without redirecting through a
+proxy that may just have been removed. If ingress stops working, reopen the
+rabbit's local IP directly to repair the configuration.
 
-```sh
-sudo install -o root -g root -m 0600 /dev/null /data/system/nabos-proxy.env
-printf '%s\n' 'NABOS_TRUSTED_PROXIES=192.168.20.144' | sudo tee /data/system/nabos-proxy.env >/dev/null
-sudo systemctl restart nabos.service
-```
-
-Use the IP that actually connects to the rabbit; a container, NAT or another
-proxy can change that address. These commands replace the dedicated proxy
-environment file. Remove its setting and restart NabOS to disable proxy trust.
-There is no application setting or authentication bypass for ingress.
+NabOS stores only this HTTP policy in `/data/nabos/trusted-proxies`, a separate
+application-owned file with mode `0600`, using atomic replacement. It does not
+change `application.json` or the device-core settings schema, so an older RAUC
+slot can still read the application settings. A missing file disables trust;
+an unreadable or invalid file also disables trust and reports the error in local
+Settings and the log, without resetting other settings or the admin password.
+Invalid form values cannot replace the active policy. Failed writes keep the
+previous policy unless the exact candidate is confirmed visible on disk after
+an uncertain commit; in that case it is applied and Settings warns that survival
+after a power loss is uncertain. Concurrent saves are serialized, and requests
+already in progress keep their original policy. Configuration uses the Settings
+form rather than an environment variable.
 
 The proxy must preserve the incoming public `Host`, strip any untrusted
 `X-Ingress-Path`, and set that header to its path, for example

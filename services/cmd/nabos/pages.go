@@ -150,13 +150,8 @@ func (a *App) routes() http.Handler {
 	})
 	m.HandleFunc("GET /{$}", a.home)
 	m.HandleFunc("POST /action", a.action)
-	m.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
-		_, clk := a.clockQuality()
-		sshRevision, keys, sshErr := a.readSSHKeys()
-		a.render(w, r, "settings", "Réglages", map[string]any{"Locales": locales, "Voice": a.voiceSupported(), "VoiceOn": a.voiceEnabled(),
-			"SSHRevision": sshRevision, "SSHKeys": keys, "SSHError": sshErr,
-			"Clock": clk, "Now": a.clockNow().In(a.location()).Format("2006-01-02T15:04")})
-	})
+	m.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) { a.renderSettings(w, r, "", nil) })
+	m.HandleFunc("POST /settings/proxy", a.saveProxy)
 	m.HandleFunc("POST /settings/application", a.saveSettings)
 	m.HandleFunc("POST /settings/system", a.saveSystemSettings)
 	m.HandleFunc("POST /settings/ssh", a.saveSSHKeys)
@@ -202,6 +197,41 @@ func (a *App) routes() http.Handler {
 		back(w, r, "/sounds", err, "Son supprimé")
 	})
 	return a.proxy.Middleware(a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback", "/wifi", "/wifi/", "/wifi.js"))
+}
+
+func (a *App) renderSettings(w http.ResponseWriter, r *http.Request, proxyFlash string, proxySaveError error) {
+	_, clk := a.clockQuality()
+	sshRevision, keys, sshErr := a.readSSHKeys()
+	addresses, proxyErr := a.proxy.Current()
+	a.render(w, r, "settings", "Réglages", map[string]any{"Locales": locales, "Voice": a.voiceSupported(), "VoiceOn": a.voiceEnabled(),
+		"SSHRevision": sshRevision, "SSHKeys": keys, "SSHError": sshErr,
+		"Clock": clk, "Now": a.clockNow().In(a.location()).Format("2006-01-02T15:04"),
+		"ProxyAddresses": addresses, "ProxyError": proxyErr, "ProxyFlash": proxyFlash, "ProxySaveError": proxySaveError})
+}
+
+func (a *App) saveProxy(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil || len(r.PostForm) != 1 || len(r.PostForm["trusted_proxies"]) != 1 {
+		http.Error(w, "formulaire de proxy invalide", http.StatusBadRequest)
+		return
+	}
+	addresses := r.PostForm["trusted_proxies"][0]
+	if len(addresses) > web.MaxProxyAddresses {
+		http.Error(w, "liste de proxies trop longue", http.StatusBadRequest)
+		return
+	}
+	applied, err := a.proxy.Save(strings.TrimSpace(addresses))
+	if err != nil {
+		slog.Error("save proxy configuration", "applied", applied, "err", err)
+	}
+	flash := ""
+	if applied {
+		flash = "Accès via Home Assistant enregistré et appliqué."
+		err = nil // A durability warning remains visible through ProxyError.
+	} else if err != nil {
+		err = fmt.Errorf("configuration non enregistrée : %w", err)
+	}
+	a.renderSettings(w, r, flash, err)
 }
 
 func (a *App) healthz(w http.ResponseWriter, r *http.Request) {

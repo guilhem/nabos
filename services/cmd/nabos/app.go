@@ -34,7 +34,7 @@ type App struct {
 	store           *config.Store
 	rabbit          *rabbit.Engine
 	auth            *web.Auth
-	proxy           *web.Proxy
+	proxy           *web.ProxyPolicy
 	wx              *weather.Client
 	device          *device.Client
 	net             *network.Client
@@ -79,9 +79,9 @@ type App struct {
 }
 
 func NewApp(env Env) (*App, error) {
-	proxy, err := web.NewProxy(env.TrustedProxies)
-	if err != nil {
-		return nil, err
+	proxy := web.LoadProxy(filepath.Join(env.DataDir, "trusted-proxies"))
+	if _, err := proxy.Current(); err != nil {
+		slog.Error("proxy configuration disabled", "err", err)
 	}
 	store, err := config.Open(filepath.Join(env.DataDir, "application.json"))
 	if err != nil {

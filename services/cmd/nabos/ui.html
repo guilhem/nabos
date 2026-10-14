@@ -143,6 +143,17 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <label>Préfixe de découverte <input name="ha_prefix" value="{{.S.HomeAssistant.Prefix}}"></label>
 </fieldset>
 <div class="form-actions"><button>Enregistrer les réglages du lapin</button></div></form></section>
+<section><h2>Accès via Home Assistant</h2>
+<p>Ouvrez l’interface du lapin dans Home Assistant via un proxy. Le mot de passe du lapin reste nécessaire.</p>
+{{if .Data.ProxyFlash}}<p class="ok" role="status">{{.Data.ProxyFlash}}</p>{{end}}
+{{if .Data.ProxyError}}<p class="err" role="alert">{{.Data.ProxyError}}</p>{{end}}
+{{if .Data.ProxySaveError}}<p class="err" role="alert">{{.Data.ProxySaveError}}</p>{{end}}
+<form method="post" action="{{$.URL "/settings/proxy"}}">
+<label for="trusted-proxies">Adresse(s) des proxies de confiance</label>
+<input id="trusted-proxies" name="trusted_proxies" value="{{.Data.ProxyAddresses}}" maxlength="4096" placeholder="192.168.20.144" spellcheck="false" aria-describedby="proxy-help proxy-recovery">
+<p id="proxy-help">IP ou réseaux CIDR séparés par des virgules. Préférez l’IP exacte du proxy qui se connecte au lapin. Champ vide : accès via proxy désactivé (par défaut). L’enregistrement s’applique immédiatement.</p>
+<p id="proxy-recovery">Pour la première configuration ou si l’accès via Home Assistant ne fonctionne plus, ouvrez directement l’adresse IP locale du lapin dans votre navigateur. Retirer le proxy utilisé coupe cet accès dès la prochaine requête.</p>
+<div class="form-actions"><button>Enregistrer l’accès via Home Assistant</button></div></form></section>
 <section><h2>Accès SSH</h2>
 <p>Connexion avec <code>ssh nabos@nabaztag.local</code>, par clé uniquement. Le compte <code>nabos</code> dispose de <code>sudo</code> sans mot de passe pour administrer le système.</p>
 {{if .Data.SSHError}}<p class="err">Impossible de lire les clés SSH : {{.Data.SSHError}}</p>{{else}}
