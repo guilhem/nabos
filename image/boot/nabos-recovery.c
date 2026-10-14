@@ -281,8 +281,8 @@ int nabos_recovery_init(void)
 		if (g.action == NABOS_ERROR)
 			goto fail;
 		if (g.action == NABOS_ROLLBACK || g.action == NABOS_RESET) {
-			ret = nabos_led_rgb(g.action == NABOS_RESET ? 255 : 0,
-					   g.action == NABOS_ROLLBACK ? 255 : 0, 0);
+			/* boot.cmd acknowledges rollback in green only after persistence. */
+			ret = nabos_led_rgb(255, g.action == NABOS_RESET ? 0 : 96, 0);
 			if (ret)
 				goto fail;
 			ret = env_set("nabos_recovery_action",
