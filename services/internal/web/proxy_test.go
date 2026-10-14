@@ -32,6 +32,10 @@ func TestProxyTrustUsesOnlyRemoteAddr(t *testing.T) {
 		{"CIDR boundary", "192.0.2.0/28", "192.0.2.16:4321", false},
 		{"IPv6 peer", "2001:db8::10", "[2001:db8::10]:4321", true},
 		{"IPv6 CIDR", "2001:db8::/64", "[2001:db8::20]:4321", true},
+		{"IPv6 zone exact", "fe80::1", "[fe80::1%wlan0]:4321", true},
+		{"IPv6 zone CIDR", "fe80::/64", "[fe80::20%eth0]:4321", true},
+		{"IPv6 zone untrusted", "fe80::1", "[fe80::2%wlan0]:4321", false},
+		{"invalid IPv4 zone", "192.0.2.10", "192.0.2.10%wlan0:4321", false},
 		{"mapped IPv4", "192.0.2.10", "[::ffff:192.0.2.10]:4321", true},
 		{"invalid remote", "192.0.2.10", "192.0.2.10", false},
 	} {

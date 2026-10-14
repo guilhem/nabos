@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -86,10 +87,10 @@ func (p *Proxy) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		external := proxyRequest{scheme: Scheme(r)}
-		peer, _, err := net.SplitHostPort(r.RemoteAddr)
+		peer, err := netip.ParseAddrPort(r.RemoteAddr)
 		if err == nil {
 			for _, network := range p.trusted {
-				if !network.Contains(net.ParseIP(peer)) {
+				if !network.Contains(peer.Addr().AsSlice()) {
 					continue
 				}
 				if values := r.Header.Values("X-Forwarded-Proto"); len(values) != 0 {
