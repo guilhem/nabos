@@ -89,6 +89,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
 
   device-core = pkgs.symlinkJoin {
     name = "device-core-nabos";
+    inherit (deviceCore) meta;
     paths = [ deviceCore ];
     nativeBuildInputs = [ pkgs.makeWrapper ];
     postBuild = ''
