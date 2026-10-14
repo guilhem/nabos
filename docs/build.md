@@ -75,9 +75,13 @@ bash image/build.sh zero2-arm64 dev-local --development
 
 Nix réalise le système et U-Boot ; l’assembleur signe **hors du store Nix**,
 amorce la partition de données, assemble le disque et le compresse. Les sorties
-sont dans `dist/<cible>/`. Les révisions externes, dont device-core, les pilotes,
-U-Boot et LVA, restent verrouillées par les expressions Nix et
-`image/sources.lock.json`. Les verrous Cargo et Go fixent leurs dépendances.
+sont dans `dist/<cible>/`. The device-core, wm8960 and bcm2835-ws2812 source revisions and hashes are
+locked in `flake.lock`; their repositories own the build recipes in
+`nix/package.nix`. NabOS supplies its shared Nixpkgs and the actual image
+kernel, then adds its device-core runtime wrapper. The upstream Cargo lock
+is read from the same pinned device-core source. U-Boot and LVA remain
+locked in `image/sources.lock.json`; the other Cargo and Go locks pin
+their dependencies.
 `lib.mkImage` est la fonction d’évaluation commune ; le verrou livré avec chaque
 image fait autorité pour ses entrées. Ces verrous ne promettent pas une image
 ou une signature reproductible bit à bit.

@@ -40,7 +40,7 @@ Les assets sont ceux du [guide de fabrication](build.md#construire-et-vérifier)
 
 ## Qualification de l’extraction device-core
 
-- [ ] Pin externe final : dépôt indépendant, commit, archive immuable et SHA-256 ; fabrication depuis cette archive pour ARMv6 et ARM64, distincte de la révision NabOS. Aucune valeur provisoire publiée.
+- [ ] Final external project pins: independent repositories, commits and NAR hashes in `flake.lock`; ARMv6 and ARM64 builds use their pinned recipes. No temporary local source override is published.
 - [ ] Entrées Nix et verrous Cargo distincts de nab-hardware/device-core : pins et hashes corrects, cible ARMv6 ou ARM64 vérifiée ; refus d’une source ou dépendance substituée. Le verrou livré correspond à celui utilisé pour construire.
 - [ ] LED sur Zero W et Zero 2 W : couleurs, pulses, animations, Clear et maintenance, SIGTERM et SIGKILL/ExecStopPost, racine en lecture seule et audio simultané.
 - [ ] Séparation des privilèges : nab-hardware ne reçoit aucune capability et accède aux GPIO et aux cinq LED sysfs ; nabos reçoit CAP_NET_BIND_SERVICE et /data/nabos ; aucun paquet/configuration/unité/binaire de Mosquitto ou ancien service livré.

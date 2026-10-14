@@ -1,5 +1,37 @@
 {
   "nodes": {
+    "bcm2835-ws2812": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792014176,
+        "narHash": "sha256-3UUMga+bzu1lim+9WPdBv1FAO1G7IjlvvIT9gaZfrKQ=",
+        "owner": "guilhem",
+        "repo": "bcm2835-ws2812",
+        "rev": "ed3ed5fe2b4e3e9ac8535fd1e61e8479d4efebae",
+        "type": "github"
+      },
+      "original": {
+        "owner": "guilhem",
+        "repo": "bcm2835-ws2812",
+        "type": "github"
+      }
+    },
+    "device-core": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792014305,
+        "narHash": "sha256-vMDHpOgbd3pplgDTDuhrjTFEiT4xpcVdYwjPaftmfpI=",
+        "owner": "guilhem",
+        "repo": "device-core",
+        "rev": "13ad3022c139c4fb7fc14de78e36dd6787c8035e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "guilhem",
+        "repo": "device-core",
+        "type": "github"
+      }
+    },
     "nixos-hardware": {
       "inputs": {
         "nixpkgs": [
@@ -38,8 +70,28 @@
     },
     "root": {
       "inputs": {
+        "bcm2835-ws2812": "bcm2835-ws2812",
+        "device-core": "device-core",
         "nixos-hardware": "nixos-hardware",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "wm8960": "wm8960"
+      }
+    },
+    "wm8960": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792014295,
+        "narHash": "sha256-Y7ZCzY6DGP0wChSrmLtcZxYUoshPZTSjwdUgpXdj5C4=",
+        "owner": "guilhem",
+        "repo": "wm8960",
+        "rev": "cc375eefbc4fe16c054f6b1f739294e49ad6f3d3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "guilhem",
+        "ref": "nabos-gpio-keys",
+        "repo": "wm8960",
+        "type": "github"
       }
     }
   },

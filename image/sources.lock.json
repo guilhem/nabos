@@ -19,24 +19,6 @@
     }
   },
   "sources": {
-    "device_core": {
-      "repository": "guilhem/device-core",
-      "commit": "caa666b8816c6559591008d17b03e41701329543",
-      "url": "https://codeload.github.com/guilhem/device-core/tar.gz/caa666b8816c6559591008d17b03e41701329543",
-      "sha256": "453342489c8b5e3d2c72fa6fd718d0d7d076079f4b0d39a22c0d27bd1b8ed726"
-    },
-    "sound": {
-      "repository": "guilhem/wm8960",
-      "commit": "e0d7744cb2def0b7c375d1f35bd43d769db22fd8",
-      "url": "https://codeload.github.com/guilhem/wm8960/tar.gz/e0d7744cb2def0b7c375d1f35bd43d769db22fd8",
-      "sha256": "f2ce3e680775c0eeef670a9394f22f3aa98663127a560804e8b99e0ed00ed623"
-    },
-    "led": {
-      "repository": "guilhem/bcm2835-ws2812",
-      "commit": "2b1adcea38adc0b73763055d832de9c7f9e3c004",
-      "url": "https://codeload.github.com/guilhem/bcm2835-ws2812/tar.gz/2b1adcea38adc0b73763055d832de9c7f9e3c004",
-      "sha256": "e80c18460e9ba13ceeca33337988ea5ed55dcb1424eb257d43d38d47b9d0fd89"
-    },
     "uboot": {
       "repository": "u-boot/u-boot",
       "commit": "ece349ade2973e220f524ce59e59711cc919263f",

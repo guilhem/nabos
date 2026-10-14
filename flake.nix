@@ -2,12 +2,15 @@
   description = "NabOS NixOS appliance (RAUC A/B)";
 
   inputs = {
+    device-core = { url = "github:guilhem/device-core"; flake = false; };
+    wm8960 = { url = "github:guilhem/wm8960/nabos-gpio-keys"; flake = false; };
+    bcm2835-ws2812 = { url = "github:guilhem/bcm2835-ws2812"; flake = false; };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     nixos-hardware.url = "github:NixOS/nixos-hardware";
     nixos-hardware.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, nixos-hardware }:
+  outputs = { self, nixpkgs, nixos-hardware, device-core, wm8960, bcm2835-ws2812 }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       targets = [ "zero-armv6" "zero2-arm64" ];
@@ -50,7 +53,7 @@
           };
           packages = import ./nix/packages.nix {
             pkgs = system.pkgs;
-            inherit target;
+            inherit target device-core wm8960 bcm2835-ws2812;
             kernelPackages = system.config.boot.kernelPackages;
           };
           payload = import ./nix/image.nix {
@@ -61,7 +64,7 @@
       nativePackages = forSystems (buildSystem:
         let pkgs = nixpkgs.legacyPackages.${buildSystem};
         in import ./nix/packages.nix {
-          inherit pkgs;
+          inherit pkgs device-core wm8960 bcm2835-ws2812;
           target = "zero2-arm64";
           kernelPackages = pkgs.linuxPackages;
         });

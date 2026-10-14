@@ -20,9 +20,9 @@ Les réglages Linux appartiennent à device-core (`/data/device-core/settings.js
 
 Les modules externes sont construits contre les en-têtes et symboles du noyau installé dans l'image. Vérifier les deux architectures. Une compilation ARMv7 ne valide pas le Zero ARMv6. Ne jamais installer ou compiler les dépendances sur l'appareil lors d'une mise à jour.
 
-Nix utilise exclusivement l’archive device-core du commit verrouillé dans `image/sources.lock.json`. `nix build .#device-core-native` construit le paquet natif pour les tests ; `make image TARGET=... VERSION=... DEVELOPMENT=1` construit une image de développement avec ses composants.
+Nix imports the build recipes from the device-core, wm8960 and bcm2835-ws2812 revisions locked in `flake.lock`. All three use NabOS's Nixpkgs; drivers receive the exact image kernel. `nix build .#device-core-native` builds the native test package; `make image TARGET=... VERSION=... DEVELOPMENT=1` builds a development image.
 
-Pour modifier une source externe, mettre à jour sa révision et son SHA-256 dans `image/sources.lock.json`. Conserver les licences et les archives nécessaires à la reconstruction. Les dépendances Cargo et Go doivent avoir leurs fichiers de verrouillage à jour.
+Update a project input with `nix flake update device-core` (or `wm8960` / `bcm2835-ws2812`), then review its locked revision and source hash. U-Boot and LVA remain pinned in `image/sources.lock.json`. Keep source licenses and Cargo/Go dependency locks current; device-core's Cargo lock comes directly from its pinned source.
 
 La racine de l’appareil est en lecture seule. Lire `nix/runtime/initrd-persist.sh`, `nix/runtime/persist.sh`, `nix/system.nix`, les unités des paquets et leurs overrides avant toute modification système. Les données vont dans `/data`, le home LVA dans `/var/lib/nabos/lva`, le home SSH dans `/var/lib/nabos/admin`, les temporaires dans `/run` ; tester les restrictions effectives et le premier démarrage, puis signaler tout essai matériel manquant. Ne jamais remplacer ou supprimer le verrou `/run/lock/device-core/network` lors d’un redémarrage du daemon.
 

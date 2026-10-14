@@ -20,7 +20,7 @@ NabOS's repository, build, runtime and update infrastructure.
 External components
 
 device-core is an independent GPL-3.0-only Rust/Linux service, pinned by
-repository, commit archive and SHA-256 in image/sources.lock.json. Its LICENSE
+repository, commit and source NAR hash in flake.lock. Its LICENSE
 and NOTICE must accompany the distributed binaries. Nix resolves its source
 and build dependencies from the pinned inputs; build sources and dependency
 caches are not part of the runtime closure.
