@@ -100,12 +100,18 @@ func (p *Proxy) Middleware(next http.Handler) http.Handler {
 					}
 					external.scheme = values[0]
 				}
-				if values := r.Header.Values("X-Ingress-Path"); len(values) != 0 {
-					if len(values) != 1 || !prefixRe.MatchString(values[0]) {
-						http.Error(w, "invalid X-Ingress-Path", http.StatusBadRequest)
-						return
+				for _, header := range []string{"X-Forwarded-Prefix", "X-Ingress-Path"} {
+					if values := r.Header.Values(header); len(values) != 0 {
+						if len(values) != 1 || !prefixRe.MatchString(values[0]) {
+							http.Error(w, "invalid "+header, http.StatusBadRequest)
+							return
+						}
+						if external.prefix != "" && external.prefix != values[0] {
+							http.Error(w, "conflicting proxy prefixes", http.StatusBadRequest)
+							return
+						}
+						external.prefix = values[0]
 					}
-					external.prefix = values[0]
 				}
 				break
 			}

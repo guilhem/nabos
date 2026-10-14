@@ -226,7 +226,7 @@ func (a *App) saveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	flash := ""
 	if applied {
-		flash = "Accès via Home Assistant enregistré et appliqué."
+		flash = "Accès via le proxy enregistré et appliqué."
 		err = nil // A durability warning remains visible through ProxyError.
 	} else if err != nil {
 		err = fmt.Errorf("configuration non enregistrée : %w", err)

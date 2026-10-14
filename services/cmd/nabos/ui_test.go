@@ -178,7 +178,7 @@ func checkUIProxyCard(t *testing.T, doc *html.Node, prefix, value string) {
 			t.Fatal("proxy setting must have one dedicated card/form")
 		}
 		headers := uiElements(section, "h2")
-		if len(headers) != 1 || headers[0].FirstChild == nil || headers[0].FirstChild.Data != "Accès via Home Assistant" {
+		if len(headers) != 1 || headers[0].FirstChild == nil || headers[0].FirstChild.Data != "Accès via un proxy" {
 			t.Fatal("proxy card needs its own French heading")
 		}
 		fields, labels, buttons := uiElements(form, "input"), uiElements(form, "label"), uiElements(form, "button")

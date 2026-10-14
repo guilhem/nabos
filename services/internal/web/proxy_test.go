@@ -69,9 +69,11 @@ func TestProxyTrustUsesOnlyRemoteAddr(t *testing.T) {
 
 func TestProxyRejectsInvalidTrustedHeaders(t *testing.T) {
 	p, _ := NewProxy("192.0.2.10")
+	invalidPrefixes := [][]string{{""}, {"/"}, {"https://evil.example"}, {"//evil.example"}, {"/a//b"}, {"/a/"}, {"/a/.."}, {"/a/."}, {"/a%2fb"}, {"/a\\b"}, {"/a?x=b"}, {"/a#b"}, {"/a b"}, {"/a\tb"}, {"/a\nb"}, {"/a,b"}, {"/a", "/b"}}
 	for header, values := range map[string][][]string{
-		"X-Forwarded-Proto": {{""}, {"HTTPS"}, {"ftp"}, {"https,http"}, {"https, https"}, {" https"}, {"https "}, {"https", "https"}},
-		"X-Ingress-Path":    {{""}, {"/"}, {"https://evil.example"}, {"//evil.example"}, {"/a//b"}, {"/a/"}, {"/a/.."}, {"/a/."}, {"/a%2fb"}, {"/a\\b"}, {"/a?x=b"}, {"/a#b"}, {"/a b"}, {"/a\tb"}, {"/a\nb"}, {"/a,b"}, {"/a", "/b"}},
+		"X-Forwarded-Proto":  {{""}, {"HTTPS"}, {"ftp"}, {"https,http"}, {"https, https"}, {" https"}, {"https "}, {"https", "https"}},
+		"X-Forwarded-Prefix": invalidPrefixes,
+		"X-Ingress-Path":     invalidPrefixes,
 	} {
 		for _, values := range values {
 			t.Run(header+"="+values[0], func(t *testing.T) {
@@ -94,6 +96,52 @@ func TestProxyRejectsInvalidTrustedHeaders(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestProxyPrefixes(t *testing.T) {
+	p, _ := NewProxy("192.0.2.10")
+	for _, tc := range []struct {
+		name, forwarded, ingress, prefix string
+		status                           int
+	}{
+		{"site root", "", "", "", http.StatusNoContent},
+		{"reverse proxy", "/nabaztag", "", "/nabaztag", http.StatusNoContent},
+		{"Home Assistant", "", "/api/ingress/rabbit", "/api/ingress/rabbit", http.StatusNoContent},
+		{"matching headers", "/nabaztag", "/nabaztag", "/nabaztag", http.StatusNoContent},
+		{"conflicting headers", "/nabaztag", "/other", "", http.StatusBadRequest},
+		{"malformed forwarded with valid ingress", "/../other", "/nabaztag", "", http.StatusBadRequest},
+		{"valid forwarded with malformed ingress", "/nabaztag", "/../other", "", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, trusted := range []bool{true, false} {
+				r := httptest.NewRequest(http.MethodGet, "http://public.example/", nil)
+				r.RemoteAddr = "192.0.2.10:4321"
+				if !trusted {
+					r.RemoteAddr = "192.0.2.11:4321"
+				}
+				if tc.forwarded != "" {
+					r.Header.Set("X-Forwarded-Prefix", tc.forwarded)
+				}
+				if tc.ingress != "" {
+					r.Header.Set("X-Ingress-Path", tc.ingress)
+				}
+				status, prefix := http.StatusNoContent, ""
+				if trusted {
+					status, prefix = tc.status, tc.prefix
+				}
+				w := httptest.NewRecorder()
+				p.Middleware(http.HandlerFunc(func(w http.ResponseWriter, got *http.Request) {
+					if Prefix(got) != prefix {
+						t.Errorf("trusted=%v: prefix %q, want %q", trusted, Prefix(got), prefix)
+					}
+					w.WriteHeader(http.StatusNoContent)
+				})).ServeHTTP(w, r)
+				if w.Code != status {
+					t.Errorf("trusted=%v: status %d, want %d", trusted, w.Code, status)
+				}
+			}
+		})
 	}
 }
 

@@ -113,17 +113,19 @@ Device-core's source pin and settings contract are independent of NabOS's
 revision. Its image environment and access policy are described in the
 [build guide](build.md).
 
-### Home Assistant ingress and reverse proxies
+### Reverse proxies
 
-NabOS can serve its interface beneath a proxy path without response rewriting.
+NabOS can serve its interface at a proxy's site root or beneath a path such as
+`/nabaztag`, without response rewriting. Home Assistant ingress is one supported
+use of this general proxy configuration.
 Administration still requires the rabbit's password and a session. All writes
 still require an Origin (or a Referer when Origin is absent) matching the public
 scheme and Host. Direct access continues to work.
 
 Trust is disabled by default. For initial setup, open the rabbit's local IP
-directly in your browser, sign in and open **Réglages → Accès via Home Assistant**.
+directly in your browser, sign in and open **Réglages → Accès via un proxy**.
 Enter the trusted proxy IP address(es) or CIDRs separated by commas, for example
-`192.168.20.144`, and select **Enregistrer l’accès via Home Assistant**. Use the IP
+`192.168.20.144`, and select **Enregistrer l’accès via le proxy**. Use the IP
 that actually connects to the rabbit; a container, NAT or another proxy can
 change that address. Prefer one exact IP rather than a LAN subnet; include only
 proxies whose headers you control. Loopback and private networks are not
@@ -131,7 +133,7 @@ implicitly trusted. Matching uses the actual TCP peer, never `X-Forwarded-For`.
 
 Saving applies immediately without a restart. Empty the field and save to
 disable trust. The confirmation renders directly, without redirecting through a
-proxy that may just have been removed. If ingress stops working, reopen the
+proxy that may just have been removed. If proxy access stops working, reopen the
 rabbit's local IP directly to repair the configuration.
 
 NabOS stores only this HTTP policy in `/data/nabos/trusted-proxies`, a separate
@@ -147,19 +149,25 @@ after a power loss is uncertain. Concurrent saves are serialized, and requests
 already in progress keep their original policy. Configuration uses the Settings
 form rather than an environment variable.
 
-The proxy must preserve the incoming public `Host`, strip any untrusted
-`X-Ingress-Path`, and set that header to its path, for example
-`/api/ingress/nabaztag`. It must also replace client-supplied
+The proxy must preserve the incoming public `Host`, remove client-supplied
+`X-Forwarded-Prefix` and `X-Ingress-Path`, and replace client-supplied
 `X-Forwarded-Proto` with one authoritative `http` or `https` value. Check this
-through the complete proxy chain: trusting the Home Assistant socket does not
-make a forwarded client header trustworthy. `X-Forwarded-Host` and `Forwarded`
-are ignored. The application does not rewrite Origin.
+through the complete proxy chain: trusting the final TCP peer does not make a
+forwarded client header trustworthy. `X-Forwarded-Host` and `Forwarded` are ignored.
+The application does not rewrite Origin.
 
-For trusted peers, duplicate or list-valued scheme/path headers are rejected
-with HTTP 400. A path must contain only nonempty segments of ASCII letters,
+For a path prefix, set `X-Forwarded-Prefix` to the public path, for example
+`/nabaztag`. This works with reverse proxies such as
+[Traefik's StripPrefix middleware](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/stripprefix/).
+Home Assistant ingress can use `X-Ingress-Path` instead, for example
+`/api/ingress/nabaztag`. Both headers use the same validation; if both are present,
+their values must match. For a proxy at the site root, omit both path headers.
+
+For trusted peers, duplicate, conflicting or list-valued scheme/path headers are
+rejected with HTTP 400. A path must contain only nonempty segments of ASCII letters,
 digits, `_` and `-`, each separated by one `/`, with no trailing slash. Full
 URLs, dot segments, encoded characters, backslashes, queries, fragments and
-whitespace are rejected. Omit `X-Ingress-Path` for a proxy at the site root.
+whitespace are rejected.
 The proxy removes this prefix from incoming request paths; NabOS adds it to
 links, forms, redirects, cookies, Wi-Fi requests and the Mastodon OAuth callback.
 HTTPS marks cookies Secure, and their Path is the prefix followed by `/`.

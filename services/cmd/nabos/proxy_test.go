@@ -51,38 +51,56 @@ func trustIngress(t *testing.T, a *App) {
 	}
 }
 
-func TestIngressLogin(t *testing.T) {
-	a := testApp(t)
-	trustIngress(t, a)
-	serviceSession(t, a)
-	h := a.routes()
-	root := ingressRequest(h, http.MethodGet, "/", nil, nil)
-	if root.Code != http.StatusSeeOther || root.Header().Get("Location") != ingressPath+"/login" {
-		t.Errorf("login redirect: %d %s", root.Code, root.Header().Get("Location"))
-	}
-	login := ingressRequest(h, http.MethodPost, "/login", url.Values{"password": {"carotte-42"}}, nil)
-	if login.Code != http.StatusSeeOther || login.Header().Get("Location") != ingressPath+"/" {
-		t.Fatalf("login: %d %s %s", login.Code, login.Header().Get("Location"), login.Body.String())
-	}
-	cookies := login.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("login cookies: %v", cookies)
-	}
-	cookie := cookies[0]
-	if cookie.Name != web.CookieName || cookie.Path != ingressPath+"/" || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("session cookie: %v", cookie)
-	}
-	checkUINavigation(t, uiDocument(t, ingressRequest(h, http.MethodGet, "/", nil, cookie)), ingressPath+"/")
-	bad := ingressRequest(h, http.MethodPost, "/login", url.Values{"password": {"wrong"}}, nil)
-	if bad.Code != http.StatusSeeOther || !strings.HasPrefix(bad.Header().Get("Location"), ingressPath+"/login?err=") || len(bad.Result().Cookies()) != 0 {
-		t.Fatalf("bad password: %d %s", bad.Code, bad.Header().Get("Location"))
-	}
-	logout := ingressRequest(h, http.MethodPost, "/logout", url.Values{}, cookie)
-	if logout.Code != http.StatusSeeOther || logout.Header().Get("Location") != ingressPath+"/login" {
-		t.Fatalf("logout: %d %s", logout.Code, logout.Header().Get("Location"))
-	}
-	if after := ingressRequest(h, http.MethodGet, "/", nil, cookie); after.Header().Get("Location") != ingressPath+"/login" {
-		t.Fatal("logout left session valid")
+func TestProxyLogin(t *testing.T) {
+	for _, tc := range []struct{ name, header, prefix string }{
+		{"site root", "", ""},
+		{"reverse proxy", "X-Forwarded-Prefix", "/nabaztag"},
+		{"Home Assistant", "X-Ingress-Path", ingressPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testApp(t)
+			trustIngress(t, a)
+			serviceSession(t, a)
+			h := a.routes()
+			request := func(method, path string, values url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+				r := ingressHTTPRequest(method, path, values, cookies...)
+				r.Header.Del("X-Ingress-Path")
+				if tc.header != "" {
+					r.Header.Set(tc.header, tc.prefix)
+				}
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				return w
+			}
+			root := request(http.MethodGet, "/", nil)
+			if root.Code != http.StatusSeeOther || root.Header().Get("Location") != tc.prefix+"/login" {
+				t.Errorf("login redirect: %d %s", root.Code, root.Header().Get("Location"))
+			}
+			login := request(http.MethodPost, "/login", url.Values{"password": {"carotte-42"}})
+			if login.Code != http.StatusSeeOther || login.Header().Get("Location") != tc.prefix+"/" {
+				t.Fatalf("login: %d %s %s", login.Code, login.Header().Get("Location"), login.Body.String())
+			}
+			cookies := login.Result().Cookies()
+			if len(cookies) != 1 {
+				t.Fatalf("login cookies: %v", cookies)
+			}
+			cookie := cookies[0]
+			if cookie.Name != web.CookieName || cookie.Path != tc.prefix+"/" || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+				t.Fatalf("session cookie: %v", cookie)
+			}
+			checkUINavigation(t, uiDocument(t, request(http.MethodGet, "/", nil, cookie)), tc.prefix+"/")
+			bad := request(http.MethodPost, "/login", url.Values{"password": {"wrong"}})
+			if bad.Code != http.StatusSeeOther || !strings.HasPrefix(bad.Header().Get("Location"), tc.prefix+"/login?err=") || len(bad.Result().Cookies()) != 0 {
+				t.Fatalf("bad password: %d %s", bad.Code, bad.Header().Get("Location"))
+			}
+			logout := request(http.MethodPost, "/logout", url.Values{}, cookie)
+			if logout.Code != http.StatusSeeOther || logout.Header().Get("Location") != tc.prefix+"/login" {
+				t.Fatalf("logout: %d %s", logout.Code, logout.Header().Get("Location"))
+			}
+			if after := request(http.MethodGet, "/", nil, cookie); after.Header().Get("Location") != tc.prefix+"/login" {
+				t.Fatal("logout left session valid")
+			}
+		})
 	}
 }
 
