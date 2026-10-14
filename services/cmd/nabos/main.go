@@ -47,7 +47,7 @@ func main() {
 	for _, a := range os.Args[1:] {
 		switch a {
 		case "--version", "-version":
-			fmt.Println("nabos", version)
+			fmt.Println("nabos", env("NABOS_VERSION", version))
 			return
 		case "--help", "-h":
 			fmt.Println("usage: nabos [--version]\nConfiguration via NABOS_* variables, see docs/protocol-v1.md")

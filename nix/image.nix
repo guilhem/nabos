@@ -66,7 +66,6 @@ pkgs.runCommand "nabos-nixos-${target}-${version}" {
   mkenvimage -r -s 0x10000 -o $out/uboot.env ${../image/boot/uboot.env}
   cp ${bootScript} $out/boot.cmd
   cp ${config.system.build.toplevel}/kernel-params $out/kernel-params
-  printf '%s\n' ${lib.escapeShellArgs cacheRoots} > $out/cache-roots
   jq -n --arg target '${target}' --arg version '${version}' --arg kernel '${kernel.modDirVersion}' \
     --arg system '${config.system.build.toplevel}' --arg initrd '${config.system.build.initialRamdisk}' \
     '{target:$target,version:$version,kernel:$kernel,system:$system,initrd:$initrd,hardware_validated:false}' > $out/build.json

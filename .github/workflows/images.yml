@@ -102,20 +102,6 @@ jobs:
           nix-instantiate --parse flake.nix >/dev/null
           nix --extra-experimental-features 'nix-command flakes' flake check \
             --no-build --all-systems --no-update-lock-file
-          export NABOS_FLAKE="git+file://$PWD"
-          for target in zero-armv6 zero2-arm64; do
-            export NABOS_TARGET="$target"
-            export NABOS_BUILD_SYSTEM=x86_64-linux
-            nix --extra-experimental-features 'nix-command flakes' eval --impure --raw \
-              --option allow-import-from-derivation false --expr '
-                let f = builtins.getFlake (builtins.getEnv "NABOS_FLAKE");
-                    p = f.lib.mkImage {
-                      buildSystem = builtins.getEnv "NABOS_BUILD_SYSTEM";
-                      target = builtins.getEnv "NABOS_TARGET";
-                      version = "dev-nixos";
-                    };
-                in p.payload.drvPath'
-          done
   test:
     if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'edge-')
     uses: ./.github/workflows/tests.yml
@@ -297,7 +283,7 @@ jobs:
         run: |
           test -n "$CACHIX_AUTH_TOKEN"
           nix --extra-experimental-features 'nix-command flakes' develop \
-            --command cachix push nabos < "build/nix-tmp/uboot-cache-root-$TARGET"
+            .#image --command cachix push nabos < "build/nix-tmp/uboot-cache-root-$TARGET"
       - name: Remove expected production certificate
         if: always()
         run: rm -f "$RUNNER_TEMP/rauc-expected-cert.pem"

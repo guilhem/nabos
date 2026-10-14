@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Exercise image orchestration with tiny files and mocked builders, without Nix builds."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -60,6 +62,12 @@ elif name == 'openssl':
 elif name == 'genimage':
     failed('sd')
     (pathlib.Path(args[args.index('--outputpath') + 1]) / 'sdcard.img').write_bytes(b'SD fixture')
+elif name == 'rauc' and args[0] == 'info':
+    assert args[1] == '--keyring=' + str(repo / 'certificate.pem')
+    if os.environ.get('MUTATE_ARTIFACT'):
+        path = pathlib.Path(os.environ['MUTATE_ARTIFACT'])
+        path.write_bytes(path.read_bytes() + b'changed during validation')
+    sys.stdout.write(pathlib.Path(args[-1]).read_text())
 elif name == 'rauc':
     assert args[0] == 'bundle'
     bundle = pathlib.Path(args[-2])
@@ -77,12 +85,43 @@ elif name == 'dd':
     destination = next(arg[3:] for arg in args if arg.startswith('of='))
     pathlib.Path(destination).write_bytes(b'extracted fixture')
 elif name == 'fixture-test':
+    assert len(args) == 7, args
+    assert pathlib.Path(args[4]).name == 'data.ext4' and pathlib.Path(args[4]).is_file()
     assert os.environ['EXPECTED_VERSION'] == 'dev-local'
     failed('tests')
 elif name == 'fixture-runtime':
+    assert len(args) == 3 and pathlib.Path(args[2]).name == 'data.ext4', args
     failed('runtime')
+elif name == 'sha256sum':
+    os.execv(os.environ['REAL_SHA256SUM'], ['sha256sum', *args])
+elif name == 'python3':
+    # Geometry and initrd checks need a full image; this fixture exercises shell hashes.
+    if args[0] == '-':
+        sys.stdin.read()
+    else:
+        assert args[0].endswith('/test-initrd.py'), args
+elif name == 'debugfs' and os.environ.get('FIXTURE_VALIDATION'):
+    request = args[1]
+    if request == 'cat /boot/init':
+        print('nabos_init=/nix/store/fixture/init')
+    elif request == 'stat /boot/initrd':
+        print('Size: 12')
+    elif request.startswith('dump /boot/initrd '):
+        pathlib.Path(request.removeprefix('dump /boot/initrd ')).write_bytes(b'initrd fixture')
+    elif request == 'cat /rauc/ca.cert.pem':
+        sys.stdout.write((repo / 'certificate.pem').read_text())
+    else:
+        assert request in ('stat /nix/store', 'stat /rauc', 'stat /rauc/ca.cert.pem'), request
+        print('User: 0 Group: 0 Mode: ' + ('0700' if request == 'stat /rauc' else '0600'))
+elif name == 'unsquashfs':
+    assert args[0] == '-cat', args
+    if args[-1] == 'rauc-hook.sh':
+        sys.stdout.write((repo / 'image/rauc-hook.sh').read_text())
+    else:
+        assert args[-1] == 'manifest.raucm', args
+        print('filename=rauc-hook.sh\nhooks=install-check;')
 else:
-    assert name in ('fakeroot', 'mcopy', 'debugfs', 'go'), name
+    assert name in ('fakeroot', 'mcopy', 'debugfs', 'go', 'e2fsck', 'mdir'), name
 '''
 
 
@@ -120,7 +159,7 @@ class BuildEfficiency(unittest.TestCase):
         bin_dir = self.repo / 'bin'
         bin_dir.mkdir()
         mock = bin_dir / 'mock'
-        mock.write_text(MOCK)
+        mock.write_text(MOCK.replace('#!/usr/bin/env python3', '#!' + sys.executable, 1))
         mock.chmod(0o755)
         for command in ('nix', 'git', 'openssl', 'fakeroot', 'genimage', 'rauc', 'xz',
                         'dd', 'mcopy', 'debugfs', 'go', 'fixture-test', 'fixture-runtime'):
@@ -210,9 +249,55 @@ class BuildEfficiency(unittest.TestCase):
         self.assertIsInstance(seconds, int)
         self.assertGreaterEqual(seconds, 0)
         self.assertEqual(measurements, dict(target=TARGET, version='dev-local', source_revision=REVISION))
+        data_reads = [args for args in self.calls('dd') if 'skip=12804' in args]
+        self.assertEqual(len(data_reads), 1)
+        self.assertIn('of=' + self.calls('fixture-test')[0][4], data_reads[0])
+        self.assertEqual(self.calls('fixture-test')[0][4], self.calls('fixture-runtime')[0][2])
         result = self.run_script('test-artifact.sh', TARGET, str(self.out), fail='runtime')
         self.assertEqual(result.returncode, 42, result.stderr)
         self.assertFalse(report.exists())
+
+    def test_real_image_hashes_reject_corruption_and_mutation(self):
+        shutil.copy2(IMAGE / 'test.sh', self.repo / 'image/test.sh')
+        for command in ('sha256sum', 'python3', 'e2fsck', 'mdir', 'unsquashfs'):
+            (self.repo / 'bin' / command).symlink_to('mock')
+        self.env |= {'REAL_SHA256SUM': shutil.which('sha256sum'), 'FIXTURE_VALIDATION': '1',
+                     'EXPECTED_VERSION': 'dev-local'}
+        files = [self.repo / name for name in ('sdcard.img', 'rootfs\\ fixture.ext4', 'boot.vfat', 'data.ext4')]
+        contents = [b'SD fixture', b'root fixture', b'boot fixture', b'data fixture']
+        certificate = self.repo / 'certificate.pem'
+        certificate.write_text('public fixture certificate')
+        bundle = self.repo / 'bundle.json'
+        bundle.write_text(json.dumps({'compatible': 'nabos-' + TARGET, 'version': 'dev-local',
+                                     'images': [{'rootfs': {'checksum': hashlib.sha256(contents[1]).hexdigest()}},
+                                                {'bootloader': {'checksum': hashlib.sha256(contents[2]).hexdigest()}}]}))
+        args = [TARGET, *map(str, files), str(bundle), str(certificate)]
+        for stage, paths in [('valid', [None]), ('corrupt', files[1:3]), ('mutate', files)]:
+            for path in paths:
+                with self.subTest(stage=stage, path=path):
+                    for file, content in zip(files, contents):
+                        file.write_bytes(content)
+                    (self.repo / 'calls.jsonl').write_text('')
+                    self.env.pop('MUTATE_ARTIFACT', None)
+                    if stage == 'corrupt':
+                        path.write_bytes(path.read_bytes() + b'corrupted before validation')
+                    elif stage == 'mutate':
+                        self.env['MUTATE_ARTIFACT'] = str(path)
+                    result = self.run_script('test.sh', *args)
+                    if stage == 'valid':
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn('originals unchanged', result.stdout)
+                        self.assertEqual([file.read_bytes() for file in files], contents)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    expected_hash_calls = 1 if stage == 'corrupt' else 2
+                    self.assertEqual(self.calls('sha256sum'), [list(map(str, files))] * expected_hash_calls)
+                    self.assertEqual(len(self.calls('unsquashfs')), 0 if stage == 'corrupt' else 2)
+                    self.assertEqual(self.calls('dd'), [])
+                    self.assertEqual(self.calls('e2fsck'), [['-fn', str(files[1])], ['-fn', str(files[3])]])
+                    data_checks = [args for args in self.calls('debugfs') if '/rauc' in args[1]]
+                    self.assertEqual(len(data_checks), 3)
+                    self.assertTrue(all(args[-1] == str(files[3]) for args in data_checks))
 
     def test_existing_cache_benchmark_contract(self):
         for phase in ('cold', 'warm', 'version', 'nixpkgs'):

@@ -319,21 +319,40 @@ func TestVersionAndHelpReturnBeforeStartup(t *testing.T) {
 	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/missing/system/bus")
 	data := filepath.Join(t.TempDir(), "missing")
 	t.Setenv("NABOS_DATA_DIR", data)
-	for _, arg := range []string{"--version", "--help"} {
-		args, stdout := os.Args, os.Stdout
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		os.Args, os.Stdout = []string{"nabos", arg}, w
-		main()
-		os.Args, os.Stdout = args, stdout
-		w.Close()
-		out, err := io.ReadAll(r)
-		r.Close()
-		if err != nil || !strings.Contains(string(out), "nabos") {
-			t.Fatal(string(out), err)
-		}
+	for _, tc := range []struct {
+		name, arg, imageVersion, want string
+	}{
+		{"image version", "--version", "v1.2.3", "nabos v1.2.3\n"},
+		{"image version alias", "-version", "v1.2.3", "nabos v1.2.3\n"},
+		{"standalone", "--version", "", "nabos " + version + "\n"},
+		{"standalone alias", "-version", "", "nabos " + version + "\n"},
+		{"help", "--help", "v1.2.3", "usage: nabos [--version]\nConfiguration via NABOS_* variables, see docs/protocol-v1.md\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NABOS_VERSION", tc.imageVersion)
+			if tc.imageVersion == "" {
+				if err := os.Unsetenv("NABOS_VERSION"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args, stdout := os.Args, os.Stdout
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.Args, os.Stdout = []string{"nabos", tc.arg}, w
+			main()
+			os.Args, os.Stdout = args, stdout
+			w.Close()
+			out, err := io.ReadAll(r)
+			r.Close()
+			if err != nil || string(out) != tc.want {
+				t.Fatal(string(out), err)
+			}
+			if tc.arg != "--help" && tc.want != "nabos "+loadEnv().Version+"\n" {
+				t.Fatal("CLI and application versions differ")
+			}
+		})
 	}
 	if _, err := os.Stat(data); !os.IsNotExist(err) {
 		t.Fatal("early option touched application data", err)

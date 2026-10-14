@@ -53,7 +53,10 @@ For startup failures and logs retained after rollback, see
 Installer Nix avec les fonctions `nix-command flakes` sur un hôte Linux jetable.
 Prévoir l’espace pour le store, les racines ext4 de 6 Gio, le disque SD, les
 copies de test et la compression ; aucun minimum d’espace constructeur n’est
-attesté sans mesure. Le dev shell fournit les outils d’assemblage et de test.
+attesté sans mesure.
+Image commands automatically enter `nix develop .#image`, which provides the
+assembly and artifact-test tools. The default development shell adds Rust,
+Cargo, pkg-config and ShellCheck for application development.
 
 | Cible | Hôte constructeur | Appareil |
 |---|---|---|
@@ -96,13 +99,14 @@ EXPECTED_VERSION=dev-local EXPECTED_DEVELOPMENT=true \
   bash image/test-artifact.sh zero-armv6 dist/zero-armv6
 ```
 
-La construction locale lance `image/test.sh` avant compression. Son interface
-prend la cible, le disque, la racine, le démarrage, le bundle et le certificat :
+Local builds run `image/test.sh` before compression. Its arguments are the target,
+disk image, root filesystem, boot filesystem, data filesystem, bundle and certificate:
 
 ```sh
-# WORK est le répertoire de travail affiché par le constructeur.
+# WORK is the workspace printed by the builder.
 bash image/test.sh zero-armv6 \
   WORK/images/sdcard.img WORK/images/rootfs.ext4 WORK/images/boot.vfat \
+  WORK/images/data.ext4 \
   dist/zero-armv6/nabos-zero-armv6.raucb \
   dist/zero-armv6/ca-zero-armv6.cert.pem
 ```
@@ -233,15 +237,20 @@ Le payload d’assemblage, les
 images, bundles, certificats et dev shells ne sont pas des racines de
 publication ; les images et releases sont conservées hors Cachix.
 La publication globale du store et `watch-store` ne sont pas utilisés.
-La liste est préparée avant la construction. Même si le packaging échoue,
-la CI publie les racines effectivement réalisées. Un échec Cachix est signalé
-et les images et rapports disponibles restent téléchargeables ; les benchmarks
-continuent d’exiger la disponibilité complète de leur closure.
+The root list is prepared before building and stays outside the payload.
+Normal image jobs publish only the selected roots already realized by their
+required build work, including after a packaging failure. Their cache reports
+describe this realized subset, not every root on the original list. Missing
+headers or build helpers do not trigger downloads solely to warm the cache.
+The benchmark workflow explicitly builds all selected roots to seed and verify
+the complete cache closure. Cache publication failures are reported without
+discarding available image artifacts or reports.
 
-La version de l’image est inscrite dans NabOS et ses métadonnées. Les assets et
-`nab-hardware` gardent une identité indépendante de cette version ; Nix invalide
-leur cache quand leurs sources ou dépendances changent. Changer uniquement la
-version de l’image ne recompile donc pas les deux services Rust.
+The image version is supplied to NabOS through `NABOS_VERSION` and recorded in
+image metadata. Changing only this version does not rebuild the Go application
+or either Rust service. Sources and dependencies still invalidate their packages.
+The architecture-independent assets use the native builder and are shared by
+both target images built on the same host architecture.
 Le profil système sélectionne explicitement la sortie d’exécution de chaque
 paquet : les sorties de manuels non installées ne déclenchent pas de compilation.
 

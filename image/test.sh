@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Verify the assembled NixOS image and its signed update without mounting it.
 set -euo pipefail
-[[ $# == 6 ]] || { echo 'Usage: bash image/test.sh TARGET SD_IMAGE ROOTFS BOOT BUNDLE CERTIFICATE' >&2; exit 2; }
-target=$1 disk=$2 rootfs=$3 boot=$4 bundle=$5 certificate=$6
+[[ $# == 7 ]] || { echo 'Usage: bash image/test.sh TARGET SD_IMAGE ROOTFS BOOT DATA BUNDLE CERTIFICATE' >&2; exit 2; }
+target=$1 disk=$2 rootfs=$3 boot=$4 data=$5 bundle=$6 certificate=$7
 repo=$(cd "$(dirname "$0")/.." && pwd)
 [[ $target == zero-armv6 || $target == zero2-arm64 ]] || exit 2
-before=$(sha256sum "$disk" "$rootfs" "$boot")
+before=$(sha256sum "$disk" "$rootfs" "$boot" "$data")
+readarray -t hashes <<< "$before"
+rootfs_hash=${hashes[1]%% *} boot_hash=${hashes[2]%% *}
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
-python3 - "$disk" "$rootfs" "$boot" <<'PY'
+python3 - "$disk" "$rootfs" "$boot" "$data" <<'PY'
 import os, struct, sys
-disk, rootfs, boot = sys.argv[1:]
+disk, rootfs, boot, data = sys.argv[1:]
 mib = 1024 * 1024
 assert os.path.getsize(rootfs) == 6144 * mib
 assert os.path.getsize(boot) == 256 * mib
+assert os.path.getsize(data) == 1024 * mib
 assert os.path.getsize(disk) == 13828 * mib
 with open(disk, 'rb') as f:
     mbr = f.read(512)
@@ -25,7 +28,7 @@ with open(disk, 'rb') as f:
     environment = f.read(0x10000)
     f.seek(2 * mib)
     assert f.read(0x10000) == environment, 'redundant environment differs'
-    for start, path in [(4 * mib, boot), (260 * mib, boot), (516 * mib, rootfs)]:
+    for start, path in [(4 * mib, boot), (260 * mib, boot), (516 * mib, rootfs), (12804 * mib, data)]:
         f.seek(start)
         with open(path, 'rb') as component:
             while chunk := component.read(4 * mib):
@@ -38,11 +41,10 @@ debugfs -R "dump /boot/initrd $work/initrd" "$rootfs" 2>/dev/null
 python3 "$repo/image/test-initrd.py" "$work/initrd"
 debugfs -R 'stat /nix/store' "$rootfs" 2>/dev/null | grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0'
 mdir -i "$boot" ::/boot.scr >/dev/null
-dd if="$disk" of="$work/data.ext4" bs=1M skip=12804 count=1024 conv=sparse status=none
-e2fsck -fn "$work/data.ext4"
-debugfs -R 'cat /rauc/ca.cert.pem' "$work/data.ext4" 2>/dev/null | cmp - "$certificate"
+e2fsck -fn "$data"
+debugfs -R 'cat /rauc/ca.cert.pem' "$data" 2>/dev/null | cmp - "$certificate"
 for path in /rauc /rauc/ca.cert.pem; do
-  stat=$(debugfs -R "stat $path" "$work/data.ext4" 2>/dev/null)
+  stat=$(debugfs -R "stat $path" "$data" 2>/dev/null)
   grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0' <<< "$stat"
   mode=0600; [[ $path != /rauc ]] || mode=0700
   grep -Eq "Mode:[[:space:]]+$mode" <<< "$stat"
@@ -50,8 +52,8 @@ done
 compatible="nabos-$target"
 rauc info --keyring="$certificate" --output-format=json "$bundle" |
   jq -e --arg compatible "$compatible" --arg version "${EXPECTED_VERSION:-}" \
-    --arg rootfs "$(sha256sum "$rootfs" | cut -d' ' -f1)" \
-    --arg boot "$(sha256sum "$boot" | cut -d' ' -f1)" \
+    --arg rootfs "${rootfs_hash#\\}" \
+    --arg boot "${boot_hash#\\}" \
     '.compatible == $compatible and ($version == "" or .version == $version) and
      (.images | length) == 2 and .images[0].rootfs.checksum == $rootfs and
      .images[1].bootloader.checksum == $boot'
@@ -59,5 +61,5 @@ unsquashfs -cat "$bundle" rauc-hook.sh | cmp - "$repo/image/rauc-hook.sh"
 unsquashfs -cat "$bundle" manifest.raucm > "$work/manifest.raucm"
 grep -qx 'filename=rauc-hook.sh' "$work/manifest.raucm"
 grep -Eq '^hooks=install-check;?$' "$work/manifest.raucm"
-[[ "$before" == "$(sha256sum "$disk" "$rootfs" "$boot")" ]]
+[[ "$before" == "$(sha256sum "$disk" "$rootfs" "$boot" "$data")" ]]
 echo 'Verified SD partitions, redundant boot copies, NixOS payload and signed RAUC bundle; originals unchanged'

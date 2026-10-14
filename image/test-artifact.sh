@@ -9,7 +9,7 @@ artifacts=$(realpath "$2")
 mkdir -p "$repo/build/nix-tmp"
 export TMPDIR="$repo/build/nix-tmp"
 if [[ ${NABOS_NIX_SHELL:-} != 1 ]]; then
-  exec nix --extra-experimental-features 'nix-command flakes' develop "$repo" \
+  exec nix --extra-experimental-features 'nix-command flakes' develop "$repo#image" \
     --command env NABOS_NIX_SHELL=1 bash "$0" "$target" "$artifacts"
 fi
 : "${EXPECTED_VERSION:?Expected version required}" "${EXPECTED_DEVELOPMENT:?Expected development flag required}"
@@ -41,7 +41,7 @@ dd if="$work/sdcard.img" of="$work/data.ext4" bs=1M skip=12804 count=1024 conv=s
 dd if="$work/sdcard.img" of="$work/uboot.env" bs=64K skip=16 count=1 status=none
 chmod a-w "$work/"{sdcard.img,rootfs.ext4,boot.vfat,data.ext4,uboot.env}
 bash "$repo/image/test.sh" "$target" "$work/sdcard.img" "$work/rootfs.ext4" \
-  "$work/boot.vfat" "$artifacts/nabos-$target.raucb" "$certificate"
+  "$work/boot.vfat" "$work/data.ext4" "$artifacts/nabos-$target.raucb" "$certificate"
 mkdir "$work/boot" "$work/overlays"
 mcopy -i "$work/boot.vfat" -s '::*' "$work/boot/"
 debugfs -R "dump /boot/overlays/tagtagtag-sound.dtbo $work/overlays/tagtagtag-sound.dtbo" "$work/rootfs.ext4"
