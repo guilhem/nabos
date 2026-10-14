@@ -61,6 +61,7 @@ var locales = []string{"fr_FR", "en_US", "en_GB", "de_DE", "es_ES", "it_IT", "ja
 type page struct {
 	Title, Flash, Error string
 	Page                string
+	Prefix              string
 	Auth                bool
 	App                 *App
 	System              *device.Settings
@@ -71,9 +72,11 @@ type page struct {
 	Data                map[string]any
 }
 
+func (p page) URL(path string) string { return p.Prefix + path }
+
 func (a *App) render(w http.ResponseWriter, r *http.Request, name, title string, data map[string]any) {
 	active, _, _ := strings.Cut(name, "-")
-	p := page{Title: title, Page: active, App: a, Auth: a.auth.Valid(r), S: a.store.Get(), Data: data, Flash: r.URL.Query().Get("ok"), Error: r.URL.Query().Get("err")}
+	p := page{Title: title, Page: active, Prefix: web.Prefix(r), App: a, Auth: a.auth.Valid(r), S: a.store.Get(), Data: data, Flash: r.URL.Query().Get("ok"), Error: r.URL.Query().Get("err")}
 	p.SSHRevision, _ = data["SSHRevision"].(string)
 	revision, settings, err := a.device.ReadConfig(r.Context())
 	p.Revision, p.SystemError = revision, err
@@ -99,7 +102,7 @@ func back(w http.ResponseWriter, r *http.Request, to string, err error, ok strin
 	} else if ok != "" {
 		q.Set("ok", ok)
 	}
-	http.Redirect(w, r, to+"?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, web.Path(r, to)+"?"+q.Encode(), http.StatusSeeOther)
 }
 
 func (a *App) routes() http.Handler {
@@ -107,7 +110,7 @@ func (a *App) routes() http.Handler {
 	m.HandleFunc("GET /healthz", a.healthz)
 	m.HandleFunc("GET /setup", func(w http.ResponseWriter, r *http.Request) {
 		if a.auth.Configured() {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			http.Redirect(w, r, web.Path(r, "/"), http.StatusSeeOther)
 			return
 		}
 		if !a.setupNetwork(w, r) {
@@ -128,8 +131,8 @@ func (a *App) routes() http.Handler {
 			back(w, r, "/setup", err, "")
 			return
 		}
-		web.SetCookie(w, tok)
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		web.SetCookie(w, r, tok)
+		http.Redirect(w, r, web.Path(r, "/settings"), http.StatusSeeOther)
 	})
 	m.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) { a.render(w, r, "login", "Connexion", nil) })
 	m.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
@@ -138,12 +141,12 @@ func (a *App) routes() http.Handler {
 			back(w, r, "/login", err, "")
 			return
 		}
-		web.SetCookie(w, tok)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		web.SetCookie(w, r, tok)
+		http.Redirect(w, r, web.Path(r, "/"), http.StatusSeeOther)
 	})
 	m.HandleFunc("POST /logout", func(w http.ResponseWriter, r *http.Request) {
 		a.auth.Logout(r)
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, web.Path(r, "/login"), http.StatusSeeOther)
 	})
 	m.HandleFunc("GET /{$}", a.home)
 	m.HandleFunc("POST /action", a.action)
@@ -170,7 +173,7 @@ func (a *App) routes() http.Handler {
 	m.HandleFunc("POST /password", func(w http.ResponseWriter, r *http.Request) {
 		err := a.auth.ChangePassword(r.FormValue("old"), r.FormValue("password"))
 		if err == nil {
-			http.Redirect(w, r, "/login?ok=Mot+de+passe+modifi%C3%A9", http.StatusSeeOther)
+			http.Redirect(w, r, web.Path(r, "/login?ok=Mot+de+passe+modifi%C3%A9"), http.StatusSeeOther)
 			return
 		}
 		back(w, r, "/settings", err, "")
@@ -198,7 +201,7 @@ func (a *App) routes() http.Handler {
 		}
 		back(w, r, "/sounds", err, "Son supprimé")
 	})
-	return a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback", "/wifi", "/wifi/", "/wifi.js")
+	return a.proxy.Middleware(a.auth.Middleware(m, "/setup", "/login", "/healthz", "/services/mastodon/callback", "/wifi", "/wifi/", "/wifi.js"))
 }
 
 func (a *App) healthz(w http.ResponseWriter, r *http.Request) {

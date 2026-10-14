@@ -13,6 +13,7 @@ import (
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/mastodon"
 	"github.com/guilhem/nabos/services/internal/rabbit"
+	"github.com/guilhem/nabos/services/internal/web"
 )
 
 type oauthLogin struct {
@@ -119,11 +120,7 @@ func (a *App) connectMastodon(w http.ResponseWriter, r *http.Request) {
 		back(w, r, "/services", err, "")
 		return
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	redirect := (&url.URL{Scheme: scheme, Host: r.Host, Path: "/services/mastodon/callback"}).String()
+	redirect := (&url.URL{Scheme: web.Scheme(r), Host: r.Host, Path: web.Path(r, "/services/mastodon/callback")}).String()
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	id, secret, err := c.RegisterApp(ctx, redirect)
@@ -156,7 +153,7 @@ func (a *App) mastodonCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := url.Parse(p.redirect)
-	if err != nil || u.Host != r.Host || r.URL.Query().Get("code") == "" {
+	if err != nil || u.Host != r.Host || u.Scheme != web.Scheme(r) || u.Path != web.Path(r, "/services/mastodon/callback") || r.URL.Query().Get("code") == "" {
 		http.Error(w, "Réponse OAuth invalide", http.StatusBadRequest)
 		return
 	}

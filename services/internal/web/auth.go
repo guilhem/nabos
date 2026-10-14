@@ -275,25 +275,23 @@ func (a *Auth) Valid(r *http.Request) bool {
 	return true
 }
 
-func SetCookie(w http.ResponseWriter, tok string) {
-	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds())})
+func SetCookie(w http.ResponseWriter, r *http.Request, tok string) {
+	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: tok, Path: Path(r, "/"), Secure: Scheme(r) == "https", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds())})
 }
 
 // sameOrigin rejects cross-site form posts (CSRF) in addition to SameSite cookies.
 func sameOrigin(r *http.Request) bool {
-	src := r.Header.Get("Origin")
-	if src == "" {
-		src = r.Header.Get("Referer")
+	values := r.Header.Values("Origin")
+	origin := len(values) != 0
+	if !origin {
+		values = r.Header.Values("Referer")
 	}
-	if src == "" {
+	if len(values) != 1 || values[0] == "" {
 		return false
 	}
-	u, err := url.Parse(src)
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return err == nil && u.Scheme == scheme && u.Host == r.Host
+	u, err := url.Parse(values[0])
+	return err == nil && u.Scheme == Scheme(r) && u.Host == r.Host && u.User == nil &&
+		(!origin || (u.Path == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""))
 }
 
 // Middleware protects everything except the public paths.
@@ -311,10 +309,10 @@ func (a *Auth) Middleware(next http.Handler, public ...string) http.Handler {
 		}
 		switch {
 		case !a.Configured():
-			http.Redirect(w, r, "/setup", http.StatusSeeOther)
+			http.Redirect(w, r, Path(r, "/setup"), http.StatusSeeOther)
 		case !a.Valid(r):
 			if r.Method == http.MethodGet {
-				http.Redirect(w, r, "/login", http.StatusSeeOther)
+				http.Redirect(w, r, Path(r, "/login"), http.StatusSeeOther)
 			} else {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 			}

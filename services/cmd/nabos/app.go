@@ -34,6 +34,7 @@ type App struct {
 	store           *config.Store
 	rabbit          *rabbit.Engine
 	auth            *web.Auth
+	proxy           *web.Proxy
 	wx              *weather.Client
 	device          *device.Client
 	net             *network.Client
@@ -78,6 +79,10 @@ type App struct {
 }
 
 func NewApp(env Env) (*App, error) {
+	proxy, err := web.NewProxy(env.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
 	store, err := config.Open(filepath.Join(env.DataDir, "application.json"))
 	if err != nil {
 		return nil, err
@@ -102,6 +107,7 @@ func NewApp(env Env) (*App, error) {
 		env:           env,
 		store:         store,
 		auth:          web.NewAuth(store),
+		proxy:         proxy,
 		wx:            weather.NewClient(env.WeatherURL, env.GeocodingURL),
 		started:       time.Now(),
 		clockKick:     make(chan struct{}, 1),

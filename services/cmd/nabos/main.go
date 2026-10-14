@@ -20,6 +20,7 @@ type Env struct {
 	SoundsDirs, ChorDirs     []string
 	Version                  string
 	WeatherURL, GeocodingURL string
+	TrustedProxies           string
 }
 
 func env(name, def string) string {
@@ -32,13 +33,14 @@ func env(name, def string) string {
 func loadEnv() Env {
 	v := env("NABOS_VERSION", version)
 	return Env{
-		HTTPAddr:     env("NABOS_HTTP_ADDR", ":8080"),
-		DataDir:      env("NABOS_DATA_DIR", "/data/nabos"),
-		SoundsDirs:   strings.Split(env("NABOS_SOUNDS_DIRS", "/usr/share/nabos/sounds:/data/nabos/media/sounds"), ":"),
-		ChorDirs:     strings.Split(env("NABOS_CHOREOGRAPHIES_DIRS", "/usr/share/nabos/choreographies:/data/nabos/media/choreographies"), ":"),
-		Version:      v,
-		WeatherURL:   env("NABOS_WEATHER_URL", "https://api.open-meteo.com/v1/forecast"),
-		GeocodingURL: env("NABOS_GEOCODING_URL", "https://geocoding-api.open-meteo.com/v1/search"),
+		HTTPAddr:       env("NABOS_HTTP_ADDR", ":8080"),
+		DataDir:        env("NABOS_DATA_DIR", "/data/nabos"),
+		SoundsDirs:     strings.Split(env("NABOS_SOUNDS_DIRS", "/usr/share/nabos/sounds:/data/nabos/media/sounds"), ":"),
+		ChorDirs:       strings.Split(env("NABOS_CHOREOGRAPHIES_DIRS", "/usr/share/nabos/choreographies:/data/nabos/media/choreographies"), ":"),
+		Version:        v,
+		WeatherURL:     env("NABOS_WEATHER_URL", "https://api.open-meteo.com/v1/forecast"),
+		GeocodingURL:   env("NABOS_GEOCODING_URL", "https://geocoding-api.open-meteo.com/v1/search"),
+		TrustedProxies: env("NABOS_TRUSTED_PROXIES", ""),
 	}
 }
 
