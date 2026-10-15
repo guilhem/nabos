@@ -1,11 +1,10 @@
-{ config, lib, pkgs, modulesPath, nabosTarget, nabosVersion, nabosPackages, ... }:
+{ config, lib, pkgs, modulesPath, nabosTarget, nabosBoard, nabosVersion, nabosPackages, ... }:
 let
   inherit (lib) mkForce mkIf;
   rootfs = ../image/rootfs;
   packages = nabosPackages;
-  hasVoice = nabosTarget == "zero2-arm64";
-  lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
-  compatible = lock.targets.${nabosTarget}.compatible;
+  hasVoice = packages.lva != null;
+  compatible = nabosBoard.compatible;
   layout = import ./layout.nix;
   persistLibrary = pkgs.writeText "nabos-persist-library" (builtins.readFile ./runtime/persist.sh);
   tools = with pkgs; [ coreutils util-linux e2fsprogs gnugrep gawk systemd curl
@@ -63,6 +62,7 @@ in
 {
   imports = [
     "${modulesPath}/profiles/image-based-appliance.nix"
+    ./hardware.nix
     ./audio.nix
     ./network.nix
     ./diagnostics.nix
@@ -84,8 +84,7 @@ in
   ];
   disabledModules = [ "profiles/base.nix" ];
   assertions = [
-    { assertion = builtins.elem nabosTarget [ "zero-armv6" "zero2-arm64" ]; message = "Unknown NabOS target"; }
-    { assertion = nabosTarget != "zero-armv6" || packages.lva == null; message = "LVA is ARM64-only"; }
+    { assertion = !hasVoice || pkgs.stdenv.hostPlatform.isAarch64; message = "LVA is ARM64-only"; }
   ];
   # Apply appliance settings only to ARM; retain upstream native builder packages.
   nixpkgs.overlays = [ (_final: previous: lib.optionalAttrs previous.stdenv.hostPlatform.isAarch {
@@ -148,48 +147,14 @@ in
   boot.loader.systemd-boot.enable = false;
   boot.loader.external = { enable = true; installHook = pkgs.writeShellScript "nabos-image-bootloader" "exit 0"; };
   boot.initrd.systemd.enable = true;
-  # Neither Zero board has a TPM; the RPi kernel lacks tpm-crb.
-  boot.initrd.systemd.tpm2.enable = false;
-  # SD controllers are built in; omit default PC storage/USB drivers.
-  boot.initrd.includeDefaultModules = false;
-  boot.initrd.availableKernelModules = [ "mmc_block" ];
   # U-Boot supplies root= for the selected slot, never root=fstab or a fixed p2.
   boot.initrd.systemd.root = null;
   boot.initrd.checkJournalingFS = false;
   boot.kernelParams = [ "ro" "rootwait" "rootfstype=ext4" "fsck.mode=skip" "watchdog.open_timeout=300" "panic=10" ];
-  boot.kernelPatches = [{
-    name = "nabos-appliance";
-    patch = null;
-    structuredExtraConfig = with lib.kernel; {
-      WATCHDOG = yes; BCM2835_WDT = yes; WATCHDOG_HANDLE_BOOT_ENABLED = yes;
-      GPIO_CDEV = yes; KEYBOARD_GPIO = module; INPUT_EVDEV = module;
-      I2C = yes; I2C_CHARDEV = module; I2C_BCM2835 = module;
-      SND = module; SND_SOC = module; SND_BCM2835_SOC_I2S = module;
-      SND_SOC_WM8960 = no; SND_SOC_MAX9759 = no;
-      LEDS_CLASS_MULTICOLOR = module; DMA_BCM2835 = yes;
-      OVERLAY_FS_METACOPY = yes; OVERLAY_FS_REDIRECT_DIR = yes;
-      SQUASHFS = module; SQUASHFS_ZSTD = yes; EROFS_FS = module; OVERLAY_FS = module;
-    } // lib.optionalAttrs (nabosTarget == "zero-armv6") {
-      # These drivers use 64-bit division helpers unavailable in the ARMv6 kernel.
-      # The Zero W uses BCM2835 I2C and has no RP1 peripheral controller.
-      PWM_RP1 = no; VIDEO_RP1_CFE_DOWNSTREAM = no; I2C_DESIGNWARE_CORE = no;
-    };
-  }];
-  boot.extraModulePackages = [ packages.sound packages.led ];
-  boot.kernelModules = [ "i2c-dev" "bcm2835-ws2812" ];
-  boot.blacklistedKernelModules = [ "snd_bcm2835" ];
   fileSystems = {
     "/" = { device = "/dev/root"; fsType = "ext4"; options = [ "ro" ]; noCheck = true; };
     "/var" = { fsType = "tmpfs"; options = [ "mode=0755" "size=64M" "nosuid" "nodev" ]; neededForBoot = true; };
     "/tmp" = { fsType = "tmpfs"; options = [ "mode=1777" "size=64M" "nosuid" "nodev" ]; };
-  };
-  hardware.deviceTree = {
-    enable = true;
-    filter = if nabosTarget == "zero2-arm64" then "*bcm2710-rpi-zero-2-w.dtb" else "*bcm2708-rpi-zero-w.dtb";
-    overlays = [
-      { name = "bcm2835-ws2812"; dtboFile = "${packages.led}/overlays/bcm2835-ws2812.dtbo"; }
-      { name = "nabos-profile"; dtsFile = ../image/nabos-overlay.dts; }
-    ];
   };
   swapDevices = [ ];
   boot.initrd.systemd.services.nabos-persist = {
@@ -232,18 +197,8 @@ in
     allowedTCPPorts = [ 53 ];
   };
   services.timesyncd.enable = true;
-  hardware.bluetooth.enable = false;
-  hardware.firmware = [ pkgs.raspberrypiWirelessFirmware ];
-  nixpkgs.config.allowUnfreePredicate = package:
-    lib.getName package == "raspberrypi-wireless-firmware";
   services.dbus = { enable = true; packages = [ dbusPolicies ]; };
   security.polkit.enable = true;
-  services.udev = {
-    packages = [ packages.sound ];
-    extraRules = lib.replaceStrings [ "/usr/bin/chgrp" "/usr/bin/chmod" ]
-      [ "${pkgs.coreutils}/bin/chgrp" "${pkgs.coreutils}/bin/chmod" ]
-      (builtins.readFile (rootfs + "/etc/udev/rules.d/60-nabos.rules"));
-  };
   services.rauc = {
     enable = true; mark-good.enable = false; inherit compatible;
     bootloader = "uboot"; dataDir = "/data/rauc"; settings = raucSettings;

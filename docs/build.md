@@ -33,6 +33,26 @@ and switch p1; `/data` is retained. The independently bootable
 version. Hardware boot, watchdog timing, LEDs and power-loss behavior must still be
 qualified on both models before a stable release.
 
+## Hardware and appliance composition
+
+The target table in [`image/sources.lock.json`](../image/sources.lock.json)
+defines each board's architecture, Raspberry Pi kernel family, Go ARM level,
+DTB, U-Boot defconfig and RAUC compatibility identifier. `flake.nix` selects
+that record once for `lib.mkImage` and passes it to the package recipes, image
+assembly and NixOS configuration. ARMv6 retains the Raspberry Pi platform
+definition, including its ARM1176 CPU and hard-float ABI.
+
+[`nix/hardware.nix`](../nix/hardware.nix) applies the vendor kernel, kernel
+guardrails, hardware modules, Device Tree overlays, firmware and udev rules.
+[`nix/system.nix`](../nix/system.nix) composes the appliance: accounts,
+services, persistence and update policy. Voice availability follows the LVA
+package selected for the board. Image assembly copies the same selected,
+overlaid DTB into the RAUC slot and recovery boot files.
+
+`nix build .#checks.x86_64-linux.hardware-targets` evaluates both board
+configurations and checks their platform and appliance contracts without
+building images. It does not validate hardware boot or runtime behavior.
+
 ## Construire et vérifier
 
 For startup failures and logs retained after rollback, see

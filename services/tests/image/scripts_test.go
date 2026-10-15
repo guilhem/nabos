@@ -17,7 +17,7 @@ import (
 )
 
 func TestKernelSupportsApplianceHardwareAndBundles(t *testing.T) {
-	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	config := read(t, filepath.Join(repo, "nix/hardware.nix"))
 	for _, option := range []string{"BCM2835_WDT = yes", "WATCHDOG_HANDLE_BOOT_ENABLED = yes", "KEYBOARD_GPIO = module", "INPUT_EVDEV = module", "SQUASHFS = module", "SQUASHFS_ZSTD = yes", "LEDS_CLASS_MULTICOLOR = module", "DMA_BCM2835 = yes"} {
 		if !strings.Contains(config, option+";") {
 			t.Errorf("kernel lacks %s", option)
@@ -576,7 +576,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestUserspaceHardwareImageContract(t *testing.T) {
-	config := read(t, filepath.Join(repo, "nix/system.nix"))
+	config := read(t, filepath.Join(repo, "nix/hardware.nix"))
 	for _, required := range []string{`boot.kernelModules = [ "i2c-dev" "bcm2835-ws2812" ];`, "boot.extraModulePackages = [ packages.sound packages.led ];", `dtboFile = "${packages.led}/overlays/bcm2835-ws2812.dtbo";`} {
 		if !strings.Contains(config, required) {
 			t.Errorf("missing hardware integration: %s", required)

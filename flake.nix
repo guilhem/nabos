@@ -13,63 +13,51 @@
   outputs = { self, nixpkgs, nixos-hardware, device-core, wm8960, bcm2835-ws2812 }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      targets = [ "zero-armv6" "zero2-arm64" ];
+      targets = (builtins.fromJSON (builtins.readFile ./image/sources.lock.json)).targets;
       forSystems = nixpkgs.lib.genAttrs systems;
       mkImage = { buildSystem, target, version ? "dev-local" }:
         let
-          arm64 = target == "zero2-arm64";
-          hostPlatform = if arm64 then "aarch64-linux" else nixpkgs.lib.systems.examples.raspberryPi;
+          board = targets.${target};
           system = nixpkgs.lib.nixosSystem {
             specialArgs = {
+              inherit nixos-hardware;
               nabosTarget = target;
+              nabosBoard = board;
               nabosVersion = version;
               nabosPackages = packages;
             };
             modules = [
               ./nix/system.nix
-              ({ config, pkgs, ... }: {
+              {
                 nixpkgs.buildPlatform = buildSystem;
-                nixpkgs.hostPlatform = hostPlatform;
-                boot.kernelPackages = pkgs.linuxPackagesFor ((pkgs.callPackage
-                  (nixos-hardware + "/raspberry-pi/common/kernel.nix") {
-                    rpiVersion = if arm64 then 3 else 1;
-                    # The vendor definition replaces kernelPatches; append the
-                    # appliance settings after its defaults through argsOverride.
-                    argsOverride.kernelPatches = with pkgs.kernelPatches; [
-                      bridge_stp_helper request_key_helper
-                    ] ++ config.boot.kernelPatches;
-                  }).overrideAttrs (old: {
-                    postConfigure = (old.postConfigure or "") + "\n" +
-                      nixpkgs.lib.concatMapStringsSep "\n" (patch:
-                        nixpkgs.lib.concatStringsSep "\n" (nixpkgs.lib.mapAttrsToList
-                          (name: value: "grep -qxF " + nixpkgs.lib.escapeShellArg
-                            (if value.tristate == "n" then "# CONFIG_${name} is not set"
-                             else "CONFIG_${name}=${value.tristate}") + " $buildRoot/.config")
-                          (patch.structuredExtraConfig or {})))
-                      (builtins.filter (patch: patch.name == "nabos-appliance") config.boot.kernelPatches);
-                  }));
-              })
+                nixpkgs.hostPlatform = if board.arm64 then "aarch64-linux"
+                  else nixpkgs.lib.systems.examples.raspberryPi;
+              }
             ];
           };
           packages = import ./nix/packages.nix {
             pkgs = system.pkgs;
-            inherit target device-core wm8960 bcm2835-ws2812;
+            inherit board device-core wm8960 bcm2835-ws2812;
             kernelPackages = system.config.boot.kernelPackages;
           };
           payload = import ./nix/image.nix {
             pkgs = system.pkgs.buildPackages;
-            inherit system packages target version;
+            inherit system packages target board version;
           };
         in { inherit system packages payload; };
       nativePackages = forSystems (buildSystem:
         let pkgs = nixpkgs.legacyPackages.${buildSystem};
         in import ./nix/packages.nix {
           inherit pkgs device-core wm8960 bcm2835-ws2812;
-          target = "zero2-arm64";
+          board = targets.zero2-arm64;
           kernelPackages = pkgs.linuxPackages;
         });
     in {
       lib = { inherit mkImage; };
+      checks.x86_64-linux.hardware-targets = import ./nix/tests/hardware-targets.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        inherit mkImage;
+      };
       checks.x86_64-linux.audio-boot = import ./nix/tests/audio-boot.nix {
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
       };
@@ -83,7 +71,7 @@
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
       };
       packages = forSystems (buildSystem:
-        nixpkgs.lib.genAttrs targets (target:
+        nixpkgs.lib.genAttrs (builtins.attrNames targets) (target:
           (mkImage { inherit buildSystem target; }).payload) // {
             device-core-native = nativePackages.${buildSystem}.device-core;
             nab-hardware-native = nativePackages.${buildSystem}.nab-hardware;

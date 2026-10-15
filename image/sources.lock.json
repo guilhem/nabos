@@ -6,12 +6,16 @@
   },
   "targets": {
     "zero-armv6": {
+      "arm64": false,
+      "rpi_version": 1,
       "goarm": "6",
       "dtb": "bcm2708-rpi-zero-w.dtb",
       "uboot_defconfig": "rpi_0_w_defconfig",
       "compatible": "nabos-native-rauc-zero-armv6"
     },
     "zero2-arm64": {
+      "arm64": true,
+      "rpi_version": 3,
       "goarm": "",
       "dtb": "bcm2710-rpi-zero-2-w.dtb",
       "uboot_defconfig": "rpi_arm64_defconfig",

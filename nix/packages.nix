@@ -1,8 +1,7 @@
-{ pkgs, target, kernelPackages, device-core, wm8960, bcm2835-ws2812 }:
+{ pkgs, board, kernelPackages, device-core, wm8960, bcm2835-ws2812 }:
 let
   inherit (pkgs) lib;
   lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
-  board = lock.targets.${target};
   source = name: pkgs.fetchurl {
     name = "${name}-${sourceVersion name}.tar.gz";
     inherit (lock.sources.${name}) url sha256;
@@ -51,7 +50,6 @@ let
     '';
   };
 in
-assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
 {
   inherit assets;
   nabos = pkgs.buildGo127Module {
@@ -129,7 +127,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     defconfig = board.uboot_defconfig;
     extraConfig = builtins.readFile ../image/boot/layout.config
       + builtins.readFile ../image/boot/uboot.config
-      + lib.optionalString (target == "zero-armv6") "\nCONFIG_USE_PRIVATE_LIBGCC=y\n";
+      + lib.optionalString (!board.arm64) "\nCONFIG_USE_PRIVATE_LIBGCC=y\n";
     filesToInstall = [ "u-boot.bin" ];
     postConfigure = ''
       make olddefconfig
@@ -138,7 +136,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
           CONFIG_*|'# CONFIG_'*) grep -qxF "$option" .config ;;
         esac
       done < <(cat ${../image/boot/layout.config} ${../image/boot/uboot.config})
-      ${lib.optionalString (target == "zero-armv6") ''
+      ${lib.optionalString (!board.arm64) ''
         grep -qxF CONFIG_CPU_ARM1176=y .config
         grep -qxF CONFIG_USE_PRIVATE_LIBGCC=y .config
       ''}
@@ -149,7 +147,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
       if grep -Eq 'INTERP|\(NEEDED\)' u-boot.elf.txt; then
         echo 'U-Boot must be freestanding' >&2; exit 1
       fi
-      ${lib.optionalString (target == "zero-armv6") ''
+      ${lib.optionalString (!board.arm64) ''
         grep -Eq 'Tag_CPU_arch: v[4-6]([^0-9]|$)' u-boot.elf.txt
         if grep -Eq 'Tag_CPU_arch: v([7-9]|[1-9][0-9])|Tag_THUMB_ISA_use: Thumb-2' u-boot.elf.txt; then
           echo 'U-Boot requires instructions newer than ARMv6' >&2; exit 1
@@ -222,7 +220,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     '';
   };
 
-  lva = if target == "zero-armv6" then null else (pkgs.callPackage ./lva.nix {
+  lva = if !board.arm64 then null else (pkgs.callPackage ./lva.nix {
     src = source "lva";
     version = lock.tools.lva;
   }).overrideAttrs (old: {

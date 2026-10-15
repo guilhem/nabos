@@ -1,10 +1,9 @@
-{ pkgs, system, packages, target, version }:
+{ pkgs, system, packages, target, board, version }:
 let
   inherit (pkgs) lib;
   config = system.config;
   layout = import ./layout.nix;
-  arm64 = target == "zero2-arm64";
-  dtb = if arm64 then "bcm2710-rpi-zero-2-w.dtb" else "bcm2708-rpi-zero-w.dtb";
+  inherit (board) dtb;
   kernel = config.boot.kernelPackages.kernel;
   recovery = import ./recovery.nix { pkgs = system.pkgs; nativePkgs = pkgs; inherit kernel packages; };
   # Runtime references omit headers and native helpers needed on a fresh builder.
