@@ -707,33 +707,35 @@ func TestSelectedSlotBootContract(t *testing.T) {
 }
 
 func TestNativeBootSafety(t *testing.T) {
-	f := newBootFixture(t)
-	t.Run("root scripts cannot shadow the validated boot directory", func(t *testing.T) {
-		f.t, f.shadow = t, true
-		lines, output := f.boot(f.disk("zero-armv6", true, true, false), "", true)
-		booting(t, lines, "A")
-		if strings.Contains(output, "SHADOW SCRIPT") {
-			t.Fatal(output)
-		}
-		f.shadow = false
-	})
-	t.Run("stale saved gesture is cleared before dispatch", func(t *testing.T) {
-		f.t = t
-		disk := f.disk("zero-armv6", true, true, false)
-		f.sandbox("setenv NABOS_ROLLBACK_SLOT B; setenv nabos_recovery_action rollback; saveenv", true)
-		lines, output := f.boot(disk, "", true)
-		booting(t, lines, "A")
-		if strings.Contains(output, "rollback selected") {
-			t.Fatal(output)
-		}
-		f.state("BOOT_ORDER=A B", "BOOT_A_LEFT=2", "BOOT_B_LEFT=0")
-	})
-	t.Run("shared gesture selfcheck", func(t *testing.T) {
-		f.t = t
-		_, output := f.sandbox("nabos_recovery_test", true)
-		if !strings.Contains(output, "PASS: stale actions overwritten; pending reset preserved") {
-			t.Fatal(output)
-		}
+	bootTargets(t, func(t *testing.T, target string) {
+		f := newBootFixture(t)
+		t.Run("root scripts cannot shadow the validated boot directory", func(t *testing.T) {
+			f.t, f.shadow = t, true
+			lines, output := f.boot(f.disk(target, true, true, false), "", true)
+			booting(t, lines, "A")
+			if strings.Contains(output, "SHADOW SCRIPT") {
+				t.Fatal(output)
+			}
+			f.shadow = false
+		})
+		t.Run("stale saved gesture is cleared before dispatch", func(t *testing.T) {
+			f.t = t
+			disk := f.disk(target, true, true, false)
+			f.sandbox("setenv NABOS_ROLLBACK_SLOT B; setenv nabos_recovery_action rollback; saveenv", true)
+			lines, output := f.boot(disk, "", true)
+			booting(t, lines, "A")
+			if strings.Contains(output, "rollback selected") {
+				t.Fatal(output)
+			}
+			f.state("BOOT_ORDER=A B", "BOOT_A_LEFT=2", "BOOT_B_LEFT=0")
+		})
+		t.Run("shared gesture selfcheck", func(t *testing.T) {
+			f.t = t
+			_, output := f.sandbox("nabos_recovery_test", true)
+			if !strings.Contains(output, "PASS: stale actions overwritten; pending reset preserved") {
+				t.Fatal(output)
+			}
+		})
 	})
 }
 
