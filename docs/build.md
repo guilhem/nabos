@@ -3,47 +3,35 @@
 **NixOS est l’unique constructeur d’images NabOS.** `flake.lock` fixe les
 entrées Nixpkgs et nixos-hardware ; `nix/` décrit les paquets, le système et son
 payload. Aucun constructeur Raspberry Pi OS ni rpi-image-gen n’est maintenu.
-Les images NabOS A/B compatibles peuvent passer à NixOS par le bundle RAUC
-habituel, sans nouveau flash. Le constructeur conserve leur partitionnement,
-leur autorité de signature et leurs données ; voir les conditions ci-dessous.
+## Installation and boot compatibility
 
-## Migration sans reflash
+This boot format requires a **fresh flash** on both Raspberry Pi Zero W and Zero 2 W.
+Back up any required user data before reinstalling: flashing replaces the card contents.
+Existing Debian and NixOS installations cannot migrate through a bundle. Systems and
+bundles use the exact identifiers `nabos-native-rauc-zero-armv6` and
+`nabos-native-rauc-zero2-arm64`; the signed install-check rejects older identifiers
+before writing slots or the environment. The public update certificate is embedded
+at `/usr/share/nabos/ca.cert.pem` in the immutable root, with no persistent-certificate
+migration. Private signing keys stay outside image derivations and artifacts.
 
-Cette migration vise les images NabOS qui ont déjà deux copies FAT de 256 Mio
-à 4 et 260 Mio, les racines A/B de 6 Gio à 516 et 6660 Mio, et `/data` à
-12804 Mio. `/data` peut déjà occuper le reste de la carte. Les images plus
-anciennes avec une seule copie FAT sont refusées avant toute écriture de slot ;
-elles nécessitent un nouveau flash après sauvegarde.
+U-Boot's pinned, unmodified [RAUC bootmethod](https://docs.u-boot.org/en/v2026.07/develop/bootstd/rauc.html)
+selects partitions `2,2 3,3` on SD card 0. Each system filesystem includes its own
+`/boot/boot.scr`, kernel, initrd, DTB, overlays and NixOS boot metadata. The common
+FAT script handles platform setup and recovery, then launches only RAUC bootflows.
+If control returns, it displays failure and reboots. There is no same-boot retry loop:
+a failing selected slot consumes attempts across reboots before the next slot is
+selected. All-zero counters restore three attempts through the native bootmethod.
+The health check still confirms a successfully running slot.
 
-Installer le bundle `nabos-<cible>.raucb` comme une mise à jour habituelle,
-signée par l'autorité **déjà approuvée sur l'appareil**. Le hook standard RAUC
-`install-check` vérifie la cible, le partitionnement et le montage persistant
-de `/data`. Il copie atomiquement l'ancien certificat
-`/etc/rauc/ca.cert.pem` vers `/data/rauc/ca.cert.pem` seulement si ce dernier
-n'existe pas ; il ne remplace jamais une autorité existante. Aucun réglage,
-profil Wi-Fi, média ni clé SSH n'est réinitialisé par la migration.
-
-Les bundles portent les identifiants matériels `nabos-zero-armv6` et
-`nabos-zero2-arm64`. Le système NixOS conserve son identifiant `nabos-nixos-*` :
-le hook autorise la transition pour la même cible, tandis qu'un ancien bundle
-Debian sans ce hook reste refusé. La vérification de signature reste celle
-de RAUC ; un bundle de développement ne devient pas une mise à jour officielle.
-
-RAUC écrit la racine inactive puis la copie FAT inactive, sans reformater
-`/data`. Le script de démarrage reconnaît le contrat du slot sélectionné :
-noyau/DTB/initrd et `/boot/init` pour NixOS, ou `boot-init` sans initrd pour
-Debian. Le contrôle de santé continue de confirmer le slot ; après un échec
-NixOS, le même script peut revenir sur la racine Debian restée dans l'autre
-slot. Une mise à jour suivante peut remplacer ce dernier slot.
-
-Tant que ce slot Debian sert de secours, conserver le canal Stable ou Test :
-son ancien client ne sait pas lire le réglage Edge. Activer Edge seulement
-après une seconde mise à jour NixOS réussie, lorsque les deux slots sont NixOS.
-
-Les tests de fabrication et de simulation ne remplacent pas la qualification
-sur les deux appareils : Debian → NixOS → rollback Debian, conservation des
-données et coupures pendant les écritures. Une panne du firmware ou de U-Boot
-avant l'exécution du script ne bénéficie pas du rollback des racines.
+[`image/layout.json`](../image/layout.json) is the authoritative production layout
+for image, U-Boot, RAUC, shell and environment settings. After changing it, run
+`python3 image/generate-layout.py`; `make check` rejects stale generated files.
+Safety tests keep their expected geometry independent of this source. MBR geometry
+and `boot-mbr-switch` behavior are unchanged. Native RAUC updates write the inactive root, then the inactive FAT copy
+and switch p1; `/data` is retained. The independently bootable
+[recovery environment](recovery.md) can reset p4 while retaining the selected system
+version. Hardware boot, watchdog timing, LEDs and power-loss behavior must still be
+qualified on both models before a stable release.
 
 ## Construire et vérifier
 
@@ -197,9 +185,9 @@ Avant d’activer la publication automatique :
 1. Fusionner les PR des sources device-core et du mixeur, puis NabOS avec leurs
    commits épinglés ; qualifier le client compatible dans une release Stable
    ou Test signée officiellement, publiée volontairement.
-2. Installer cette version de base sur les appareils de test et vérifier les
-   trois canaux ainsi que la transition N → N+1 → rollback N avec les données
-   conservées, y compris la migration depuis une image NabOS A/B compatible.
+2. Install this baseline on test devices and verify all three channels, then
+   N → N+1 → rollback N with data retained between images using the native
+   RAUC format.
 3. Définir la variable de dépôt `NABOS_EDGE_ENABLED=true`.
 
 Chaque push de `main` termine sa propre construction, sans annulation par un

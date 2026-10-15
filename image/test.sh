@@ -36,6 +36,7 @@ with open(disk, 'rb') as f:
 PY
 e2fsck -fn "$rootfs"
 debugfs -R 'cat /boot/init' "$rootfs" 2>/dev/null | grep -Eq '^nabos_init=/nix/store/.+/init$'
+debugfs -R 'cat /boot/boot.scr' "$rootfs" 2>/dev/null | tail -c +73 | cmp - "$repo/image/boot/slot.cmd"
 debugfs -R 'stat /boot/initrd' "$rootfs" 2>/dev/null | grep -Eq 'Size: [1-9][0-9]+'
 debugfs -R "dump /boot/initrd $work/initrd" "$rootfs" 2>/dev/null
 python3 "$repo/image/test-initrd.py" "$work/initrd"
@@ -54,7 +55,7 @@ grep -Eq 'Mode:[[:space:]]+0644' <<< "$stat"
 if debugfs -R 'stat /rauc' "$data" 2>/dev/null | grep -q 'Inode:'; then
   echo 'Fresh data partition contains RAUC state' >&2; exit 1
 fi
-compatible="nabos-$target"
+compatible="nabos-native-rauc-$target"
 rauc info --keyring="$certificate" --output-format=json "$bundle" |
   jq -e --arg compatible "$compatible" --arg version "${EXPECTED_VERSION:-}" \
     --arg rootfs "${rootfs_hash#\\}" \
@@ -63,6 +64,7 @@ rauc info --keyring="$certificate" --output-format=json "$bundle" |
      (.images | length) == 2 and .images[0].rootfs.checksum == $rootfs and
      .images[1].bootloader.checksum == $boot'
 unsquashfs -cat "$bundle" rauc-hook.sh | cmp - "$repo/image/rauc-hook.sh"
+unsquashfs -cat "$bundle" layout.sh | cmp - "$repo/image/layout.sh"
 unsquashfs -cat "$bundle" manifest.raucm > "$work/manifest.raucm"
 grep -qx 'filename=rauc-hook.sh' "$work/manifest.raucm"
 grep -Eq '^hooks=install-check;?$' "$work/manifest.raucm"

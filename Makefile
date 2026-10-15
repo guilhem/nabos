@@ -17,6 +17,7 @@ image:
 	bash image/build.sh "$(TARGET)" "$(VERSION)" $(if $(filter 1,$(DEVELOPMENT)),--development)
 
 check:
+	python3 image/generate-layout.py --check
 	nix --extra-experimental-features 'nix-command flakes' flake check --no-build --option allow-import-from-derivation false
 	python3 image/cache-report.py --self-test
 	for script in image/*.sh nix/runtime/*.sh; do bash -n "$$script"; done

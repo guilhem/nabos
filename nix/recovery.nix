@@ -1,21 +1,22 @@
 { pkgs, nativePkgs, kernel, packages }:
 let
   tools = with pkgs; [ bash coreutils util-linux e2fsprogs ubootTools kmod gnugrep gawk busybox ];
-  led = pkgs.writeShellScript "nabos-recovery-led" ''
-    ${pkgs.lib.replaceStrings [ "PATH=/bin:/sbin" ]
-      [ "PATH=${pkgs.lib.makeBinPath tools}" ]
-      (builtins.readFile ./runtime/recovery-led.sh)}
-  '';
-  library = pkgs.writeText "nabos-recovery-library"
-    (pkgs.lib.replaceStrings [ "/bin/nabos-recovery-led" ] [ "${led}" ]
-      (builtins.readFile ./runtime/recovery.sh));
-  init = pkgs.writeShellScript "nabos-recovery-init" ''
-    export PATH=${pkgs.lib.makeBinPath tools}
-    ${pkgs.lib.replaceStrings
-      [ "PATH=/bin:/sbin" ". /lib/nabos-recovery.sh" "/bin/nabos-recovery-led" ]
-      [ "PATH=${pkgs.lib.makeBinPath tools}" ". ${library}" "${led}" ]
-      (builtins.readFile ./runtime/recovery-init.sh)}
-  '';
+  commands = with pkgs;
+    [ { source = runtimeShell; target = "/bin/sh"; } ]
+    ++ map (name: { source = "${coreutils}/bin/${name}"; target = "/bin/${name}"; })
+      [ "cat" "mkdir" "mv" "sleep" "stat" "sync" "timeout" ]
+    ++ map (name: { source = "${util-linux}/bin/${name}"; target = "/bin/${name}"; })
+      [ "blkid" "mount" "umount" "sfdisk" ]
+    ++ map (name: { source = "${e2fsprogs}/bin/${name}"; target = "/bin/${name}"; })
+      [ "mkfs.ext4" "e2fsck" ]
+    ++ map (name: { source = "${ubootTools}/bin/${name}"; target = "/bin/${name}"; })
+      [ "fw_printenv" "fw_setenv" ]
+    ++ [
+      { source = "${kmod}/bin/modprobe"; target = "/bin/modprobe"; }
+      { source = "${gawk}/bin/awk"; target = "/bin/awk"; }
+      { source = "${gnugrep}/bin/grep"; target = "/bin/grep"; }
+      { source = "${busybox}/bin/reboot"; target = "/bin/reboot"; }
+    ];
   modules = pkgs.makeModulesClosure {
     kernel = pkgs.aggregateModules [ (pkgs.lib.getOutput "modules" kernel) packages.led ];
     firmware = nativePkgs.runCommand "nabos-recovery-no-firmware" { } "mkdir -p $out/lib/firmware";
@@ -27,11 +28,11 @@ nativePkgs.makeInitrdNG {
   name = "nabos-recovery-initrd";
   compressor = "zstd";
   contents = [
-    { source = init; target = "/init"; }
-    { source = library; }
-    { source = led; }
-    { source = pkgs.runtimeShell; target = "/bin/sh"; }
-    { source = modules + "/lib"; target = "/lib"; }
+    { source = ./runtime/recovery-init.sh; target = "/init"; }
+    { source = ./runtime/recovery.sh; target = "/lib/nabos-recovery.sh"; }
+    { source = ../image/layout.sh; target = "/lib/nabos-layout.sh"; }
+    { source = ./runtime/recovery-led.sh; target = "/bin/nabos-recovery-led"; }
+    { source = modules + "/lib/modules"; target = "/lib/modules"; }
     { source = ../image/rootfs/etc/fw_env.config; target = "/etc/fw_env.config"; }
-  ] ++ map (package: { source = pkgs.lib.getBin package; }) tools;
+  ] ++ commands ++ map (package: { source = pkgs.lib.getBin package; }) tools;
 }

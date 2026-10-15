@@ -47,7 +47,7 @@ func genimagePartitions(t *testing.T) ([]string, map[string]map[string]string) {
 	return names, parts
 }
 
-// The same partition and environment constants appear in several files.
+// Keep literal expected geometry independent of the production layout source.
 func TestCardLayout(t *testing.T) {
 	names, parts := genimagePartitions(t)
 	if !slices.Equal(names, []string{"uboot-env", "uboot-env-redund", "boot", "boot-redund", "rootfs-a", "rootfs-b", "data"}) {
@@ -58,6 +58,14 @@ func TestCardLayout(t *testing.T) {
 	}
 	if parts["boot-redund"]["in-partition-table"] != "false" || parts["boot-redund"]["image"] != "boot.vfat" {
 		t.Error("the second boot copy must be prefilled outside the partition table")
+	}
+	for name, want := range map[string]string{"boot": "0x0c", "rootfs-a": "0x83", "rootfs-b": "0x83", "data": "0x83"} {
+		if got := parts[name]["partition-type"]; got != want {
+			t.Errorf("%s partition type %q, want %q", name, got, want)
+		}
+	}
+	if parts["boot"]["bootable"] != "true" {
+		t.Error("the boot partition must retain the MBR bootable flag")
 	}
 	end := 4 * MiB
 	for i, name := range names[2:] {
@@ -89,7 +97,7 @@ func TestCardLayout(t *testing.T) {
 }
 
 func TestEnvironmentLocationAgreesEverywhere(t *testing.T) {
-	ubootConfig := read(t, filepath.Join(bootDir, "uboot.config"))
+	ubootConfig := read(t, filepath.Join(bootDir, "layout.config"))
 	config := map[string]string{}
 	for _, line := range strings.Split(ubootConfig, "\n") {
 		if k, v, ok := strings.Cut(line, "="); ok && strings.HasPrefix(line, "CONFIG_") {
@@ -136,23 +144,78 @@ func TestEnvironmentLocationAgreesEverywhere(t *testing.T) {
 func TestAttemptsAndSlotsAgree(t *testing.T) {
 	conf := read(t, filepath.Join(repo, "nix/system.nix"))
 	for _, want := range []string{
-		`boot-attempts = 3;`, `boot-attempts-primary = 3;`,
-		`"slot.rootfs.0" = { device = "/dev/mmcblk0p2"; type = "ext4"; bootname = "A"; };`,
-		`"slot.rootfs.1" = { device = "/dev/mmcblk0p3"; type = "ext4"; bootname = "B"; };`,
-		`"slot.bootloader.0" = {`, `device = "/dev/mmcblk0";`, `type = "boot-mbr-switch";`,
-		`region-start = "4M";`, `region-size = "512M";`, `install-same = false;`, `handlers.post-install = "${postInstall}";`,
+		`layout = import ./layout.nix;`, `raucSettings = layout.rauc // {`,
+		`system = layout.rauc.system // {`, `handlers.post-install = "${postInstall}";`,
 		`mark-good.enable = false;`, `settings = raucSettings;`,
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("NixOS RAUC configuration lacks %q", want)
 		}
 	}
-	if !strings.Contains(read(t, filepath.Join(bootDir, "boot.cmd")), "setenv BOOT_A_LEFT 3\nsetenv BOOT_B_LEFT 3\nsaveenv\nreset") {
-		t.Error("boot.cmd does not restore 3 attempts")
+	for _, want := range []string{
+		`CONFIG_BOOTMETH_RAUC=y`, `CONFIG_BOOTMETH_RAUC_PARTITIONS="2,2 3,3"`,
+		`CONFIG_BOOTMETH_RAUC_BOOT_ORDER="A B"`, `CONFIG_BOOTMETH_RAUC_DEFAULT_TRIES=3`,
+		`CONFIG_BOOTMETH_RAUC_RESET_ALL_ZERO_TRIES=y`,
+	} {
+		if !strings.Contains(read(t, filepath.Join(bootDir, "layout.config")), want+"\n") {
+			t.Errorf("native RAUC configuration lacks %q", want)
+		}
 	}
 	env := ubootEnv(t)
 	if env["BOOT_ORDER"] != "A B" || env["BOOT_A_LEFT"] != "3" || env["BOOT_B_LEFT"] != "0" {
 		t.Errorf("uboot.env %v", env)
+	}
+	for _, want := range []string{"nabos_root_a_part=2", "nabos_root_b_part=3", "nabos_boot_attempts=3"} {
+		if !strings.Contains(read(t, filepath.Join(bootDir, "boot.env.in")), want+"\n") {
+			t.Errorf("boot.env.in lacks %q", want)
+		}
+	}
+}
+
+func TestGeneratedLayout(t *testing.T) {
+	run(t, "", "python3", filepath.Join(imageDir, "generate-layout.py"), "--check")
+	want := map[string]string{
+		"SECTOR_SIZE": "512", "DISK": "/dev/mmcblk0", "MMC_DEVICE": "0",
+		"ENV_OFFSET": "1048576", "ENV_OFFSET_REDUND": "2097152", "ENV_SIZE": "65536",
+		"BOOT_REGION_START": "4194304", "BOOT_REGION_SIZE": "536870912", "BOOT_SIZE": "268435456",
+		"BOOT_PRIMARY_OFFSET": "4194304", "BOOT_SECONDARY_OFFSET": "272629760",
+		"ROOT_SIZE": "6442450944", "ROOT_A_OFFSET": "541065216", "ROOT_B_OFFSET": "6983516160",
+		"DATA_OFFSET": "13425967104", "DATA_SIZE": "1073741824",
+		"BOOT_PARTITION": "1", "ROOT_A_PARTITION": "2", "ROOT_B_PARTITION": "3", "DATA_PARTITION": "4",
+		"BOOT_PARTITION_TYPE": "0x0c", "ROOT_PARTITION_TYPE": "0x83", "DATA_PARTITION_TYPE": "0x83",
+		"BOOT_ATTEMPTS": "3", "BOOT_ORDER": "A B",
+	}
+	script := ". \"$1\"\n"
+	var expected []string
+	for key, value := range want {
+		script += fmt.Sprintf("printf '%%s\\n' \"$NABOS_%s\"\n", key)
+		expected = append(expected, value)
+	}
+	if got := run(t, "", "sh", "-c", script, "layout", filepath.Join(imageDir, "layout.sh")); got != strings.Join(expected, "\n")+"\n" {
+		t.Fatalf("shell layout %q, want %q", got, expected)
+	}
+}
+
+func TestGeneratedRaucLayout(t *testing.T) {
+	if _, err := exec.LookPath("nix-instantiate"); err != nil {
+		t.Skip("Nix not available")
+	}
+	var got, want map[string]any
+	if err := json.Unmarshal([]byte(run(t, "", "nix-instantiate", "--eval", "--strict", "--json", "--expr",
+		"(import "+filepath.Join(repo, "nix/layout.nix")+").rauc")), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{
+		"system": {"boot-attempts": 3, "boot-attempts-primary": 3},
+		"slot.rootfs.0": {"device": "/dev/mmcblk0p2", "type": "ext4", "bootname": "A"},
+		"slot.rootfs.1": {"device": "/dev/mmcblk0p3", "type": "ext4", "bootname": "B"},
+		"slot.bootloader.0": {"device": "/dev/mmcblk0", "type": "boot-mbr-switch",
+			"region-start": "4194304", "region-size": "536870912", "install-same": false}
+	}`), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RAUC layout %v, want %v", got, want)
 	}
 }
 

@@ -10,7 +10,7 @@ Factory reset erases these logs along with all other user data.
 ## Read the logs after rollback
 
 Connect to the working slot using the existing SSH account. The initrd logs are
-plain text, including when the working slot is still Debian:
+plain text and can be read from either native RAUC slot:
 
 ```sh
 sudo cat /data/system/boot-logs/slot-A.initrd.log
@@ -36,9 +36,8 @@ sudo journalctl --directory=/data/system/journal --boot=BOOT_ID --no-pager \
   -u nabos -u nabos-health -u user@1004
 ```
 
-If the older Debian `journalctl` cannot read the new journal format, copy the
-journal directory to a Linux computer with a recent systemd and use the same
-`--directory` commands there. The text initrd logs do not need systemd.
+To inspect journals off the device, copy the journal directory to a Linux
+computer with a recent systemd and use the same `--directory` commands there. The text initrd logs do not need systemd.
 Logs are private diagnostic data; inspect them before sharing them.
 
 ## Collection and recovery boundaries
@@ -71,5 +70,5 @@ configuration under immutable `/etc`. The upstream service confinement stays
 enabled.
 
 The VM checks exercise read-only filesystems and effective systemd units.
-Physical Wi-Fi, SD failures and migration rollback on both Raspberry Pi models
+Physical Wi-Fi, SD failures and native RAUC rollback on both Raspberry Pi models
 still require hardware qualification.

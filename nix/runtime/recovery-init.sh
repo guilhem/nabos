@@ -20,9 +20,14 @@ recovery_block() {
 }
 
 trap 'recovery_block "recovery interrupted"' HUP INT TERM
+[ -r /lib/nabos-layout.sh ] || recovery_block "recovery layout missing"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=../../image/layout.sh
+. /lib/nabos-layout.sh || recovery_block "recovery layout invalid"
+[ -r /lib/nabos-recovery.sh ] || recovery_block "recovery library missing"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=recovery.sh
-. /lib/nabos-recovery.sh || recovery_block "recovery library missing"
+. /lib/nabos-recovery.sh || recovery_block "recovery library invalid"
 
 recovery_setup() {
     mkdir -p /proc /sys /dev /run || return 1

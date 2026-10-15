@@ -57,7 +57,8 @@ func TestRaucBootMBRIntegration(t *testing.T) {
 	}
 	run(t, "", "mkfs.ext4", "-q", "-F", "-L", "nabos-data", "-d", filepath.Join(dir, "data-fixture"), data)
 	raBoot(t, bootA, "initial")
-	run(t, "", "mkenvimage", "-r", "-s", "0x10000", "-o", filepath.Join(images, "uboot.env"), filepath.Join(bootDir, "uboot.env"))
+	write(t, filepath.Join(dir, "uboot.env.txt"), read(t, filepath.Join(bootDir, "uboot.env"))+read(t, filepath.Join(bootDir, "layout.env")))
+	run(t, "", "mkenvimage", "-r", "-s", "0x10000", "-o", filepath.Join(images, "uboot.env"), filepath.Join(dir, "uboot.env.txt"))
 	run(t, "", "genimage", "--config", filepath.Join(imageDir, "genimage.cfg"), "--rootpath", filepath.Join(dir, "empty"), "--inputpath", images, "--outputpath", images, "--tmppath", filepath.Join(dir, "genimage-tmp"))
 	disk := filepath.Join(images, "sdcard.img")
 	checkInitialCard(t, disk)
@@ -121,7 +122,7 @@ data-directory=/data/rauc
 mountprefix=/run/rauc/mnt
 bundle-formats=-plain +verity
 [keyring]
-path=/data/rauc/ca.cert.pem
+path=@CERTIFICATE@
 [handlers]
 post-install=/usr/lib/nabos/rauc-post-install
 [slot.rootfs.0]
@@ -139,7 +140,8 @@ region-start=4M
 region-size=512M
 install-same=false
 `
-	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-nixos-zero2-arm64")
+	config = strings.ReplaceAll(config, "@COMPATIBLE@", "nabos-native-rauc-zero2-arm64")
+	config = strings.ReplaceAll(config, "@CERTIFICATE@", filepath.Join(dir, "trusted.crt"))
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p2", loop+"p2")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0p3", loop+"p3")
 	config = strings.ReplaceAll(config, "/dev/mmcblk0", loop)
@@ -166,10 +168,11 @@ install-same=false
 	key := filepath.Join(dir, "trusted.key")
 	cert := filepath.Join(dir, "trusted.crt")
 	raCert(t, key, cert)
+	write(t, filepath.Join(dir, "image-ca.pem"), read(t, cert))
 	// Only fixture paths differ: the signed install-check still reads real sysfs
-	// geometry, checks the mounted data partition and migrates the existing trust.
+	// geometry, checks the mounted data partition and requires immutable trust.
 	hook := strings.NewReplacer(
-		"/sys/class/block/mmcblk0", "/sys/class/block/"+filepath.Base(loop),
+		"disk_name=${NABOS_DISK##*/}", "NABOS_DISK="+loop+"\ndisk_name=${NABOS_DISK##*/}",
 		"/dev/mmcblk0", loop,
 		"/etc/rauc/ca.cert.pem", cert,
 		"/data", dataMount,
@@ -188,11 +191,12 @@ install-same=false
 	bootC := filepath.Join(dir, "boot-c.vfat")
 	raFile(t, bootC, 256*MiB)
 	raBoot(t, bootC, "return")
-	bundleB := raBundle(t, dir, "b", "nabos-zero2-arm64", rootB, bootB, key, cert, hook)
-	bundleA := raBundle(t, dir, "a", "nabos-zero2-arm64", rootA, bootC, key, cert, hook)
-	badCompatible := raBundle(t, dir, "wrong", "nabos-zero-armv6", rootB, bootB, key, cert, hook)
-	untrusted := raBundle(t, dir, "untrusted", "nabos-zero2-arm64", rootB, bootB, badKey, badCert, hook)
+	bundleB := raBundle(t, dir, "b", "nabos-native-rauc-zero2-arm64", rootB, bootB, key, cert, hook)
+	bundleA := raBundle(t, dir, "a", "nabos-native-rauc-zero2-arm64", rootA, bootC, key, cert, hook)
+	badCompatible := raBundle(t, dir, "wrong", "nabos-native-rauc-zero-armv6", rootB, bootB, key, cert, hook)
+	untrusted := raBundle(t, dir, "untrusted", "nabos-native-rauc-zero2-arm64", rootB, bootB, badKey, badCert, hook)
 	legacyBundle := raBundle(t, dir, "legacy", "nabos-zero2-arm64", rootA, bootA, key, cert, "")
+	oldHookBundle := raBundle(t, dir, "old-hook", "nabos-nixos-zero2-arm64", rootA, bootA, key, cert, hook)
 	unsigned := filepath.Join(dir, "unsigned.raucb")
 	run(t, "", "mksquashfs", filepath.Join(dir, "bundle-b"), unsigned, "-noappend", "-comp", "zstd", "-processors", "2")
 
@@ -265,20 +269,17 @@ install-same=false
 		t.Fatal("genimage did not prefill both boot copies")
 	}
 	assertEnv("A B", "A")
-	// The old system trusts its root certificate; install-check durably copies it
-	// to the persistent path consumed after booting NixOS.
-	legacyConfig := strings.ReplaceAll(config, "nabos-nixos-zero2-arm64", "nabos-zero2-arm64")
-	legacyConfig = strings.ReplaceAll(legacyConfig, filepath.Join(dataMount, "rauc", "ca.cert.pem"), cert)
-	write(t, conf, legacyConfig)
 	stopA := startService("A")
 	install(bundleB, true)
 	raOrder(t, read(t, serviceLog), "rootfs.1", "bootloader.0")
 	raLayout(t, disk, initialMBR, boot1, root0, root1, rootSize, bootSize, activeRootA, raFileHash(t, rootB), initialBoot, raFileHash(t, bootB))
 	assertData()
-	anchor := filepath.Join(dataMount, "rauc", "ca.cert.pem")
-	anchorInfo, err := os.Lstat(anchor)
-	if err != nil || anchorInfo.Mode().Perm() != 0o600 || !anchorInfo.Mode().IsRegular() || read(t, anchor) != read(t, cert) {
-		t.Fatalf("existing trust anchor was not migrated safely: %v, %v", anchorInfo, err)
+	anchor := filepath.Join(dir, "image-ca.pem")
+	if read(t, anchor) != read(t, cert) {
+		t.Fatal("immutable certificate changed")
+	}
+	if _, err := os.Stat(filepath.Join(dataMount, "rauc", "ca.cert.pem")); !os.IsNotExist(err) {
+		t.Fatal("update created persistent certificate", err)
 	}
 	assertEnv("B A", "B")
 	assertHistory("A")
@@ -306,6 +307,10 @@ install-same=false
 	install(unsigned, false)
 	if after := raRangeHash(t, disk, 0, dataOff); after != before {
 		t.Fatal("unsigned bundle changed the disk")
+	}
+	install(oldHookBundle, false)
+	if after := raRangeHash(t, disk, 0, dataOff); after != before {
+		t.Fatal("old signed install-check bundle changed the disk")
 	}
 	install(legacyBundle, false)
 	if after := raRangeHash(t, disk, 0, dataOff); after != before {
@@ -395,6 +400,7 @@ func raBundle(t *testing.T, dir, name, compatible, root, boot, key, cert, hook s
 		manifest = strings.ReplaceAll(manifest, "[hooks]\nfilename=rauc-hook.sh\nhooks=install-check\n\n", "")
 	} else {
 		raExecutable(t, filepath.Join(input, "rauc-hook.sh"), hook)
+		write(t, filepath.Join(input, "layout.sh"), read(t, filepath.Join(imageDir, "layout.sh")))
 	}
 	manifest = strings.ReplaceAll(manifest, "@COMPATIBLE@", compatible)
 	manifest = strings.ReplaceAll(manifest, "@VERSION@", name)

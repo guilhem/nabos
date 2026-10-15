@@ -109,6 +109,8 @@ elif name == 'debugfs' and os.environ.get('FIXTURE_VALIDATION'):
     request = args[1]
     if request == 'cat /boot/init':
         print('nabos_init=/nix/store/fixture/init')
+    elif request == 'cat /boot/boot.scr':
+        sys.stdout.write('x' * 72 + (repo / 'image/boot/slot.cmd').read_text())
     elif request == 'stat /boot/initrd':
         print('Size: 12')
     elif request.startswith('dump /boot/initrd '):
@@ -121,8 +123,8 @@ elif name == 'debugfs' and os.environ.get('FIXTURE_VALIDATION'):
             print('Type: regular User: 0 Group: 0 Mode: 0644')
 elif name == 'unsquashfs':
     assert args[0] == '-cat', args
-    if args[-1] == 'rauc-hook.sh':
-        sys.stdout.write((repo / 'image/rauc-hook.sh').read_text())
+    if args[-1] in ('rauc-hook.sh', 'layout.sh'):
+        sys.stdout.write((repo / 'image' / args[-1]).read_text())
     else:
         assert args[-1] == 'manifest.raucm', args
         print('filename=rauc-hook.sh\nhooks=install-check;')
@@ -139,10 +141,11 @@ class BuildEfficiency(unittest.TestCase):
         image = self.repo / 'image'
         image.mkdir(parents=True)
         for file in ('build.sh', 'test-artifact.sh', 'benchmark.sh', 'manifest.raucm.in',
-                     'sources.lock.json', 'genimage.cfg', 'rauc-hook.sh'):
+                     'sources.lock.json', 'genimage.cfg', 'rauc-hook.sh', 'layout.sh'):
             shutil.copy2(IMAGE / file, image / file)
         (image / 'boot').mkdir()
-        shutil.copy2(IMAGE / 'boot/boot.cmd', image / 'boot/boot.cmd')
+        for name in ('boot.cmd', 'slot.cmd'):
+            shutil.copy2(IMAGE / 'boot' / name, image / 'boot' / name)
         for file, command in [('test.sh', 'fixture-test'), ('test-runtime.sh', 'fixture-runtime')]:
             (image / file).write_text('#!/usr/bin/env bash\nset -euo pipefail\n' + command + ' "$@"\n')
         (self.repo / 'services').mkdir()
@@ -274,7 +277,7 @@ class BuildEfficiency(unittest.TestCase):
         certificate = self.repo / 'certificate.pem'
         certificate.write_text('public fixture certificate')
         bundle = self.repo / 'bundle.json'
-        bundle.write_text(json.dumps({'compatible': 'nabos-' + TARGET, 'version': 'dev-local',
+        bundle.write_text(json.dumps({'compatible': 'nabos-native-rauc-' + TARGET, 'version': 'dev-local',
                                      'images': [{'rootfs': {'checksum': hashlib.sha256(contents[1]).hexdigest()}},
                                                 {'bootloader': {'checksum': hashlib.sha256(contents[2]).hexdigest()}}]}))
         args = [TARGET, *map(str, files), str(bundle), str(certificate)]
@@ -298,7 +301,7 @@ class BuildEfficiency(unittest.TestCase):
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     expected_hash_calls = 1 if stage == 'corrupt' else 2
                     self.assertEqual(self.calls('sha256sum'), [list(map(str, files))] * expected_hash_calls)
-                    self.assertEqual(len(self.calls('unsquashfs')), 0 if stage == 'corrupt' else 2)
+                    self.assertEqual(len(self.calls('unsquashfs')), 0 if stage == 'corrupt' else 3)
                     self.assertEqual(self.calls('dd'), [])
                     self.assertEqual(self.calls('e2fsck'), [['-fn', str(files[1])], ['-fn', str(files[3])]])
                     data_checks = [args for args in self.calls('debugfs') if '/rauc' in args[1]]

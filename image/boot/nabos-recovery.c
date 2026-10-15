@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <command.h>
+#include <bootstd.h>
 #include <env.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <linux/delay.h>
+#include <malloc.h>
 #include <u-boot/schedule.h>
 #include "nabos-recovery-fsm.h"
 #include "ws2812-encode.h"
@@ -209,7 +211,11 @@ static int nabos_pressed(void)
 #else
 static int nabos_led_rgb(u8 red, u8 green, u8 blue)
 {
-	/* Sandbox exercises the FSM, and must never claim GPIO/FIFO qualification. */
+	/* A simulated shutdown permits handoff tests, without GPIO/FIFO claims. */
+	if (!red && !green && !blue) {
+		puts("sandbox: LED shutdown simulated (no hardware)\n");
+		return 0;
+	}
 	return -ENOSYS;
 }
 #endif
@@ -236,6 +242,8 @@ static int nabos_led_fail(void)
 int nabos_recovery_init(void)
 {
 	int ret = env_set("nabos_recovery_action", "none");
+	struct bootstd_priv *std;
+	const char **prefixes;
 #ifndef CONFIG_SANDBOX
 	int button_requested = 0;
 #endif
@@ -245,6 +253,16 @@ int nabos_recovery_init(void)
 		nabos_led_fail();
 		return ret;
 	}
+	/* The pinned native RAUC getter uses bootstd prefixes, not boot_prefixes. */
+	ret = bootstd_get_priv(&std);
+	if (ret)
+		return ret;
+	prefixes = calloc(2, sizeof(*prefixes));
+	if (!prefixes)
+		return -ENOMEM;
+	prefixes[0] = "/boot/";
+	free(std->prefixes);
+	std->prefixes = prefixes;
 	if (env_get("NABOS_RESET_SLOT") && *env_get("NABOS_RESET_SLOT"))
 		return 0;
 #ifndef CONFIG_SANDBOX

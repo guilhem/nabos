@@ -6,52 +6,39 @@ reject() { echo "NabOS update rejected: $*" >&2; exit 10; }
 [ "${1:-}" = install-check ] || reject "unexpected hook"
 # An install-check replaces RAUC's built-in compatible check.
 case ${RAUC_SYSTEM_COMPATIBLE:-}:${RAUC_MF_COMPATIBLE:-} in
-    nabos-zero-armv6:nabos-zero-armv6|nabos-nixos-zero-armv6:nabos-zero-armv6|\
-    nabos-zero2-arm64:nabos-zero2-arm64|nabos-nixos-zero2-arm64:nabos-zero2-arm64) ;;
+    nabos-native-rauc-zero-armv6:nabos-native-rauc-zero-armv6|\
+    nabos-native-rauc-zero2-arm64:nabos-native-rauc-zero2-arm64) ;;
     *) reject "wrong target" ;;
 esac
 
-# Reject the earlier single-FAT layout; only /data may have grown.
+# Constants travel inside the signed bundle alongside this hook.
+# shellcheck source=image/layout.sh
+. "${0%/*}/layout.sh"
+disk_name=${NABOS_DISK##*/}
+# Only /data may have grown.
 partition() {
-    if [ "$(cat "/sys/class/block/mmcblk0p$1/start")" != "$2" ] ||
-        [ "$(cat "/sys/class/block/mmcblk0p$1/size")" != "$3" ]; then
+    if [ "$(cat "/sys/class/block/${disk_name}p$1/start")" != "$(( $2 / NABOS_SECTOR_SIZE ))" ] ||
+        [ "$(cat "/sys/class/block/${disk_name}p$1/size")" != "$(( $3 / NABOS_SECTOR_SIZE ))" ]; then
         reject "partition $1 has an incompatible layout"
     fi
 }
-boot_start=$(cat /sys/class/block/mmcblk0p1/start)
-case $boot_start in 8192|532480) ;; *) reject "incompatible boot region" ;; esac
-partition 1 "$boot_start" 524288
-partition 2 1056768 12582912
-partition 3 13639680 12582912
-[ "$(cat /sys/class/block/mmcblk0p4/start)" = 26222592 ] || reject "incompatible data partition"
-[ "$(cat /sys/class/block/mmcblk0p4/size)" -ge 2097152 ] || reject "incompatible data partition"
-[ "$(findmnt -n -o SOURCE,FSTYPE --mountpoint /data)" = '/dev/mmcblk0p4 ext4' ] ||
+boot_start=$(cat "/sys/class/block/${disk_name}p${NABOS_BOOT_PARTITION}/start")
+boot_offset=$((boot_start * NABOS_SECTOR_SIZE))
+[ "$boot_offset" = "$NABOS_BOOT_PRIMARY_OFFSET" ] ||
+    [ "$boot_offset" = "$NABOS_BOOT_SECONDARY_OFFSET" ] || reject "incompatible boot region"
+partition "$NABOS_BOOT_PARTITION" "$boot_offset" "$NABOS_BOOT_SIZE"
+partition "$NABOS_ROOT_A_PARTITION" "$NABOS_ROOT_A_OFFSET" "$NABOS_ROOT_SIZE"
+partition "$NABOS_ROOT_B_PARTITION" "$NABOS_ROOT_B_OFFSET" "$NABOS_ROOT_SIZE"
+[ "$(cat "/sys/class/block/${disk_name}p${NABOS_DATA_PARTITION}/start")" = "$((NABOS_DATA_OFFSET / NABOS_SECTOR_SIZE))" ] || reject "incompatible data partition"
+[ "$(cat "/sys/class/block/${disk_name}p${NABOS_DATA_PARTITION}/size")" -ge "$((NABOS_DATA_SIZE / NABOS_SECTOR_SIZE))" ] || reject "incompatible data partition"
+[ "$(findmnt -n -o SOURCE,FSTYPE --mountpoint /data)" = "${NABOS_DISK}p${NABOS_DATA_PARTITION} ext4" ] ||
     reject "data partition is not persistent"
 [ ! -e /data/.volatile ] || reject "data partition is not persistent"
 
-certificate=/data/rauc/ca.cert.pem
-if [ -e /usr/share/nabos/ca.cert.pem ] || [ -L /usr/share/nabos/ca.cert.pem ]; then
-    if [ ! -f /usr/share/nabos/ca.cert.pem ] || [ ! -s /usr/share/nabos/ca.cert.pem ] ||
-        [ -L /usr/share/nabos/ca.cert.pem ]; then
-        reject "invalid image trust anchor"
-    fi
-elif [ -e "$certificate" ] || [ -L "$certificate" ]; then
-    if [ ! -f "$certificate" ] || [ ! -s "$certificate" ] || [ -L "$certificate" ]; then
-        reject "invalid persistent trust anchor"
-    fi
-else
-    [ -s /etc/rauc/ca.cert.pem ] || reject "missing existing trust anchor"
-    install -d -m 0700 /data/rauc
-    temporary=$(mktemp /data/rauc/.ca.cert.XXXXXX)
-    trap 'rm -f "$temporary"' EXIT
-    install -m 0600 /etc/rauc/ca.cert.pem "$temporary"
-    sync -f "$temporary"
-    # Link atomically without replacing an authority published in the meantime.
-    ln "$temporary" "$certificate"
-    rm -f "$temporary"
+if [ ! -f /usr/share/nabos/ca.cert.pem ] || [ ! -s /usr/share/nabos/ca.cert.pem ] || \
+    [ -L /usr/share/nabos/ca.cert.pem ]; then
+    reject "invalid image trust anchor"
 fi
-# Older slots still need their existing authority for rollback before a reset.
-if [ -f "$certificate" ]; then sync -f /data/rauc; fi
 
 running=
 seen=false

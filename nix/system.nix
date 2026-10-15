@@ -6,6 +6,7 @@ let
   hasVoice = nabosTarget == "zero2-arm64";
   lock = builtins.fromJSON (builtins.readFile ../image/sources.lock.json);
   compatible = lock.targets.${nabosTarget}.compatible;
+  layout = import ./layout.nix;
   persistLibrary = pkgs.writeText "nabos-persist-library" (builtins.readFile ./runtime/persist.sh);
   tools = with pkgs; [ coreutils util-linux e2fsprogs gnugrep gawk systemd curl
     ubootTools rauc openssh alsa-utils mpg123 wireplumber pulseaudio ];
@@ -47,28 +48,16 @@ let
     cp ${rootfs}/etc/dbus-1/system.d/io.github.guilhem.*.conf $out/share/dbus-1/system.d/
     cp ${rootfs}/etc/dbus-1/system.d/nabos-rauc.conf $out/share/dbus-1/system.d/zz-nabos-rauc.conf
   '';
-  raucSettings = {
-    system = {
+  raucSettings = layout.rauc // {
+    system = layout.rauc.system // {
       inherit compatible;
       bootloader = "uboot";
-      boot-attempts = 3;
-      boot-attempts-primary = 3;
       data-directory = "/data/rauc";
       mountprefix = "/run/rauc/mnt";
       bundle-formats = "-plain +verity";
     };
     keyring = { path = "/usr/share/nabos/ca.cert.pem"; directory = "/run/nabos-rauc-trust"; };
     handlers.post-install = "${postInstall}";
-    "slot.rootfs.0" = { device = "/dev/mmcblk0p2"; type = "ext4"; bootname = "A"; };
-    "slot.rootfs.1" = { device = "/dev/mmcblk0p3"; type = "ext4"; bootname = "B"; };
-    # The native slot type enum does not include boot-mbr-switch.
-    "slot.bootloader.0" = {
-      device = "/dev/mmcblk0";
-      type = "boot-mbr-switch";
-      region-start = "4M";
-      region-size = "512M";
-      install-same = false;
-    };
   };
 in
 {

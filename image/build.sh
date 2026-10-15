@@ -2,6 +2,8 @@
 # NixOS image builder: private signing material never enters a Nix derivation.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=image/layout.sh
+. "$repo/image/layout.sh"
 target=${1:?Usage: image/build.sh TARGET VERSION [--development] [--defer-tests]}
 version=${2:?Version required}
 shift 2
@@ -77,7 +79,7 @@ for field in 'uid 0' 'gid 0' 'mode 0100644'; do
   debugfs -w -R "set_inode_field /usr/share/nabos/ca.cert.pem $field" "$work/images/rootfs.ext4"
 done
 debugfs -R 'cat /usr/share/nabos/ca.cert.pem' "$work/images/rootfs.ext4" 2>/dev/null | cmp - "$work/public-ca.pem"
-truncate -s 1G "$work/images/data.ext4"
+truncate -s "$NABOS_DATA_SIZE" "$work/images/data.ext4"
 # Expanded by the child shell, with paths passed as positional arguments.
 # shellcheck disable=SC2016
 fakeroot bash -c 'chown -R 0:0 "$1"; exec mkfs.ext4 -q -F -L nabos-data -d "$1" "$2"' \
@@ -88,7 +90,8 @@ sd_seconds=$SECONDS
 SECONDS=0
 ln "$work/images/rootfs.ext4" "$work/images/boot.vfat" "$work/bundle/"
 install -m755 "$repo/image/rauc-hook.sh" "$work/bundle/rauc-hook.sh"
-compatible="nabos-$target"
+install -m644 "$repo/image/layout.sh" "$work/bundle/layout.sh"
+compatible=$(jq -er --arg target "$target" '.targets[$target].compatible' "$repo/image/sources.lock.json")
 sed -e "s/@COMPATIBLE@/$compatible/g" -e "s/@VERSION@/$version/g" \
   "$repo/image/manifest.raucm.in" > "$work/bundle/manifest.raucm"
 rm -f "$out/nabos-$target.raucb"

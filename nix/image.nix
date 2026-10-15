@@ -2,6 +2,7 @@
 let
   inherit (pkgs) lib;
   config = system.config;
+  layout = import ./layout.nix;
   arm64 = target == "zero2-arm64";
   dtb = if arm64 then "bcm2710-rpi-zero-2-w.dtb" else "bcm2708-rpi-zero-w.dtb";
   kernel = config.boot.kernelPackages.kernel;
@@ -18,6 +19,7 @@ let
         config.boot.initrd.systemd.storePaths);
     }) ]);
   bootScript = pkgs.writeText "nabos-boot.cmd" (builtins.readFile ../image/boot/boot.cmd);
+  slotScript = pkgs.writeText "nabos-slot.cmd" (builtins.readFile ../image/boot/slot.cmd);
   rootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-ext4-fs.nix") {
     storePaths = [ config.system.build.toplevel ];
     volumeLabel = "nabos-root";
@@ -28,6 +30,7 @@ let
       ln -s ${system.pkgs.coreutils}/bin/env files/usr/bin/env
       cp ${kernel}/${kernel.target} files/boot/kernel
       cp ${config.system.build.initialRamdisk}/initrd files/boot/initrd
+      ${pkgs.ubootTools}/bin/mkimage -A arm -T script -C none -n 'NabOS native RAUC slot' -d ${slotScript} files/boot/boot.scr
       dtbfile=$(find ${config.hardware.deviceTree.package} -name '${dtb}' -print)
       test -f "$dtbfile"
       # Nixpkgs skips overlays without a matching compatible property.
@@ -52,8 +55,8 @@ pkgs.runCommand "nabos-nixos-${target}-${version}" {
   mkdir -p $out boot
   cp --reflink=auto --sparse=always ${rootfs} $out/rootfs.ext4
   chmod u+w $out/rootfs.ext4
-  test $(stat -c %s $out/rootfs.ext4) -le $((6 * 1024 * 1024 * 1024))
-  truncate -s 6G $out/rootfs.ext4
+  test $(stat -c %s $out/rootfs.ext4) -le ${toString layout.root_size}
+  truncate -s ${toString layout.root_size} $out/rootfs.ext4
   resize2fs $out/rootfs.ext4
   cp ${pkgs.raspberrypifw}/share/raspberrypi/boot/{bootcode.bin,start*.elf,fixup*.dat,LICENCE.broadcom} boot/
   find ${kernel}/dtbs -name '*.dtb' -exec cp '{}' boot/ \;
@@ -66,10 +69,11 @@ pkgs.runCommand "nabos-nixos-${target}-${version}" {
   cp "$dtbfile" boot/recovery/${dtb}
   sed -e 's/@TARGET@/${target}/g' -e 's/@DTB@/${dtb}/g' ${../image/boot/boot.env.in} > boot/boot.env
   mkimage -A arm -T script -C none -n 'NabOS NixOS RAUC A/B' -d ${bootScript} boot/boot.scr
-  truncate -s 256M $out/boot.vfat
+  truncate -s ${toString layout.boot_size} $out/boot.vfat
   mkfs.vfat -F32 -n NABOSBOOT $out/boot.vfat
   mcopy -i $out/boot.vfat -s boot/* ::
-  mkenvimage -r -s 0x10000 -o $out/uboot.env ${../image/boot/uboot.env}
+  cat ${../image/boot/uboot.env} ${../image/boot/layout.env} > uboot.env
+  mkenvimage -r -s ${toString layout.env_size} -o $out/uboot.env uboot.env
   cp ${bootScript} $out/boot.cmd
   cp ${config.system.build.toplevel}/kernel-params $out/kernel-params
   jq -n --arg target '${target}' --arg version '${version}' --arg kernel '${kernel.modDirVersion}' \

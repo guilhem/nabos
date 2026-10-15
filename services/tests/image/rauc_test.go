@@ -128,10 +128,9 @@ func TestSignedCompleteBundle(t *testing.T) {
 	for _, target := range []string{"zero-armv6", "zero2-arm64"} {
 		t.Run(target, func(t *testing.T) {
 			compatible := lock.Targets[target].Compatible
-			if compatible != "nabos-nixos-"+target {
-				t.Fatal("installed NixOS must reject old bundles without an install-check hook")
+			if compatible != "nabos-native-rauc-"+target {
+				t.Fatal("native RAUC systems must reject old bundle formats")
 			}
-			compatible = "nabos-" + target
 			tmp := t.TempDir()
 			for _, dir := range []string{"images"} {
 				if err := os.Mkdir(filepath.Join(tmp, dir), 0o755); err != nil {
@@ -160,8 +159,10 @@ func TestSignedCompleteBundle(t *testing.T) {
 			if !strings.Contains(manifest, "compatible="+compatible+"\n") || !strings.Contains(manifest, "format=verity") || !strings.Contains(manifest, "filename=rauc-hook.sh\n") || !strings.Contains(manifest, "hooks=install-check") || strings.Index(manifest, "[image.rootfs]") >= strings.Index(manifest, "[image.bootloader]") {
 				t.Fatalf("format or image order: %s", manifest)
 			}
-			if hook := run(t, "", "unsquashfs", "-cat", bundle, "rauc-hook.sh"); hook != read(t, filepath.Join(imageDir, "rauc-hook.sh")) {
-				t.Fatal("signed bundle changed the install-check hook")
+			for _, name := range []string{"rauc-hook.sh", "layout.sh"} {
+				if got := run(t, "", "unsquashfs", "-cat", bundle, name); got != read(t, filepath.Join(imageDir, name)) {
+					t.Fatalf("signed bundle changed %s", name)
+				}
 			}
 			for _, name := range []string{"rootfs.ext4", "boot.vfat"} {
 				if content := run(t, "", "unsquashfs", "-cat", bundle, name); content != read(t, filepath.Join(tmp, "images", name)) {
