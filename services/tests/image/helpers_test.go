@@ -107,7 +107,7 @@ func find(dir, suffix string) []string {
 
 func ubootEnv(t *testing.T) map[string]string {
 	env := map[string]string{}
-	for _, line := range strings.Split(read(t, filepath.Join(bootDir, "uboot.env")), "\n") {
+	for _, line := range strings.Split(read(t, filepath.Join(bootDir, "uboot.env"))+read(t, filepath.Join(bootDir, "layout.env")), "\n") {
 		if k, v, ok := strings.Cut(line, "="); ok && !strings.HasPrefix(line, "#") {
 			env[k] = v
 		}

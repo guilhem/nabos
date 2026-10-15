@@ -58,7 +58,8 @@ func newRecoveryFixture(t *testing.T) recoveryFixture {
 	// Tests only redirect an explicitly checked regular fixture file. No block
 	// device, loop device, host mount, or host environment writer is ever used.
 	library := strings.ReplaceAll(read(t, filepath.Join(repo, "nix/runtime/recovery.sh")), "/bin/nabos-recovery-led", filepath.Join(f.dir, "bin/nabos-recovery-led"))
-	write(t, f.library, library+`
+	write(t, f.library, `. "`+filepath.Join(imageDir, "layout.sh")+`"
+`+library+`
 RECOVERY_DISK="$FIXTURE/mmcblk0"
 RECOVERY_SYS="$FIXTURE/sys"
 RECOVERY_PROC="$FIXTURE/proc"
@@ -147,9 +148,9 @@ func TestRecoveryDeviceWaitIsBounded(t *testing.T) {
 	if err := os.Chmod(path, 0755); err != nil {
 		t.Fatal(err)
 	}
-	script := `. "$1"; RECOVERY_DISK="$FIXTURE/mmcblk0"; recovery_wait_devices`
+	script := `. "$1"; . "$2"; RECOVERY_DISK="$FIXTURE/mmcblk0"; recovery_wait_devices`
 	// The production guard must reject the regular fixture as a block device.
-	r := execute(t, "", f.fake.env("FIXTURE="+f.dir), "sh", "-c", script, "wait-test", filepath.Join(repo, "nix/runtime/recovery.sh"))
+	r := execute(t, "", f.fake.env("FIXTURE="+f.dir), "sh", "-c", script, "wait-test", filepath.Join(imageDir, "layout.sh"), filepath.Join(repo, "nix/runtime/recovery.sh"))
 	calls := f.fake.calls(t)
 	if r.code == 0 || len(calls) != 100 {
 		t.Fatal("unbounded or unsafe device wait", r, calls)
@@ -334,6 +335,7 @@ func TestRecoveryInitFeedsWatchdogAndBlocks(t *testing.T) {
 			}
 			init := read(t, filepath.Join(repo, "nix/runtime/recovery-init.sh"))
 			init = strings.NewReplacer("PATH=/bin:/sbin", "PATH=\""+f.fake.bin+":"+os.Getenv("PATH")+"\"",
+				"/lib/nabos-layout.sh", filepath.Join(imageDir, "layout.sh"),
 				"/lib/nabos-recovery.sh", f.library, "-c /dev/watchdog0", "-f "+filepath.Join(dev, "watchdog0"),
 				"/bin/nabos-recovery-led", filepath.Join(f.fake.bin, "nabos-recovery-led"),
 				"/dev", dev, "/proc", filepath.Join(f.dir, "proc"), "/sys", filepath.Join(f.dir, "sys"), "/run", filepath.Join(f.dir, "run")).Replace(init)
@@ -385,7 +387,7 @@ func TestRecoveryInitFeedsWatchdogAndBlocks(t *testing.T) {
 }
 
 func TestRecoverySparseDiskKeepsBootAndRoots(t *testing.T) {
-	for _, tool := range []string{"sfdisk", "mkfs.ext4", "e2fsck", "blkid", "dd"} {
+	for _, tool := range []string{"sfdisk", "mkfs.ext4", "e2fsck", "blkid", "dd", "openssl"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " unavailable")
 		}
@@ -403,6 +405,16 @@ func TestRecoverySparseDiskKeepsBootAndRoots(t *testing.T) {
 	run(t, read(t, filepath.Join(f.dir, "table")), "sfdisk", f.disk)
 	for _, offset := range []int64{4 * MiB, 260 * MiB, 516 * MiB, 6660 * MiB, dataStart - 4096} {
 		if _, err := disk.WriteAt([]byte("boot/root sentinel"), offset); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cert := filepath.Join(f.dir, "image-ca.pem")
+	raCert(t, filepath.Join(f.dir, "image-ca.key"), cert)
+	certificate := read(t, cert)
+	// Opaque certificate bytes in each root region, independent of p4's old trust.
+	certificateOffsets := []int64{516*MiB + 4096, 6660*MiB + 4096}
+	for _, offset := range certificateOffsets {
+		if _, err := disk.WriteAt([]byte(certificate), offset); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -440,6 +452,12 @@ dd if="$FIXTURE/mmcblk0" of="$FIXTURE/mmcblk0p4" bs=1M skip=12804 count=1024 con
 	}
 	if after := hashPrefix(); after != before {
 		t.Fatal("format changed MBR, environments, FAT, or root regions")
+	}
+	for _, offset := range certificateOffsets {
+		got := make([]byte, len(certificate))
+		if _, err := disk.ReadAt(got, offset); err != nil || string(got) != certificate {
+			t.Fatalf("immutable certificate bytes changed at %d: %v", offset, err)
+		}
 	}
 	if label := run(t, "", realBlkid, "-p", "-s", "LABEL", "-o", "value", f.disk+"p4"); label != "nabos-data\n" {
 		t.Fatal(label)

@@ -45,9 +45,11 @@ def check(archive, recovery=False):
             assert init is not None, 'missing independent recovery init'
             script = init.read_text()
             included(script.splitlines()[0].removeprefix('#!'), executable=True)
-            library = next(line.split()[1] for line in script.splitlines()
-                           if line.startswith('. /nix/store/'))
-            included(library)
+            assert '. /lib/nabos-recovery.sh' in script
+            included('/lib/nabos-recovery.sh')
+            included('/lib/nabos-layout.sh')
+            included('/bin/sh', executable=True)
+            included('/bin/nabos-recovery-led', executable=True)
             config = included('/etc/fw_env.config')
             assert config is not None
             assert config.read_text().splitlines()[-2:] == [

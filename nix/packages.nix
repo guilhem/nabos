@@ -15,6 +15,7 @@ let
     cp ${../image/boot/nabos-recovery-fsm.h} cmd/nabos-recovery-fsm.h
     cp ${../image/boot/nabos-recovery-test.c} cmd/nabos-recovery-test.c
     cp ${../image/boot/ws2812-encode.h} cmd/ws2812-encode.h
+    cp ${../image/boot/nabos-sandbox.c} cmd/nabos-sandbox.c
   '';
   ubootRecoveryCheck = ''
     ${pkgs.buildPackages.stdenv.cc}/bin/cc -std=c11 -Wall -Wextra -Werror \
@@ -126,7 +127,8 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     extraPatches = [ ../image/boot/uboot-nabos-recovery.patch ];
     preConfigure = ubootRecoverySources;
     defconfig = board.uboot_defconfig;
-    extraConfig = builtins.readFile ../image/boot/uboot.config
+    extraConfig = builtins.readFile ../image/boot/layout.config
+      + builtins.readFile ../image/boot/uboot.config
       + lib.optionalString (target == "zero-armv6") "\nCONFIG_USE_PRIVATE_LIBGCC=y\n";
     filesToInstall = [ "u-boot.bin" ];
     postConfigure = ''
@@ -135,7 +137,7 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
         case "$option" in
           CONFIG_*|'# CONFIG_'*) grep -qxF "$option" .config ;;
         esac
-      done < ${../image/boot/uboot.config}
+      done < <(cat ${../image/boot/layout.config} ${../image/boot/uboot.config})
       ${lib.optionalString (target == "zero-armv6") ''
         grep -qxF CONFIG_CPU_ARM1176=y .config
         grep -qxF CONFIG_USE_PRIVATE_LIBGCC=y .config
@@ -166,20 +168,18 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
     version = lock.tools.uboot;
     src = source "uboot";
     extraPatches = [ ../image/boot/uboot-nabos-recovery.patch ];
-    preConfigure = ubootRecoverySources + ''
-      cp ${../image/boot/uboot-hostfile.c} env/hostfile.c
-    '';
+    preConfigure = ubootRecoverySources;
     doCheck = true;
     checkPhase = ubootRecoveryCheck + ''
       ./u-boot -d u-boot.dtb -c nabos_recovery_test
-      python3 ${../image/boot/test-uboot-hostfile.py} ./u-boot ./u-boot.dtb
+      python3 ${../image/boot/test-uboot-mmc.py} ./u-boot ${pkgs.buildPackages.dtc}/bin/dtc
     '';
     defconfig = "sandbox_defconfig";
-    extraConfig = ''
+    extraConfig = builtins.readFile ../image/boot/layout.config + ''
       CONFIG_NABOS_RECOVERY=y
       CONFIG_CMD_NVEDIT_LOAD=y
-      CONFIG_ENV_IS_IN_HOSTFILE=y
-      CONFIG_ENV_SIZE=0x10000
+      CONFIG_BOOTSTD=y
+      CONFIG_BOOTSTD_FULL=y
       # CONFIG_ENV_IS_NOWHERE is not set
       # CONFIG_ENV_IS_IN_FAT is not set
       # CONFIG_ENV_IS_IN_EXT4 is not set
@@ -196,7 +196,13 @@ assert builtins.elem target [ "zero-armv6" "zero2-arm64" ];
       make olddefconfig
       grep -qxF CONFIG_NABOS_RECOVERY=y .config
       grep -qxF CONFIG_CMD_NVEDIT_LOAD=y .config
-      grep -qxF CONFIG_ENV_IS_IN_HOSTFILE=y .config
+      grep -qxF CONFIG_ENV_IS_IN_MMC=y .config
+      grep -qxF CONFIG_ENV_REDUNDANT=y .config
+      while IFS= read -r option; do
+        case "$option" in
+          CONFIG_*|'# CONFIG_'*) grep -qxF "$option" .config ;;
+        esac
+      done < ${../image/boot/layout.config}
     '';
     extraMakeFlags = [ "CONFIG_PYLIBFDT=" ];
     buildPhase = ''

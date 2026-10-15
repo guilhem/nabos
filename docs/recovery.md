@@ -58,11 +58,17 @@ signed install-check records the actually running `rauc.slot` before RAUC
 overwrites the inactive slot. A freshly flashed card has no previous installation
 and cannot roll back. Existing fallback and health confirmation still apply.
 
-Reset selection is refused for an older preferred image that lacks an immutable
-certificate. After resetting a new image, rolling back to an older image that
-expects its certificate in `/data` loses that older image's update trust. Use
-recovery-capable images in both slots when qualifying the complete reset and
-rollback journey.
+This format requires reinstallation of existing cards, including earlier NixOS
+images. Both systems and bundles use `nabos-native-rauc-zero-armv6` or
+`nabos-native-rauc-zero2-arm64`. Older formats are rejected before installation
+writes; there is no mixed Debian/NixOS boot or persistent-certificate migration.
+
+Normal boot uses U-Boot's native RAUC bootmethod on SD card 0. A failing selected
+slot consumes attempts across reboots before the other slot is selected. Any
+return from bootflow dispatch shows failure and reboots; exhausted counters are
+restored by the native bootmethod. A pending reset is handled before dispatch and
+counter changes. Rollback validation and normal boot share the artifact loader,
+and rollback also requires a valid slot boot script before promotion is saved.
 
 Recovery requires working Raspberry Pi firmware and U-Boot. It cannot restore
 two damaged system slots or repair a physically faulty card. Copy useful logs

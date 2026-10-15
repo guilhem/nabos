@@ -10,8 +10,13 @@ let
     BOOT_B_LEFT=1
     NABOS_RESET_SLOT=A
   '';
+  certificate = pkgs.runCommand "recovery-image-certificate.pem" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=NabOS recovery fixture/' \
+      -keyout "$TMPDIR/image-ca.key" -out "$out"
+  '';
   reset = pkgs.writeShellScriptBin "test-recovery-reset" ''
     set -eu
+    . ${../../image/layout.sh}
     . ${library}
     RECOVERY_SYS=/run/recovery-sys
     RECOVERY_WORK=/run/recovery-work
@@ -31,7 +36,7 @@ let
     /dev/mmcblk0p3 : start=13639680, size=12582912, type=83
     /dev/mmcblk0p4 : start=26222592, size=2097152, type=83
     TABLE
-    udevadm settle
+    # The partition ioctl is synchronous; these aliases do not depend on udev.
     for n in 1 2 3 4; do mknod /dev/mmcblk0p$n b 1 $n; done
     mkdir -p /run/recovery-sys/mmcblk0/queue
     for attribute in size dev; do cp /sys/class/block/ram0/$attribute /run/recovery-sys/mmcblk0/; done
@@ -47,6 +52,9 @@ let
     for offset in 1 2; do dd if=/run/environment.bin of=/dev/mmcblk0 bs=1M seek=$offset conv=notrunc status=none; done
     for offset in 4 260 516 6660; do
       printf 'immutable boot/root/public certificate sentinel' | dd of=/dev/mmcblk0 bs=1M seek=$offset conv=notrunc status=none
+    done
+    for offset in 517 6661; do
+      dd if=${certificate} of=/dev/mmcblk0 bs=1M seek=$offset conv=notrunc status=none
     done
     mkfs.ext4 -q -F /dev/mmcblk0p4
     mkdir /run/data
@@ -104,11 +112,14 @@ in pkgs.testers.runNixOSTest {
     machine.succeed("${setup}")
     # The native sparse-disk test hashes all protected bytes; sample boundaries here to keep TCG bounded.
     prefix = "{ dd if=/dev/mmcblk0 bs=512 count=1 status=none; for offset in 4 259 260 515 516 6659 6660 12803; do dd if=/dev/mmcblk0 bs=1M skip=$offset count=1 status=none; done; } | sha256sum"
+    certificates = "set -e; for offset in 517 6661; do dd if=/dev/mmcblk0 of=/run/cert-readback bs=1M skip=$offset count=1 status=none; truncate -s $(stat -c %s ${certificate}) /run/cert-readback; cmp /run/cert-readback ${certificate}; done"
     before = machine.succeed(prefix)
+    machine.succeed(certificates)
     assert "ro" in machine.succeed("findmnt -n -o OPTIONS --mountpoint /").strip().split(",")
     machine.fail("touch /.recovery-readonly-probe")
     machine.succeed("test-recovery-reset")
     assert machine.succeed(prefix) == before
+    machine.succeed(certificates)
     machine.succeed("test $(fw_printenv -c /run/fw_env.config -n BOOT_A_LEFT) = 3")
     machine.succeed("test \"$(fw_printenv -c /run/fw_env.config -n BOOT_ORDER)\" = 'A B'")
     machine.fail("fw_printenv -c /run/fw_env.config NABOS_RESET_SLOT")
@@ -117,6 +128,7 @@ in pkgs.testers.runNixOSTest {
     machine.succeed("fw_setenv -c /run/fw_env.config NABOS_RESET_SLOT B; dd if=/dev/zero of=/dev/mmcblk0p4 bs=1M count=1 status=none")
     machine.succeed("test-recovery-reset")
     assert machine.succeed(prefix) == before
+    machine.succeed(certificates)
     machine.succeed("test $(fw_printenv -c /run/fw_env.config -n BOOT_B_LEFT) = 3")
     machine.succeed("test \"$(fw_printenv -c /run/fw_env.config -n BOOT_ORDER)\" = 'B A'")
     machine.fail("fw_printenv -c /run/fw_env.config NABOS_RESET_SLOT")
