@@ -1,0 +1,17 @@
+env:
+  XZ_OPT: "-T0 -6"
+
+artefact:
+  version: prototype
+  context: nabos-base-arm64
+  target_name: rootfs.tar.xz
+
+deploy:
+  compression: none
+
+# Required by the upstream initramfs hook even for rootfs-only builds.
+device:
+  storage_type: sd
+
+layer:
+  base: nabos-base-arm64
