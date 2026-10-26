@@ -16,6 +16,7 @@ import (
 const Destination = "io.github.guilhem.NabHardware1"
 const Path = dbus.ObjectPath("/io/github/guilhem/NabHardware1")
 const Timeout = 5 * time.Second
+const WorkTimeout = 65 * time.Second
 
 var ErrUnavailable = errors.New("hardware unavailable")
 var ErrStale = busidentity.ErrStale
@@ -330,7 +331,7 @@ func (c *Client) call(ctx context.Context, method string, args ...any) (*dbus.Ca
 		return nil, ErrUnavailable
 	}
 	// Even LED calls can wait behind an admitted ear movement.
-	ctx, cancel := context.WithTimeout(ctx, 65*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, WorkTimeout)
 	defer cancel()
 	current, err := ownerOf(ctx, conn)
 	if err != nil {

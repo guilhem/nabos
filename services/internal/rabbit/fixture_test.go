@@ -28,6 +28,7 @@ type busFixture struct {
 	earDelay                            time.Duration
 	pulses                              int
 	starts, stops, waits                []string
+	audioStartTimes                     []time.Time
 	startOwners, waitOwners, stopOwners []string
 	startDelay, playDelay, stopDelay    time.Duration
 	startEntered                        chan struct{}
@@ -35,6 +36,7 @@ type busFixture struct {
 	waitRelease                         chan struct{}
 	loseReply                           bool
 	idleError                           bool
+	nextIdleDelay                       time.Duration
 	tagWrites                           []TagWrite
 	writeOwners, writeWaitOwners        []string
 	writeOutcome                        string
@@ -178,8 +180,11 @@ func (f *busFixture) ReadEars(detect bool) (int16, int16, *dbus.Error) {
 
 func (f *busFixture) WaitEarsIdle() *dbus.Error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.idleError {
+	delay, idleError := f.nextIdleDelay, f.idleError
+	f.nextIdleDelay = 0
+	f.mu.Unlock()
+	time.Sleep(delay)
+	if idleError {
 		return dbus.MakeFailedError(errors.New("physical idle unconfirmed"))
 	}
 	return nil
@@ -188,6 +193,7 @@ func (f *busFixture) Start(sender dbus.Sender, kind, src string) (string, *dbus.
 	f.mu.Lock()
 	id := fmt.Sprintf("audio-%d", len(f.starts)+1)
 	f.starts = append(f.starts, src)
+	f.audioStartTimes = append(f.audioStartTimes, time.Now())
 	f.startOwners = append(f.startOwners, string(sender))
 	delay, entered, release, lose := f.startDelay, f.startEntered, f.startRelease, f.loseReply
 	f.mu.Unlock()

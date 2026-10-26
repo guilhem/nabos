@@ -243,6 +243,88 @@ func TestHardwareWorkHonorsCallerCancellation(t *testing.T) {
 	}
 }
 
+func TestPlaybackDrainsSlowEarsBeforeNextAudio(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		name := "completed"
+		if canceled {
+			name = "canceled"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newBus(t)
+			e := readyEngine(t, f, Handlers{})
+			dir := t.TempDir()
+			for _, name := range []string{"intro.wav", "chapter.wav"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("audio fixture"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.res.sounds = []string{dir}
+			release := make(chan struct{})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			f.mu.Lock()
+			f.waitRelease = release
+			f.mu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			playCtx, stopPlay := context.WithCancel(ctx)
+			defer stopPlay()
+			intro := make(chan Result, 1)
+			go func() {
+				r, err := e.Do(playCtx, Command{Action: Play, Sequence: []Item{{Audio: []string{"intro.wav"}}}})
+				if err != nil {
+					r = failure(err)
+				}
+				intro <- r
+			}()
+			eventually(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.waits) == 1 })
+			f.mu.Lock()
+			f.nextIdleDelay = 11 * time.Second
+			f.mu.Unlock()
+			next, err := e.submit(ctx, Command{Action: Play, Sequence: []Item{{Audio: []string{"chapter.wav"}}}}, nil, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			finishedAudio := time.Now()
+			if canceled {
+				stopPlay()
+				eventually(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.stops) > 0 })
+			}
+			close(release)
+			r := <-intro
+			if canceled {
+				if r.Status != "canceled" {
+					t.Fatal("slow ear cleanup lost cancellation", r)
+				}
+			} else if r.Err() != nil {
+				t.Fatal("slow ear cleanup rejected completed introduction", r)
+			}
+			if time.Since(finishedAudio) < 11*time.Second {
+				t.Fatal("introduction completed before ears settled")
+			}
+			if r := <-next.result; r.Err() != nil {
+				t.Fatal("chapter could not follow slow ear cleanup", r)
+			}
+			if !e.Ready() {
+				t.Fatal("slow ears caused hardware recovery")
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.starts) != 2 || filepath.Base(f.starts[1]) != "chapter.wav" {
+				t.Fatal("chapter was not played", f.starts)
+			}
+			if f.audioStartTimes[1].Before(finishedAudio.Add(11 * time.Second)) {
+				t.Fatal("chapter started before ears settled")
+			}
+		})
+	}
+}
+
 func TestMonotonicChoreographyBatchesFrameAndBoundsDrivers(t *testing.T) {
 	f := newBus(t)
 	e := readyEngine(t, f, Handlers{})
