@@ -25,6 +25,7 @@ type busFixture struct {
 	frames                              [][]hardware.Color
 	frameTimes                          []time.Time
 	ledDelay                            time.Duration
+	earDelay                            time.Duration
 	pulses                              int
 	starts, stops, waits                []string
 	startOwners, waitOwners, stopOwners []string
@@ -140,6 +141,10 @@ func (f *busFixture) PulseLed(sender dbus.Sender, index, r, g, b uint8) *dbus.Er
 	return nil
 }
 func (f *busFixture) MoveEar(sender dbus.Sender, index, pos uint8, backward bool) *dbus.Error {
+	f.mu.Lock()
+	delay := f.earDelay
+	f.mu.Unlock()
+	time.Sleep(delay)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.owner != string(sender) {

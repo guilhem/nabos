@@ -162,6 +162,87 @@ func TestAudioLostStartReplyClosesOwnerAndNeverReplays(t *testing.T) {
 		t.Fatal("fresh work reused ambiguous owner", f.starts, f.startOwners)
 	}
 }
+func TestSlowHardwareDoesNotTruncatePlayback(t *testing.T) {
+	for _, motor := range []bool{true, false} {
+		name := "LED frame"
+		if motor {
+			name = "ear admission"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newBus(t)
+			e := readyEngine(t, f, Handlers{})
+			if err := e.SetMaintenance(context.Background(), true); err != nil {
+				t.Fatal(err)
+			}
+			f.mu.Lock()
+			f.playDelay = hardware.Timeout + 300*time.Millisecond
+			if motor {
+				f.earDelay = hardware.Timeout + 100*time.Millisecond
+			} else {
+				f.ledDelay = hardware.Timeout + 100*time.Millisecond
+			}
+			f.mu.Unlock()
+			defer func() {
+				f.mu.Lock()
+				f.earDelay, f.ledDelay = 0, 0
+				f.mu.Unlock()
+			}()
+			dir := t.TempDir()
+			chor := []byte{0, 7, 1, 255, 0, 0, 0, 0}
+			if motor {
+				chor = []byte{0, 8, 1, 1, 1}
+			}
+			for name, data := range map[string][]byte{"intro.mp3": []byte("audio fixture"), "intro.chor": chor} {
+				if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.res.sounds, e.res.chors = []string{dir}, []string{dir}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := e.sequence(e.hw.Bind(ctx), Command{Action: Play, Sequence: []Item{{Audio: []string{"intro.mp3"}, Choreography: "intro.chor"}}}); err != nil {
+				t.Fatal("slow hardware interrupted audio", err)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.waits) != 1 || len(f.stops) != 0 {
+				t.Fatal("audio did not finish naturally", f.waits, f.stops)
+			}
+		})
+	}
+}
+
+func TestHardwareWorkHonorsCallerCancellation(t *testing.T) {
+	f := newBus(t)
+	e := readyEngine(t, f, Handlers{})
+	if err := e.SetMaintenance(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.readDelay = 100 * time.Millisecond
+	f.readEntered = make(chan struct{}, 1)
+	entered := f.readEntered
+	f.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, _, err := e.hw.ReadEars(ctx, true); done <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("hardware call never started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("caller cancellation was lost", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hardware call ignored caller cancellation")
+	}
+}
+
 func TestMonotonicChoreographyBatchesFrameAndBoundsDrivers(t *testing.T) {
 	f := newBus(t)
 	e := readyEngine(t, f, Handlers{})

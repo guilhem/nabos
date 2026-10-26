@@ -329,11 +329,8 @@ func (c *Client) call(ctx context.Context, method string, args ...any) (*dbus.Ca
 	if !claimed || conn == nil || !conn.Connected() {
 		return nil, ErrUnavailable
 	}
-	limit := Timeout
-	if method == "WaitWrite" {
-		limit = 65 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, limit)
+	// Even LED calls can wait behind an admitted ear movement.
+	ctx, cancel := context.WithTimeout(ctx, 65*time.Second)
 	defer cancel()
 	current, err := ownerOf(ctx, conn)
 	if err != nil {
