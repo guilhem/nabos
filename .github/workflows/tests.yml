@@ -67,11 +67,15 @@ jobs:
         working-directory: services/tests/image
         run: |
           go test -race -c -o "$RUNNER_TEMP/nabos-image-tests" .
-          # Use the image's writer: distro libubootenv silently ignores U-Boot batch syntax.
-          fw_tools=$(nix --extra-experimental-features 'nix-command flakes' build \
+          # Match the image's dm-verity parser and U-Boot batch writer.
+          tool_paths=$(nix --extra-experimental-features 'nix-command flakes' build \
             --impure --no-link --print-out-paths --expr '
-              (builtins.getFlake ("git+file://" + toString ../../..)).inputs.nixpkgs.legacyPackages.x86_64-linux.ubootTools.out')
-          sudo env "PATH=$fw_tools/bin:$PATH" NABOS_RAUC_INTEGRATION=1 unshare --mount --propagation private \
+              with (builtins.getFlake ("git+file://" + toString ../../..)).inputs.nixpkgs.legacyPackages.x86_64-linux;
+              [ rauc ubootTools.out ]')
+          while IFS= read -r tool; do PATH="$tool/bin:$PATH"; done <<< "$tool_paths"
+          uname -r
+          rauc --version
+          sudo env "PATH=$PATH" NABOS_RAUC_INTEGRATION=1 unshare --mount --propagation private \
             "$RUNNER_TEMP/nabos-image-tests" -test.run '^TestRaucBootMBRIntegration$' -test.v -test.timeout 10m
       - name: Shell and runtime fixture checks
         run: |
