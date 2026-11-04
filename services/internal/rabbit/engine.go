@@ -231,7 +231,8 @@ func (e *Engine) DoStarted(ctx context.Context, c Command, started chan<- struct
 		case <-e.done:
 			return Result{}, ctx.Err()
 		}
-		clean, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+		// Include abort feedback, admitted audio calls, and physical cleanup.
+		clean, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		select {
 		case result := <-r.result:
@@ -675,8 +676,10 @@ func (e *Engine) launch(kind string, r *request, work func(context.Context) (Res
 				err = fb
 			}
 		}
-		clean, cleanCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		cleanup := errors.Join(e.audio.stop(), e.hw.WaitEarsIdle(clean), e.all(clean, RGB{}))
+		audioCleanup := e.audio.stop()
+		// An admitted slow-ear movement can outlast its audio.
+		clean, cleanCancel := context.WithTimeout(context.WithoutCancel(ctx), hardware.WorkTimeout)
+		cleanup := errors.Join(audioCleanup, e.hw.WaitEarsIdle(clean), e.all(clean, RGB{}))
 		cleanCancel()
 		if cleanup != nil {
 			e.hw.DropContext(ctx)
