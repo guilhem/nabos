@@ -55,7 +55,7 @@ in
   nabos = pkgs.buildGo127Module {
     name = "nabos";
     src = ../services;
-    vendorHash = "sha256-FgzCDTmz+iP6NSiM6ZLp179uC8/dhrKwNSIEf14zMnk=";
+    vendorHash = "sha256-sJvbQpAYLk2rsA/t54VwHSGVYsDLXjK5dne4p9Y2G6Y=";
     subPackages = [ "cmd/nabos" ];
     doCheck = native;
     env = { CGO_ENABLED = 0; GOARM = board.goarm; };

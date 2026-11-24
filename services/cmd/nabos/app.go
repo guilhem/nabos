@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/guilhem/nabos/services/internal/airquality"
+	"github.com/guilhem/nabos/services/internal/chatgpt"
 	"github.com/guilhem/nabos/services/internal/clock"
 	"github.com/guilhem/nabos/services/internal/config"
 	"github.com/guilhem/nabos/services/internal/device"
@@ -61,6 +62,7 @@ type App struct {
 	wifiMu          sync.Mutex
 	haMu            sync.Mutex
 	updateUploadMu  sync.Mutex
+	chatGPT         chatGPTAccount
 	frenchVoice     *voice.Store
 	voiceFetching   bool
 	voiceError      string
@@ -118,6 +120,7 @@ func NewApp(env Env) (*App, error) {
 	// hashed for this application instead of exposing the system machine-id.
 	node := fmt.Sprintf("nabos_%x", sha256.Sum256([]byte("nabos-ha:"+strings.TrimSpace(string(identity)))))
 	a := &App{
+		chatGPT:       chatgpt.New(env.DataDir),
 		frenchVoice:   frenchVoice,
 		env:           env,
 		store:         store,
