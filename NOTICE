@@ -30,6 +30,11 @@ their respective licenses. Their sources are pinned by the Nix expressions,
 flake.lock and image/sources.lock.json. Raspberry Pi firmware is distributed
 under its own terms.
 
+The ARM64 Piper speech engine comes from the OHF-Voice Piper 1.8.0 release
+(https://github.com/OHF-Voice/piper1-gpl/tree/v1.8.0). Piper and its
+inference dependencies retain their licenses and notices from their
+distribution wheels.
+
 The cr14 and st25r391x Rust userspace reader libraries are independent MIT
 implementations from https://github.com/guilhem/cr14 and
 https://github.com/guilhem/st25r391x. Their exact revisions are pinned in

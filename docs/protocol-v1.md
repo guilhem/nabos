@@ -83,8 +83,10 @@ There is no migration of the former MQTT protocol, API names or settings.
 |---|---|
 | `NABOS_HTTP_ADDR` | `:8080` locally, `:80` in the image |
 | `NABOS_DATA_DIR` | `/data/nabos` |
-| `NABOS_SOUNDS_DIRS` | `/usr/share/nabos/sounds:/data/nabos/media/sounds` |
+| `NABOS_SOUNDS_DIRS` | `/usr/share/nabos/sounds:/data/nabos/media/sounds`. The Zero 2 W image also searches `/run/nabos-speech`. |
 | `NABOS_CHOREOGRAPHIES_DIRS` | `/usr/share/nabos/choreographies:/data/nabos/media/choreographies` |
+| `NABOS_PIPER` | Absolute path to the Piper executable on the Zero 2 W image |
+| `NABOS_SPEECH_DIR` | `/run/nabos-speech` on the Zero 2 W image |
 | `NABOS_VERSION` | Build/release version |
 | `NABOS_WEATHER_URL` / `NABOS_GEOCODING_URL` | Open-Meteo endpoints |
 | `NABOS_DEVICE_BUS_ADDRESS` | System bus in production; explicit private bus for tests |
@@ -101,6 +103,34 @@ Internet connection for the download. The installed files can be used offline.
 The first voice was fine-tuned from the [Piper SIWIS medium checkpoint](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/75145195cb7fcfbc5b4daf5b32cc3f9a80a09f5b/fr/fr_FR/siwis/medium)
 using the NabOS French surprise and magic 8-ball recordings credited in
 [NOTICE](../NOTICE).
+
+On the Raspberry Pi Zero 2 W, install the voice, then enter a short phrase
+under **Réglages → Voix française du Nabaztag** and select **Faire parler
+le lapin**. Piper synthesizes it locally and NabOS plays it on the rabbit's
+speaker. Each preview loads the model before synthesizing. The model is
+downloaded on demand and lives on the data partition across image updates.
+
+To link the owner's ChatGPT account, open **Réglages → Compte ChatGPT** in
+the rabbit's HTTPS administration interface. On the stock image this requires
+a trusted reverse proxy that forwards the original HTTPS scheme.
+
+1. Select **Connecter mon compte ChatGPT** and open the OpenAI link in a new tab.
+2. Authorize NabOS to use your ChatGPT plan. When the browser navigates to
+   `http://127.0.0.1:<port>/auth/callback`, copy the entire address from the
+   address bar. A connection error is expected on a phone.
+3. Return to the original settings tab, paste the address into **Adresse de
+   retour** and select **Terminer la connexion**. The linked account appears in
+   the same section. If the attempt expires, restart it in that tab.
+
+The pasted address contains a one-time authorization code. Only paste it into
+the rabbit's authenticated settings. NabOS checks the pending sign-in and
+exchanges the code directly with OpenAI. If the account is registered and plan
+access is missing, select **Autoriser l’utilisation de mon forfait ChatGPT**.
+If you cancelled before registration, start a new connection. Use
+**Déconnecter le compte ChatGPT** to sign out. Credentials are stored in
+`$NABOS_DATA_DIR/chatgpt/account.json`, readable only by the service user.
+Copying the loopback address is a NabOS adaptation of the desktop
+[Sign in with ChatGPT protocol](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
 Hardware retains `NABOS_GPIO_CHIP` (`/dev/gpiochip0`), `NABOS_BUTTON_GPIO` (`17`)
 and `NABOS_LED_BRIGHTNESS` (`200`). `NABOS_LED_SYSFS` (`/sys/class/leds`) selects

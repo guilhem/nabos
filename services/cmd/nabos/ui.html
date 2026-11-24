@@ -125,13 +125,36 @@ pre{overflow:auto;font-size:.85em}code,td{overflow-wrap:anywhere}article+article
 <p>Recherche et installation des nouvelles versions : <a href="{{$.URL "/updates"}}">Mises à jour</a>.</p>
 {{if .Data.Voice}}<label><input type="checkbox" name="voice"{{if .Data.VoiceOn}} checked{{end}}> Assistant vocal (Linux Voice Assistant, via Home Assistant)</label>{{end}}
 <div class="form-actions"><button>Enregistrer les réglages système</button></div></form></section>{{else}}<p class="err" role="alert">{{.SystemError}}</p>{{end}}
-{{with .Data.FrenchVoice}}<section><h2>Voix française du Nabaztag</h2>
+{{with .Data.FrenchVoice}}<section id="voix-francaise"><h2>Voix française du Nabaztag</h2>
 {{if .Fetching}}<p role="status">Téléchargement en cours. <a href="{{$.URL "/settings"}}">Actualiser</a></p>
 {{else if and .Installed (not .Error)}}<p>Version 1 installée</p>
 {{else}}<p>Modèle Piper · 63,5 Mo</p>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 <form method="post" action="{{$.URL "/settings/voice/install"}}"><div class="form-actions"><button>{{if .Error}}Réessayer{{else}}Installer la voix{{end}}</button></div></form>
-{{end}}</section>{{end}}
+{{end}}
+{{if not .PreviewSupported}}<p>La synthèse vocale locale est disponible sur Raspberry Pi Zero 2 W.</p>
+{{else if .Installed}}
+{{if .PreviewBusy}}<p role="status">Synthèse et lecture en cours. <a href="{{$.URL "/settings#voix-francaise"}}">Actualiser</a></p>
+{{else}}{{if .PreviewMessage}}<p role="status">{{.PreviewMessage}}</p>{{end}}
+<form method="post" action="{{$.URL "/settings/voice/preview"}}">
+<label>Phrase à prononcer (160 caractères maximum) <input type="text" name="text" maxlength="160" autocomplete="off" required></label>
+<div class="form-actions"><button>Faire parler le lapin</button></div></form>{{end}}{{end}}
+</section>{{end}}
+<section id="chatgpt"><h2>Compte ChatGPT</h2>
+{{if .Data.ChatGPTUnavailable}}<p class="err" role="alert">Impossible de lire l’état du compte ChatGPT.</p>
+{{else}}{{with .Data.ChatGPT}}
+{{if .Account}}<p>Compte associé : {{.Account}}</p>{{end}}
+{{if .NeedsConsent}}<p>NabOS a besoin de votre autorisation pour utiliser votre forfait ChatGPT.</p>{{end}}
+{{if .AuthorizationURL}}
+<p><a href="{{.AuthorizationURL}}" target="_blank" rel="noopener noreferrer">Continuer avec ChatGPT dans un nouvel onglet</a></p>
+<p id="chatgpt-help">Autorisez NabOS. Lorsque le navigateur tente d’ouvrir <code>127.0.0.1</code>, copiez l’adresse complète même si la page affiche une erreur. Revenez la coller ici.</p>
+<form method="post" action="{{$.URL "/settings/chatgpt/complete"}}">
+<label>Adresse de retour <input type="url" name="callback" aria-describedby="chatgpt-help" required autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+<button>Terminer la connexion</button></form>
+{{else if and (not .Account) (not .NeedsConsent)}}<p>Associez votre compte pour autoriser NabOS à utiliser votre forfait ChatGPT.</p>{{end}}
+<form method="post" action="{{$.URL "/settings/chatgpt/start"}}"><button>{{if .AuthorizationURL}}Recommencer la connexion{{else if .NeedsConsent}}Autoriser l’utilisation de mon forfait ChatGPT{{else if .Account}}Renouveler la connexion{{else}}Connecter mon compte ChatGPT{{end}}</button></form>
+{{if .Account}}<form method="post" action="{{$.URL "/settings/chatgpt/disconnect"}}"><button>Déconnecter le compte ChatGPT</button></form>{{end}}
+{{else}}<p>Ouvrez les réglages en HTTPS via un proxy de confiance pour associer votre compte ChatGPT.</p>{{end}}{{end}}</section>
 <section><h2>Réglages du lapin</h2>
 <p>L’horloge, la météo et Home Assistant s’enregistrent ensemble avec le bouton en bas de cette carte.</p>
 <form method="post" action="{{$.URL "/settings/application"}}">

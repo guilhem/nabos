@@ -4,6 +4,7 @@ let
   rootfs = ../image/rootfs;
   packages = nabosPackages;
   hasVoice = packages.lva != null;
+  hasPiper = packages.piper != null;
   compatible = nabosBoard.compatible;
   layout = import ./layout.nix;
   persistLibrary = pkgs.writeText "nabos-persist-library" (builtins.readFile ./runtime/persist.sh);
@@ -227,19 +228,24 @@ in
         HOME = "/data/nabos";
         NABOS_DATA_DIR = "/data/nabos";
         NABOS_HTTP_ADDR = ":80";
-        NABOS_SOUNDS_DIRS = "${packages.assets}/share/nabos/sounds:/data/nabos/media/sounds";
+        NABOS_SOUNDS_DIRS = packages.soundRoots;
         NABOS_CHOREOGRAPHIES_DIRS = "${packages.assets}/share/nabos/choreographies:/data/nabos/media/choreographies";
+      } // lib.optionalAttrs hasPiper {
+        NABOS_PIPER = "${packages.piper}/bin/nabos-piper";
+        NABOS_SPEECH_DIR = packages.speechDir;
       };
       serviceConfig = {
         Type = "exec"; User = "nab-app"; Group = "nab-app";
         EnvironmentFile = "/etc/nabos/release.env";
         RuntimeDirectory = "nabos"; WorkingDirectory = "/run/nabos";
+        ExecStartPre = lib.optional hasPiper
+          "${pkgs.findutils}/bin/find ${packages.speechDir} -maxdepth 1 -type f -name .nabos-voice-*.wav -delete";
         ExecStart = "${packages.nabos}/bin/nabos";
         Restart = "always"; RestartSec = 2; UMask = "0027";
         AmbientCapabilities = "CAP_NET_BIND_SERVICE";
         CapabilityBoundingSet = "CAP_NET_BIND_SERVICE";
         NoNewPrivileges = true; PrivateDevices = true;
-        ProtectSystem = "strict"; ReadWritePaths = [ "/data/nabos" ];
+        ProtectSystem = "strict"; ReadWritePaths = [ "/data/nabos" ] ++ lib.optional hasPiper packages.speechDir;
       };
     };
     nab-hardware = {
@@ -284,7 +290,7 @@ in
         DEVICE_CORE_BOOT_HEALTH = "/run/nabos-boot-health";
         DEVICE_CORE_UPDATE_PREPARE_UNIT = "nabos-rauc-manual.service";
         DEVICE_CORE_UPDATE_PREPARED_BUNDLE = "/data/nabos-rauc-manual/bundle.raucb";
-        DEVICE_CORE_AUDIO_ROOTS = "${packages.assets}/share/nabos/sounds:/data/nabos/media/sounds";
+        DEVICE_CORE_AUDIO_ROOTS = packages.soundRoots;
         DEVICE_CORE_SSH_UNIT = "ssh.service";
       };
       serviceConfig = {
@@ -391,7 +397,8 @@ in
       postStart = "${pkgs.coreutils}/bin/sync -f /data/system/ssh/etc/ssh";
     };
   };
-  systemd.tmpfiles.rules = lib.splitString "\n" (builtins.readFile (rootfs + "/usr/lib/tmpfiles.d/nabos.conf"));
+  systemd.tmpfiles.rules = lib.splitString "\n" (builtins.readFile (rootfs + "/usr/lib/tmpfiles.d/nabos.conf"))
+    ++ lib.optional hasPiper "d ${packages.speechDir} 2750 nab-app nab-media -";
   environment.systemPackages = [ packages.nabos packages.nab-hardware packages.device-core packages.assets ] ++ tools;
   environment.etc = {
     "NetworkManager/system-connections/.keep" = { text = ""; mode = "0600"; };

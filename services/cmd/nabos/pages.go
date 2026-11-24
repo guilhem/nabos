@@ -159,6 +159,8 @@ func (a *App) routes() http.Handler {
 	m.HandleFunc("POST /settings/system", a.saveSystemSettings)
 	m.HandleFunc("POST /settings/ssh", a.saveSSHKeys)
 	m.HandleFunc("POST /settings/voice/install", a.installFrenchVoice)
+	m.HandleFunc("POST /settings/voice/preview", a.previewFrenchVoice)
+	m.HandleFunc("POST /settings/chatgpt/{action}", a.changeChatGPT)
 	a.wifiRoutes(m)
 	a.serviceRoutes(m)
 	m.HandleFunc("POST /clock", func(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +206,8 @@ func (a *App) routes() http.Handler {
 }
 
 func (a *App) renderSettings(w http.ResponseWriter, r *http.Request, messages map[string]any) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "same-origin")
 	_, clk := a.clockQuality()
 	sshRevision, keys, sshErr := a.readSSHKeys()
 	addresses, proxyErr := a.proxy.Current()
@@ -214,6 +218,12 @@ func (a *App) renderSettings(w http.ResponseWriter, r *http.Request, messages ma
 		"Clock": clk, "Now": a.clockNow().In(a.location()).Format("2006-01-02T15:04"),
 		"ProxyAddresses": addresses, "ProxyError": proxyErr,
 		"Preferences": prefs, "PreferencesError": prefsErr, "AllowedDomains": strings.Join(prefs.AllowedDomains, "\n")}
+	if web.Scheme(r) == "https" {
+		if cookie, err := r.Cookie(web.CookieName); err == nil {
+			status, err := a.chatGPT.Status(cookie.Value)
+			data["ChatGPT"], data["ChatGPTUnavailable"] = status, err != nil
+		}
+	}
 	for key, value := range messages {
 		data[key] = value
 	}
