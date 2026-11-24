@@ -158,6 +158,7 @@ func (a *App) routes() http.Handler {
 	m.HandleFunc("POST /settings/application", a.saveSettings)
 	m.HandleFunc("POST /settings/system", a.saveSystemSettings)
 	m.HandleFunc("POST /settings/ssh", a.saveSSHKeys)
+	m.HandleFunc("POST /settings/voice/install", a.installFrenchVoice)
 	a.wifiRoutes(m)
 	a.serviceRoutes(m)
 	m.HandleFunc("POST /clock", func(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +209,7 @@ func (a *App) renderSettings(w http.ResponseWriter, r *http.Request, messages ma
 	addresses, proxyErr := a.proxy.Current()
 	prefs, prefsErr := a.prefs.Current()
 	data := map[string]any{"Locales": locales, "Voice": a.voiceSupported(), "VoiceOn": a.voiceEnabled(),
+		"FrenchVoice": a.frenchVoiceStatus(),
 		"SSHRevision": sshRevision, "SSHKeys": keys, "SSHError": sshErr,
 		"Clock": clk, "Now": a.clockNow().In(a.location()).Format("2006-01-02T15:04"),
 		"ProxyAddresses": addresses, "ProxyError": proxyErr,

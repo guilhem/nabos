@@ -23,6 +23,7 @@ import (
 	"github.com/guilhem/nabos/services/internal/network"
 	"github.com/guilhem/nabos/services/internal/rabbit"
 	"github.com/guilhem/nabos/services/internal/triggers"
+	"github.com/guilhem/nabos/services/internal/voice"
 	"github.com/guilhem/nabos/services/internal/weather"
 	"github.com/guilhem/nabos/services/internal/web"
 )
@@ -60,6 +61,9 @@ type App struct {
 	wifiMu          sync.Mutex
 	haMu            sync.Mutex
 	updateUploadMu  sync.Mutex
+	frenchVoice     *voice.Store
+	voiceFetching   bool
+	voiceError      string
 	setupGeneration string
 	wifi            *wifiSession
 	mastodonKick    chan struct{}
@@ -81,6 +85,10 @@ type App struct {
 }
 
 func NewApp(env Env) (*App, error) {
+	frenchVoice, err := newFrenchVoiceStore(env.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	prefs := web.LoadPreferences(filepath.Join(env.DataDir, "preferences.json"))
 	if _, err := prefs.Current(); err != nil {
 		slog.Error("invalid preferences", "err", err)
@@ -110,6 +118,7 @@ func NewApp(env Env) (*App, error) {
 	// hashed for this application instead of exposing the system machine-id.
 	node := fmt.Sprintf("nabos_%x", sha256.Sum256([]byte("nabos-ha:"+strings.TrimSpace(string(identity)))))
 	a := &App{
+		frenchVoice:   frenchVoice,
 		env:           env,
 		store:         store,
 		auth:          web.NewAuth(store, prefs),

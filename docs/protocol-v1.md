@@ -93,6 +93,15 @@ An explicit address applies to hardware and every Go device-core connection,
 including the dedicated audio owner, settings and maintenance. Connection
 failure never falls back to the system bus.
 
+In **Settings**, install the French Nabaztag voice on demand. NabOS fetches the
+pinned OCI artifact from `ghcr.io/guilhem/nabos-voices` and installs its Piper
+model and configuration together in `$NABOS_DATA_DIR/voices/fr_FR-nabaztag/v1/`.
+The installation survives RAUC updates. It requires persistent storage and an
+Internet connection for the download. The installed files can be used offline.
+The first voice was fine-tuned from the [Piper SIWIS medium checkpoint](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/75145195cb7fcfbc5b4daf5b32cc3f9a80a09f5b/fr/fr_FR/siwis/medium)
+using the NabOS French surprise and magic 8-ball recordings credited in
+[NOTICE](../NOTICE).
+
 Hardware retains `NABOS_GPIO_CHIP` (`/dev/gpiochip0`), `NABOS_BUTTON_GPIO` (`17`)
 and `NABOS_LED_BRIGHTNESS` (`200`). `NABOS_LED_SYSFS` (`/sys/class/leds`) selects
 the LED class root, including temporary fixtures. The driver validates each
