@@ -159,6 +159,7 @@ func (a *App) routes() http.Handler {
 	m.HandleFunc("POST /settings/system", a.saveSystemSettings)
 	m.HandleFunc("POST /settings/ssh", a.saveSSHKeys)
 	m.HandleFunc("POST /settings/voice/install", a.installFrenchVoice)
+	m.HandleFunc("POST /settings/voice/preview", a.previewFrenchVoice)
 	m.HandleFunc("POST /settings/chatgpt/{action}", a.changeChatGPT)
 	a.wifiRoutes(m)
 	a.serviceRoutes(m)

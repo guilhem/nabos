@@ -17,6 +17,7 @@ var version = "dev"
 
 type Env struct {
 	HTTPAddr, DataDir        string
+	Piper, SpeechDir         string
 	SoundsDirs, ChorDirs     []string
 	Version                  string
 	WeatherURL, GeocodingURL string
@@ -34,6 +35,8 @@ func loadEnv() Env {
 	return Env{
 		HTTPAddr:     env("NABOS_HTTP_ADDR", ":8080"),
 		DataDir:      env("NABOS_DATA_DIR", "/data/nabos"),
+		Piper:        os.Getenv("NABOS_PIPER"),
+		SpeechDir:    os.Getenv("NABOS_SPEECH_DIR"),
 		SoundsDirs:   strings.Split(env("NABOS_SOUNDS_DIRS", "/usr/share/nabos/sounds:/data/nabos/media/sounds"), ":"),
 		ChorDirs:     strings.Split(env("NABOS_CHOREOGRAPHIES_DIRS", "/usr/share/nabos/choreographies:/data/nabos/media/choreographies"), ":"),
 		Version:      v,

@@ -51,6 +51,11 @@ type Store struct {
 	lock chan struct{}
 }
 
+// ModelPath names the ONNX model next to its required .json configuration.
+func (s *Store) ModelPath() string {
+	return filepath.Join(s.DataDir, liveDir, modelName)
+}
+
 // Installed checks the pinned manifest and both regular files' sizes without reading the model.
 func (s *Store) Installed() bool {
 	if s.Digest.Validate() != nil {

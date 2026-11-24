@@ -156,13 +156,16 @@ def generated_unit_contracts(system_units, user_units):
         return {word.strip('"') for value in unit_values(directory, name, key, section)
                 for word in value.split()}
 
+    speech = os.environ['NABOS_RUNTIME_TARGET'] == 'zero2-arm64'
+    speech_dir = '/run/nabos-speech'
     services = {
         'device-core': ('device-core', '/data/device-core', '/run/device-core',
                         {'nab-media', 'nab-audio'}, {'/data/device-core', '/run/device-core', '/run/lock/device-core'}),
         'nab-hardware': ('nab-hardware', '/run/nab-hardware', '/run/nab-hardware', {'gpio'},
                          {f'-/sys/class/leds/multi:indicator-{i}/{attr}' for i in range(5)
                           for attr in ('brightness', 'multi_intensity')} | {'-/sys/class/leds/multi:indicator-0/sync'}),
-        'nabos': ('nab-app', '/data/nabos', '/run/nabos', set(), {'/data/nabos'}),
+        'nabos': ('nab-app', '/data/nabos', '/run/nabos', set(),
+                  {'/data/nabos', speech_dir} if speech else {'/data/nabos'}),
     }
     for name, (owner, home, work, groups, writable) in services.items():
         check(name, {'User': owner, 'Group': owner, 'ProtectSystem': 'strict', 'NoNewPrivileges': True,
@@ -181,6 +184,15 @@ def generated_unit_contracts(system_units, user_units):
         require('multi-user.target' in words(name, 'WantedBy', section='Install'), name + ' startup')
         require('mosquitto.service' not in words(name, 'Wants', section='Unit') and
                 'nabos-rfid.service' not in words(name, 'After', section='Unit'), name + ' obsolete dependencies')
+    app = unit_environment(system_units, 'nabos')
+    device = unit_environment(system_units, 'device-core')
+    require((speech_dir in app['NABOS_SOUNDS_DIRS'].split(':')) == speech, 'Piper application audio root')
+    require((speech_dir in device['DEVICE_CORE_AUDIO_ROOTS'].split(':')) == speech, 'Piper device-core audio root')
+    if speech:
+        require(app.get('NABOS_SPEECH_DIR') == speech_dir, 'Piper write directory')
+        require(Path(shipped_file(app['NABOS_PIPER'])).name == 'nabos-piper', 'Piper executable')
+    else:
+        require('NABOS_PIPER' not in app and 'NABOS_SPEECH_DIR' not in app, 'Piper is ARM64-only')
     for name in ('device-core', 'nabos'):
         check(name, {'Type': 'exec', 'PrivateDevices': True})
         for key in ('DeviceAllow', 'BindPaths', 'BindReadOnlyPaths'):
@@ -428,6 +440,27 @@ def main():
                 os.chown(file, 1001, 1001)
             expect(run(0, ['sh', '-ec', '. "$NABOS_PERSIST_LIB"; media_permissions']))
             expect(run(0, ['systemd-tmpfiles', '--create', '--prefix=/data/nabos']))
+            if os.environ['NABOS_RUNTIME_TARGET'] == 'zero2-arm64':
+                speech = Path('/run/nabos-speech')
+                expect(run(0, ['systemd-tmpfiles', '--create', '--prefix=' + str(speech)]))
+                info = speech.stat()
+                require((info.st_uid, info.st_gid, info.st_mode & 0o7777) == (1001, 1005, 0o2750),
+                        'Piper runtime ownership')
+                wav = speech / '.nabos-voice-fixture.wav'
+                expect(run(1001, ['sh', '-ec', 'umask 027; printf piper > "$1"', 'sh', str(wav)], groups=(1005,)))
+                expect(run(1003, ['cat', str(wav)], groups=(1005,)), output='piper')
+                keep = speech / 'keep.wav'
+                keep.touch()
+                startup = unit_values(system_units, 'nabos', 'ExecStartPre')
+                require(len(startup) == 1, 'Piper orphan cleanup command')
+                cleanup = shlex.split(startup[0])
+                shipped_file(cleanup[0])
+                expect(run(1001, cleanup, groups=(1005,), cwd=speech))
+                require(not wav.exists() and keep.is_file(), 'Piper orphan cleanup scope')
+                keep.unlink()
+                app = unit_environment(system_units, 'nabos')
+                expect(run(1001, [app['NABOS_PIPER'], '--version'], base | {'HOME': app['HOME']},
+                           groups=(1005,), cwd=speech), output='Piper 1.8.0, ONNX Runtime 1.31.1')
             expect(run(1003, ['cat', str(sound)], groups=(1005,)), output='old sound')
             expect(run(1001, ['sh', '-c', 'umask 027; printf new > /data/nabos/media/sounds/user/new.wav']))
             expect(run(1003, ['cat', str(sound.parent / 'new.wav')], groups=(1005,)), output='new')

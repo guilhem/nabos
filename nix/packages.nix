@@ -49,9 +49,13 @@ let
       cp -a sounds choreographies "$out/share/nabos/"
     '';
   };
+  speechDir = "/run/nabos-speech";
+  soundRoots = "${assets}/share/nabos/sounds:/data/nabos/media/sounds"
+    + lib.optionalString board.arm64 ":${speechDir}";
 in
-{
-  inherit assets;
+rec {
+  inherit assets speechDir soundRoots;
+  piper = if !board.arm64 then null else pkgs.callPackage ./piper.nix { inherit lva; };
   nabos = pkgs.buildGo127Module {
     name = "nabos";
     src = ../services;
@@ -106,7 +110,7 @@ in
     postBuild = ''
       wrapProgram "$out/bin/device-core" \
         --prefix PATH : ${lib.makeBinPath [ pkgs.alsa-utils pkgs.mpg123 pkgs.wireplumber pkgs.openssh pkgs.rauc ]} \
-        --set-default DEVICE_CORE_AUDIO_ROOTS "${assets}/share/nabos/sounds:/data/nabos/media/sounds"
+        --set-default DEVICE_CORE_AUDIO_ROOTS "${soundRoots}"
     '';
   };
 

@@ -71,6 +71,9 @@ type App struct {
 	mastodonKick    chan struct{}
 	oauth           *oauthLogin
 
+	voicePreviewDone    chan struct{}
+	voicePreviewMessage string
+
 	clockKick, weatherKick, haKick chan struct{}
 
 	mu          sync.Mutex
@@ -185,6 +188,12 @@ func (a *App) Run(ctx context.Context) error {
 	defer func() {
 		cancelRun()
 		a.stopMedia()
+		a.mu.Lock()
+		preview := a.voicePreviewDone
+		a.mu.Unlock()
+		if preview != nil {
+			<-preview
+		}
 		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		a.rabbit.Stop(stopCtx)
